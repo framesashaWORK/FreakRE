@@ -1,14 +1,14 @@
 [package]
-name = "bibleteks-decompiler"
+name = "freakre-decompiler"
 version = "0.1.0"
 edition = "2021"
 description = "Decompiler: IR to C pseudocode for binary analysis"
 license = "MIT"
 
 [dependencies]
-bibleteks-ir = { path = "../freakre-ir" }
-bibleteks-dataflow = { path = "../dataflow" }
-bibleteks-type-propagation = { path = "../type-propagation" }
+freakre-ir = { path = "../freakre-ir" }
+freakre-dataflow = { path = "../dataflow" }
+freakre-type-propagation = { path = "../type-propagation" }
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 indexmap = "2"

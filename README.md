@@ -2,70 +2,110 @@
 
 Modular reverse engineering framework written in Rust. Multi-format binary analysis with built-in decompiler, plugin system, and dual UI (native desktop + web).
 
+## Prerequisites
+
+### Required
+
+- **Rust** ≥ 1.75 ([rustup.rs](https://rustup.rs))
+- **C/C++ compiler** — MSVC or MinGW on Windows, GCC/Clang on Linux/macOS
+  - Needed by `libloading` (plugin system), `cc` build scripts, and FFI crates
+  - Ubuntu/Debian: `sudo apt install build-essential`
+  - Fedora: `sudo dnf install gcc-c++ make`
+  - macOS: `xcode-select --install`
+  - Windows: Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++"
+
+### Linux Desktop UI Dependencies
+
+The `freakre-desktop` crate uses `eframe` (egui) which requires system libraries on Linux:
+
+```bash
+# Ubuntu/Debian
+sudo apt install libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+
+# Fedora
+sudo dnf install gtk3-devel libxkbcommon-devel openssl-devel
+```
+
+Not needed for CLI or Web UI.
+
+### Optional: Capstone Disassembly Engine
+
+FreakRE includes a built-in length-disassembler fallback. For full Capstone disassembly support:
+
+| Platform | Command |
+|----------|---------|
+| Ubuntu/Debian | `sudo apt install libcapstone-dev` |
+| Fedora | `sudo dnf install capstone-devel` |
+| macOS | `brew install capstone` |
+| Windows (vcpkg) | `vcpkg install capstone:x64-windows` |
+| Windows (manual) | Set `CAPSTONE_LIB_DIR` env var to directory containing `capstone.lib` |
+
+Without Capstone, the `capstone-ffi` crate gracefully falls back to the internal LDE.
+
 ## Architecture
 
 ```
-freakre-desktop (egui native app)
-bibleteks-web   (axum web server)
-bibleteks       (CLI binary)
+freakre-desktop  (egui native app,   pkg: freakre-desktop)
+freakre-web      (axum web server,    pkg: freakre-web)
+freakre          (CLI binary,         pkg: freakre-scanner)
 │
-├── scanner            ← Orchestrator with weighted signal correlation
-├── pe-parser          ← PE32/PE32+ parser with malware anomaly detection
-├── elf-parser         ← ELF32/ELF64 parser with security warnings
-├── macho-parser       ← Mach-O parser with load command analysis
-├── entropy-rs         ← Shannon entropy + sliding window analysis
-├── str-extract        ← ASCII/UTF-16 string extraction with byte offsets
-├── import-analyzer    ← Import table analysis with 8+ detection categories
-├── yara-lite          ← YARA-subset engine (hex/text/regex + conditions)
-├── backdoor-analyzer  ← Backdoor detection with MITRE ATT&CK mapping
-├── shellcode-analyzer ← Shellcode detection + API hash resolution
-├── xrefs              ← Cross-reference database for strings and imports
-├── cfg-builder        ← Control Flow Graph construction + anomaly detection
-├── func-sigs          ← Function signature matching + compiler identification
-├── func-finder        ← Function boundary detection (recursive descent + patterns)
-├── capstone-ffi       ← Capstone disassembly bindings with fallback LDE
-├── freakre-ir         ← Intermediate representation with SSA + x86/ARM lifters
-├── dataflow           ← Dataflow analysis (live variables, reaching definitions, use-def chains)
-├── type-propagation   ← Type inference and constraint propagation
-├── type-system        ← Type database, layout computation, builtin types
-├── decompiler         ← IR → AST → C decompilation pipeline
-├── diffing            ← Binary diffing engine
-├── project-db         ← Sled-backed project database with undo/redo + bookmarks
-├── scripting          ← Rhai scripting engine integration
-├── plugins            ← Dynamic plugin loading via libloading
-├── sys-plugins        ← Built-in plugins (crypto finder, entropy mapper, string analyzer)
-└── ml-detection       ← Feature-based binary classification with decision trees
+├── freakre-scanner     ← Orchestrator with weighted signal correlation
+├── pe-parser           ← PE32/PE32+ parser with malware anomaly detection
+├── elf-parser          ← ELF32/ELF64 parser with security warnings
+├── macho-parser        ← Mach-O parser with load command analysis
+├── entropy-rs          ← Shannon entropy + sliding window analysis
+├── str-extract         ← ASCII/UTF-16 string extraction with byte offsets
+├── import-analyzer     ← Import table analysis with 8+ detection categories
+├── yara-lite           ← YARA-subset engine (hex/text/regex + conditions)
+├── backdoor-analyzer   ← Backdoor detection with MITRE ATT&CK mapping
+├── shellcode-analyzer  ← Shellcode detection + API hash resolution
+├── xrefs               ← Cross-reference database for strings and imports
+├── cfg-builder         ← Control Flow Graph construction + anomaly detection
+├── func-sigs           ← Function signature matching + compiler identification
+├── func-finder         ← Function boundary detection (recursive descent + patterns)
+├── capstone-ffi        ← Capstone disassembly bindings with fallback LDE
+├── freakre-ir          ← Intermediate representation with SSA + x86/ARM lifters
+├── freakre-dataflow    ← Live variables, reaching definitions, use-def chains
+├── freakre-type-propagation ← Type inference and constraint propagation
+├── type-system         ← Type database, layout computation, builtin types
+├── freakre-decompiler  ← IR → AST → C decompilation pipeline
+├── diffing             ← Binary diffing engine
+├── project-db          ← Sled-backed project database with undo/redo + bookmarks
+├── scripting           ← Rhai scripting engine integration
+├── plugins             ← Dynamic plugin loading via libloading
+├── freakre-sys-plugins ← Built-in plugins (crypto finder, entropy mapper, string analyzer)
+└── ml-detection        ← Feature-based binary classification with decision trees
 ```
 
-All libraries are written from scratch, zero-copy where possible, no unsafe in hot paths.
+All analysis libraries are written from scratch in safe Rust with zero-copy parsing where possible. The only `unsafe` usage is in FFI bindings (`capstone-ffi`, `libloading`) and isolated low-level helpers.
 
 ## Quick Start
 
 ### CLI
 
 ```bash
-cargo build --release -p bibleteks-scanner
+cargo build --release -p freakre-scanner
 
 # Scan a file
-./target/release/bibleteks suspicious.exe
+./target/release/freakre suspicious.exe
 
 # Scan a directory
-./target/release/bibleteks /path/to/samples/
+./target/release/freakre /path/to/samples/
 
 # With YARA rules
-./target/release/bibleteks -r rules.yar target.exe
+./target/release/freakre -r rules.yar target.exe
 
 # JSON output
-./target/release/bibleteks -f json target.exe
+./target/release/freakre -f json target.exe
 
 # CSV output
-./target/release/bibleteks -f csv target.exe > results.csv
+./target/release/freakre -f csv target.exe > results.csv
 
 # Filter by severity
-./target/release/bibleteks --findings-only --min-severity high ./samples/
+./target/release/freakre --findings-only --min-severity high ./samples/
 
 # Parallel scanning
-./target/release/bibleteks -j 8 ./large_directory/
+./target/release/freakre -j 8 ./large_directory/
 ```
 
 ### Desktop UI
@@ -79,7 +119,7 @@ Native egui application with sidebar navigation, hex viewer, disassembler, CFG g
 ### Web UI
 
 ```bash
-cargo run -p bibleteks-web --release
+cargo run -p freakre-web --release
 # Open http://127.0.0.1:3000
 ```
 
@@ -106,7 +146,7 @@ Axum-based web server with drag-and-drop upload and HTML report rendering.
 | `backdoor-analyzer` | Import + string based backdoor detection with MITRE ATT&CK T-code mapping |
 | `shellcode-analyzer` | Shellcode pattern detection + API hash resolution (CRC32, MD5, ROR13) |
 | `func-sigs` | Known function signatures (crypto, compression, network) + compiler fingerprinting (MSVC, GCC, Clang, Delphi, Go) |
-| `ml-detection` | 96-feature vector extraction + decision tree classifier with feature importance |
+| `ml-detection` | 96-feature vector extraction + rule-based heuristic scoring engine with feature importance output |
 
 ### Intermediate Representation & Decompilation
 
@@ -114,10 +154,10 @@ Axum-based web server with drag-and-drop upload and HTML report rendering.
 |--------|------------|
 | `capstone-ffi` | Capstone disassembly FFI with graceful fallback to built-in length-disassembler |
 | `freakre-ir` | Platform-independent IR with SSA form; x86/x64 and ARM lifters |
-| `dataflow` | Live variable analysis, reaching definitions, use-def chain construction |
-| `type-propagation` | Constraint-based type inference across IR |
+| `freakre-dataflow` | Live variable analysis, reaching definitions, use-def chain construction |
+| `freakre-type-propagation` | Constraint-based type inference across IR |
 | `type-system` | Type database with layout computation and builtin type definitions |
-| `decompiler` | IR → AST → C decompilation with control flow structuring |
+| `freakre-decompiler` | IR → AST → C decompilation with control flow structuring |
 | `cfg-builder` | Control flow graph construction with unreachable code and branching anomaly detection |
 | `xrefs` | Cross-reference database mapping strings and imports to code locations |
 
@@ -127,7 +167,7 @@ Axum-based web server with drag-and-drop upload and HTML report rendering.
 |--------|------------|
 | `project-db` | Sled-backed persistent storage with undo/redo history and bookmarks |
 | `plugins` | Runtime plugin loading via `libloading` with trait-based API |
-| `sys-plugins` | Built-in plugins: crypto constant finder, entropy mapper, function classifier, string analyzer |
+| `freakre-sys-plugins` | Built-in plugins: crypto constant finder, entropy mapper, function classifier, string analyzer |
 | `scripting` | Rhai scripting engine for custom analysis scripts |
 | `diffing` | Binary diffing for comparing two binaries |
 
@@ -159,7 +199,7 @@ cargo test --workspace
 # Specific module
 cargo test -p yara-lite
 cargo test -p pe-parser
-cargo test -p bibleteks-scanner
+cargo test -p freakre-scanner
 
 # With output
 cargo test --workspace -- --nocapture

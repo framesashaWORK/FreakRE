@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_assignments)]
-//! # bibleteks-decompiler — IR to C Pseudocode Decompiler
+//! # freakre-decompiler — IR to C Pseudocode Decompiler
 //!
-//! Decompiles bibleteks-ir back into readable C-like pseudocode.
+//! Decompiles freakre-ir back into readable C-like pseudocode.
 //!
 //! ## Pipeline
 //!

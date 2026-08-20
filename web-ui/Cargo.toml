@@ -1,14 +1,14 @@
 [package]
-name = "bibleteks-web"
+name = "freakre-web"
 version = "0.3.0"
 edition = "2021"
 
 [[bin]]
-name = "bibleteks-web"
+name = "freakre-web"
 path = "src/main.rs"
 
 [dependencies]
-bibleteks-scanner = { path = "../scanner" }
+freakre-scanner = { path = "../scanner" }
 
 axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }

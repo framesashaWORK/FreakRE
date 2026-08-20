@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_assignments)]
-//! # bibleteks-dataflow — Data Flow Analysis
+//! # freakre-dataflow — Data Flow Analysis
 //!
-//! Static data flow analysis for the bibleteks-ir intermediate representation.
+//! Static data flow analysis for the freakre-ir intermediate representation.
 //! Provides:
 //!
 //! - **Reaching Definitions**: Which assignments can reach each program point

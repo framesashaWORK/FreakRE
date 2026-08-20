@@ -1,15 +1,15 @@
-use bibleteks_scanner::report::FileReport;
+use freakre_scanner::report::FileReport;
 use std::path::Path;
 
 /// Wrapper around the scanner library for web usage
 pub struct ScannerWrapper {
-    inner: bibleteks_scanner::scanner::Scanner,
+    inner: freakre_scanner::scanner::Scanner,
 }
 
 impl ScannerWrapper {
     pub fn new() -> Self {
         Self {
-            inner: bibleteks_scanner::scanner::Scanner::new(),
+            inner: freakre_scanner::scanner::Scanner::new(),
         }
     }
 

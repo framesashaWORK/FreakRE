@@ -1,22 +1,22 @@
 [package]
-name = "bibleteks-scanner"
+name = "freakre-scanner"
 version = "0.1.0"
 edition = "2021"
 description = "Core scanning engine for FreakRE — static binary analysis"
 
 [lib]
-name = "bibleteks_scanner"
+name = "freakre_scanner"
 path = "src/lib.rs"
 
 [[bin]]
-name = "bibleteks"
+name = "freakre"
 path = "src/main.rs"
 required-features = ["cli"]
 
 [features]
 default = ["cli"]
 cli = ["dep:clap", "dep:colored", "dep:walkdir", "dep:rayon"]
-decompiler = ["dep:bibleteks-ir", "dep:bibleteks-decompiler"]
+decompiler = ["dep:freakre-ir", "dep:freakre-decompiler"]
 
 [dependencies]
 # Core analysis crates (always needed)
@@ -33,8 +33,8 @@ xrefs = { path = "../xrefs" }
 cfg-builder = { path = "../cfg-builder" }
 func-sigs = { path = "../func-sigs" }
 ml-detection = { path = "../ml-detection" }
-bibleteks-ir = { path = "../freakre-ir", optional = true }
-bibleteks-decompiler = { path = "../decompiler", optional = true }
+freakre-ir = { path = "../freakre-ir", optional = true }
+freakre-decompiler = { path = "../decompiler", optional = true }
 
 # Common dependencies
 serde = { version = "1", features = ["derive"] }

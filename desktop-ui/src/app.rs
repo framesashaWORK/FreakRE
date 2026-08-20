@@ -1,5 +1,5 @@
 use eframe::egui;
-use bibleteks_scanner::{scanner::Scanner, report::FileReport};
+use freakre_scanner::{scanner::Scanner, report::FileReport};
 use plugins::PluginManager;
 use freakre_sys_plugins;
 use std::path::PathBuf;

@@ -1,7 +1,7 @@
 #[cfg(not(feature = "cli"))]
-compile_error!("The 'cli' feature is required to build the bibleteks binary");
+compile_error!("The 'cli' feature is required to build the freakre binary");
 
-use bibleteks_scanner::{
+use freakre_scanner::{
     output,
     report::{FileReport, Finding, ScanSummary, Severity, Verdict},
     Scanner,

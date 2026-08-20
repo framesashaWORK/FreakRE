@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_assignments)]
-//! # bibleteks-scanner
+//! # freakre-scanner
 //!
-//! Core scanning engine for bibleteks — orchestrates all analysis modules
+//! Core scanning engine for FreakRE — orchestrates all analysis modules
 //! (PE parsing, entropy, imports, backdoor detection, shellcode, YARA-lite,
 //! cross-references, CFG analysis, and function signatures) into a unified
 //! scan report with weighted signal correlation.
@@ -9,7 +9,7 @@
 //! ## Usage as a library
 //!
 //! ```rust,no_run
-//! use bibleteks_scanner::Scanner;
+//! use freakre_scanner::Scanner;
 //! use std::path::Path;
 //!
 //! let scanner = Scanner::new();

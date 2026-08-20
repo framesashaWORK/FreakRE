@@ -5,7 +5,7 @@ edition = "2021"
 description = "FreakRE — Reverse Engineering Framework Desktop UI"
 
 [dependencies]
-bibleteks-scanner = { path = "../scanner" }
+freakre-scanner = { path = "../scanner" }
 freakre-sys-plugins = { path = "../sys-plugins" }
 capstone-ffi = { path = "../capstone-ffi" }
 project-db = { path = "../project-db" }

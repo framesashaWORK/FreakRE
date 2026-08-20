@@ -1,5 +1,5 @@
 [package]
-name = "bibleteks-ir"
+name = "freakre-ir"
 version = "0.1.0"
 edition = "2021"
 description = "Universal Intermediate Representation for FreakRE — architecture-agnostic SSA-based IR"
