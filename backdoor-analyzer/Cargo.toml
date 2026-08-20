@@ -1,0 +1,10 @@
+[package]
+name = "backdoor-analyzer"
+version = "0.1.0"
+edition = "2021"
+description = "Backdoor detection engine: reverse/bind shells, C2 beacons, auth bypass, persistence"
+
+[dependencies]
+import-analyzer = { path = "../import-analyzer" }
+str-extract = { path = "../str-extract" }
+entropy-rs = { path = "../entropy-rs" }

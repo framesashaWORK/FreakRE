@@ -1,0 +1,10 @@
+[package]
+name = "scripting"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rhai = { version = "1.16", features = ["sync"] }
+project-db = { path = "../project-db" }
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }

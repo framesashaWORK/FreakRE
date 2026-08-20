@@ -1,0 +1,28 @@
+[package]
+name = "capstone-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "Capstone disassembly framework FFI bindings with multi-architecture support"
+license = "MIT"
+
+[dependencies]
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"
+
+[features]
+default = ["x86", "arm", "mips", "ppc"]
+x86 = []
+arm = []
+mips = []
+ppc = []
+
+# [dev-dependencies]
+# criterion = "0.5"
+
+# [[bench]]
+# name = "disasm_bench"
+# harness = false

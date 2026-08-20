@@ -1,0 +1,21 @@
+[package]
+name = "bibleteks-web"
+version = "0.3.0"
+edition = "2021"
+
+[[bin]]
+name = "bibleteks-web"
+path = "src/main.rs"
+
+[dependencies]
+bibleteks-scanner = { path = "../scanner" }
+
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5", features = ["fs", "trace"] }
+askama = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

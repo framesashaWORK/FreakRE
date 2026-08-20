@@ -1,0 +1,11 @@
+/target
+**/target
+Cargo.lock
+*.pdb
+*.exe
+*.dll
+*.so
+*.dylib
+*.db
+*.sled
+.fuzz_corpus/

@@ -1,0 +1,8 @@
+[package]
+name = "elf-parser"
+version = "0.1.0"
+edition = "2021"
+description = "Security-oriented ELF32/ELF64 parser for malware analysis"
+
+[dependencies]
+bitflags = "2"

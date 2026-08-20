@@ -1,0 +1,9 @@
+[package]
+name = "diffing"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+project-db = { path = "../project-db" }
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }

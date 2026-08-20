@@ -1,0 +1,7 @@
+[package]
+name = "entropy-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Shannon entropy calculator for malware analysis — per-section, sliding window, and whole-file"
+
+[dependencies]

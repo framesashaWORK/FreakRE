@@ -1,0 +1,19 @@
+[package]
+name = "bibleteks-type-propagation"
+version = "0.1.0"
+edition = "2021"
+description = "Type propagation and inference for binary IR using constraint solving"
+license = "MIT"
+
+[dependencies]
+bibleteks-ir = { path = "../freakre-ir" }
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+petgraph = "0.6"
+
+# [dev-dependencies]
+# criterion = "0.5"
+
+# [[bench]]
+# name = "type_propagation_bench"
+# harness = false

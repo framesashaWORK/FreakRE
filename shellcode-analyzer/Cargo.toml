@@ -1,0 +1,8 @@
+[package]
+name = "shellcode-analyzer"
+version = "0.1.0"
+edition = "2021"
+description = "Raw shellcode detection and API hash resolution for malware analysis"
+
+[dependencies]
+entropy-rs = { path = "../entropy-rs" }

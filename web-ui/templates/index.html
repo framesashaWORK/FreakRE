@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}BibleTeks — Dashboard{% endblock %}
+
+{% block content %}
+<!-- Upload Zone -->
+<div x-data="{ dragging: false, uploading: false }" class="mb-10 fade-in">
+    <form hx-post="/upload" hx-target="#upload-result" hx-swap="innerHTML"
+          hx-indicator="#upload-spinner"
+          enctype="multipart/form-data"
+          @dragover.prevent="dragging = true"
+          @dragleave.prevent="dragging = false"
+          @drop.prevent="dragging = false; $refs.fileInput.files = $event.dataTransfer.files; $refs.form.requestSubmit()"
+          :class="{ 'dragover': dragging }"
+          x-ref="form"
+          class="upload-zone glass rounded-2xl p-12 text-center cursor-pointer glow relative overflow-hidden group">
+
+        <input type="file" name="file" x-ref="fileInput" class="hidden"
+               @change="$refs.form.requestSubmit()">
+
+        <!-- Spinner overlay -->
+        <div id="upload-spinner" class="htmx-indicator absolute inset-0 bg-dark-900/90 z-20 flex flex-col items-center justify-center rounded-2xl">
+            <div class="w-12 h-12 border-4 border-accent/30 border-t-accent rounded-full animate-spin mb-4"></div>
+            <p class="text-accent font-medium animate-pulse">Analyzing binary...</p>
+        </div>
+
+        <div @click="$refs.fileInput.click()" class="relative z-10">
+            <div class="w-20 h-20 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-dark-600 to-dark-700 flex items-center justify-center group-hover:scale-110 transition-transform duration-300 shadow-xl">
+                <svg class="w-10 h-10 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                </svg>
+            </div>
+            <h2 class="text-2xl font-semibold mb-2">Drop binary here</h2>
+            <p class="text-gray-400 text-sm">or click to browse &bull; PE, ELF, raw binaries supported</p>
+            <div class="flex justify-center gap-2 mt-4">
+                <span class="px-2 py-1 rounded bg-dark-600 text-[10px] font-mono text-gray-400">.exe</span>
+                <span class="px-2 py-1 rounded bg-dark-600 text-[10px] font-mono text-gray-400">.dll</span>
+                <span class="px-2 py-1 rounded bg-dark-600 text-[10px] font-mono text-gray-400">.elf</span>
+                <span class="px-2 py-1 rounded bg-dark-600 text-[10px] font-mono text-gray-400">.so</span>
+                <span class="px-2 py-1 rounded bg-dark-600 text-[10px] font-mono text-gray-400">.bin</span>
+            </div>
+        </div>
+    </form>
+
+    <!-- HTMX upload result container -->
+    <div id="upload-result"></div>
+</div>
+
+<!-- Stats Bar -->
+{% if !results.is_empty() %}
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8 fade-in" style="animation-delay: 0.1s">
+    <div class="glass rounded-xl p-5 text-center hover:border-accent/30 transition-colors">
+        <div class="text-3xl font-bold text-white">{{ results.len() }}</div>
+        <div class="text-[10px] text-gray-500 mt-1 uppercase tracking-widest font-semibold">Scanned</div>
+    </div>
+    <div class="glass rounded-xl p-5 text-center hover:border-danger/30 transition-colors">
+        <div class="text-3xl font-bold text-danger">{{ mal_count }}</div>
+        <div class="text-[10px] text-gray-500 mt-1 uppercase tracking-widest font-semibold">Malicious</div>
+    </div>
+    <div class="glass rounded-xl p-5 text-center hover:border-warn/30 transition-colors">
+        <div class="text-3xl font-bold text-warn">{{ sus_count }}</div>
+        <div class="text-[10px] text-gray-500 mt-1 uppercase tracking-widest font-semibold">Suspicious</div>
+    </div>
+    <div class="glass rounded-xl p-5 text-center hover:border-safe/30 transition-colors">
+        <div class="text-3xl font-bold text-safe">{{ clean_count }}</div>
+        <div class="text-[10px] text-gray-500 mt-1 uppercase tracking-widest font-semibold">Clean</div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Results Table -->
+{% if !results.is_empty() %}
+<div class="glass rounded-2xl overflow-hidden fade-in" style="animation-delay: 0.2s">
+    <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm">
+            <thead class="bg-dark-700/50 text-gray-400 uppercase text-[10px] tracking-widest font-semibold">
+                <tr>
+                    <th class="px-6 py-4">File</th>
+                    <th class="px-6 py-4">Type</th>
+                    <th class="px-6 py-4">Score</th>
+                    <th class="px-6 py-4">Verdict</th>
+                    <th class="px-6 py-4">Findings</th>
+                    <th class="px-6 py-4">Time</th>
+                    <th class="px-6 py-4 text-right">Action</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-dark-600/50">
+                {% for r in results %}
+                <tr class="hover:bg-dark-700/30 transition-colors group cursor-pointer" onclick="window.location='/report/{{ r.id }}'">
+                    <td class="px-6 py-4">
+                        <div class="font-medium truncate max-w-xs group-hover:text-accent transition-colors">{{ r.filename }}</div>
+                        <div class="text-[10px] text-gray-600 font-mono mt-0.5">{{ r.report.md5[..12] }}...</div>
+                    </td>
+                    <td class="px-6 py-4 text-gray-400 text-xs">{{ r.report.file_type }}</td>
+                    <td class="px-6 py-4">
+                        <div class="flex items-center gap-2">
+                            <div class="w-20 h-1.5 bg-dark-600 rounded-full overflow-hidden">
+                                {% let pct = "{:.0}"|format(r.report.suspicion_score * 100.0) %}
+                                <div class="h-full rounded-full transition-all duration-700
+                                    {% if r.report.suspicion_score >= 0.7 %}bg-gradient-to-r from-danger to-red-400
+                                    {% else if r.report.suspicion_score >= 0.3 %}bg-gradient-to-r from-warn to-yellow-300
+                                    {% else %}bg-gradient-to-r from-safe to-green-300{% endif %}"
+                                     style="width: {{ pct }}%"></div>
+                            </div>
+                            <span class="text-xs font-mono text-gray-400 w-8">{{ pct }}%</span>
+                        </div>
+                    </td>
+                    <td class="px-6 py-4">
+                        {% match r.report.verdict %}
+                        {% when Verdict::Malicious %}
+                        <span class="px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider bg-danger/15 text-danger-light border border-danger/20">Malicious</span>
+                        {% when Verdict::Suspicious %}
+                        <span class="px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider bg-warn/15 text-warn-light border border-warn/20">Suspicious</span>
+                        {% when Verdict::Clean %}
+                        <span class="px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider bg-safe/15 text-safe-light border border-safe/20">Clean</span>
+                        {% when Verdict::Error %}
+                        <span class="px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider bg-gray-700/50 text-gray-400 border border-gray-600">Error</span>
+                        {% endmatch %}
+                    </td>
+                    <td class="px-6 py-4">
+                        <span class="text-gray-400 text-xs">{{ r.report.findings.len() }}</span>
+                    </td>
+                    <td class="px-6 py-4 text-gray-500 text-xs font-mono">{{ r.report.scan_duration_ms }}ms</td>
+                    <td class="px-6 py-4 text-right">
+                        <a href="/report/{{ r.id }}" class="text-accent hover:text-accent-light text-xs font-medium opacity-0 group-hover:opacity-100 transition-opacity">View →</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="text-center py-24 text-gray-500 fade-in">
+    <div class="w-16 h-16 mx-auto mb-4 rounded-2xl bg-dark-700 flex items-center justify-center">
+        <svg class="w-8 h-8 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+        </svg>
+    </div>
+    <p class="text-lg font-medium text-gray-400">No files scanned yet</p>
+    <p class="text-sm mt-2 text-gray-600">Upload a binary above to get started</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,7 @@
+[package]
+name = "str-extract"
+version = "0.1.0"
+edition = "2021"
+description = "Binary string extractor for malware analysis — ASCII, UTF-16LE/BE with offset and context"
+
+[dependencies]

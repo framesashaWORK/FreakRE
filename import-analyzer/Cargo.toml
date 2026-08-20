@@ -1,0 +1,12 @@
+[package]
+name = "import-analyzer"
+version = "0.1.0"
+edition = "2021"
+description = "Security-oriented PE import table analyzer for malware detection"
+license = "MIT"
+
+[dependencies]
+pe-parser = { path = "../pe-parser" }
+thiserror = "2"
+
+[dev-dependencies]

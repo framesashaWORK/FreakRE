@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "pe-parser",
+    "elf-parser",
+    "macho-parser",
+    "entropy-rs",
+    "str-extract",
+    "import-analyzer",
+    "yara-lite",
+    "backdoor-analyzer",
+    "shellcode-analyzer",
+    "xrefs",
+    "cfg-builder",
+    "func-sigs",
+    "scanner",
+    "desktop-ui",
+    "web-ui",
+    "capstone-ffi",
+    "freakre-ir",
+    "dataflow",
+    "type-propagation",
+    "decompiler",
+    "project-db",
+    "func-finder",
+    "type-system",
+    "scripting",
+    "plugins",
+    "diffing",
+    "sys-plugins",
+]
+exclude = ["fuzz"]
+resolver = "2"

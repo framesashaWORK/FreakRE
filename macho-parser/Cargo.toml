@@ -1,0 +1,8 @@
+[package]
+name = "macho-parser"
+version = "0.1.0"
+edition = "2021"
+description = "Zero-copy Mach-O parser for macOS malware analysis"
+
+[dependencies]
+thiserror = "2"

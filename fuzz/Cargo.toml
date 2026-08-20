@@ -1,0 +1,63 @@
+[package]
+name = "bibleteks-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+# Crates to fuzz
+pe-parser = { path = "../pe-parser" }
+elf-parser = { path = "../elf-parser" }
+macho-parser = { path = "../macho-parser" }
+import-analyzer = { path = "../import-analyzer" }
+str-extract = { path = "../str-extract" }
+entropy-rs = { path = "../entropy-rs" }
+yara-lite = { path = "../yara-lite" }
+
+[[bin]]
+name = "fuzz_pe_parser"
+path = "fuzz_targets/fuzz_pe_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_elf_parser"
+path = "fuzz_targets/fuzz_elf_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_macho_parser"
+path = "fuzz_targets/fuzz_macho_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_import_analyzer"
+path = "fuzz_targets/fuzz_import_analyzer.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_str_extract"
+path = "fuzz_targets/fuzz_str_extract.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_entropy"
+path = "fuzz_targets/fuzz_entropy.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_yara"
+path = "fuzz_targets/fuzz_yara.rs"
+test = false
+doc = false

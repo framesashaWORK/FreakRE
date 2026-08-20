@@ -1,0 +1,8 @@
+# Fuzz corpus (large binary files)
+corpus/
+
+# Fuzz artifacts
+artifacts/
+
+# Fuzz logs
+*.log

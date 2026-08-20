@@ -1,0 +1,53 @@
+[package]
+name = "bibleteks-scanner"
+version = "0.1.0"
+edition = "2021"
+description = "Core scanning engine for FreakRE — static binary analysis"
+
+[lib]
+name = "bibleteks_scanner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bibleteks"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+cli = ["dep:clap", "dep:colored", "dep:walkdir", "dep:rayon"]
+decompiler = ["dep:bibleteks-ir", "dep:bibleteks-decompiler"]
+
+[dependencies]
+# Core analysis crates (always needed)
+pe-parser = { path = "../pe-parser" }
+entropy-rs = { path = "../entropy-rs" }
+str-extract = { path = "../str-extract" }
+import-analyzer = { path = "../import-analyzer" }
+yara-lite = { path = "../yara-lite" }
+backdoor-analyzer = { path = "../backdoor-analyzer" }
+elf-parser = { path = "../elf-parser" }
+macho-parser = { path = "../macho-parser" }
+shellcode-analyzer = { path = "../shellcode-analyzer" }
+xrefs = { path = "../xrefs" }
+cfg-builder = { path = "../cfg-builder" }
+func-sigs = { path = "../func-sigs" }
+ml-detection = { path = "../ml-detection" }
+bibleteks-ir = { path = "../freakre-ir", optional = true }
+bibleteks-decompiler = { path = "../decompiler", optional = true }
+
+# Common dependencies
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+md-5 = "0.10"
+hex = "0.4"
+
+# CLI-only dependencies (optional)
+clap = { version = "4", features = ["derive"], optional = true }
+colored = { version = "2", optional = true }
+walkdir = { version = "2", optional = true }
+rayon = { version = "1", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
