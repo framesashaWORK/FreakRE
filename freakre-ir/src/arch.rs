@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Supported target architectures (17 total)
+/// Supported target architectures (25 total)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Arch {
     // ─── x86 family ──────────────────────────────────────
@@ -34,9 +34,21 @@ pub enum Arch {
     Ppc64,        // PowerPC 64-bit (big-endian)
     Ppc64LE,      // PowerPC 64-bit little-endian (POWER8+)
 
-    // ─── Other ───────────────────────────────────────────
+    // ─── SPARC ───────────────────────────────────────────
     Sparc32,      // SPARC V8/V9 32-bit
     Sparc64,      // SPARC V9 64-bit
+
+    // ─── Lightweight / Bytecode VMs ─────────────────────
+    Ebpf,         // Linux eBPF (stack-based VM, 64 fixed instructions)
+    Wasm32,       // WebAssembly 32-bit (stack-based VM)
+    Wasm64,       // WebAssembly 64-bit (memory64 proposal)
+    Dalvik,       // Android Dalvik VM (register-based, 16-bit regs)
+    Chip8,        // CHIP-8 toy VM (35 opcodes, simplest possible)
+
+    // ─── Microcontrollers / Embedded ─────────────────────
+    Avr,          // Atmel AVR 8-bit (Arduino Uno, ATmega)
+    Msp430,       // TI MSP430 16-bit RISC MCU
+    Mos6502,      // MOS Technology 6502 (NES, C64, Apple II)
 }
 
 impl Arch {
@@ -60,6 +72,14 @@ impl Arch {
             Arch::Ppc64LE => "PowerPC 64 LE",
             Arch::Sparc32 => "SPARC 32",
             Arch::Sparc64 => "SPARC 64",
+            Arch::Ebpf => "eBPF",
+            Arch::Wasm32 => "WebAssembly 32",
+            Arch::Wasm64 => "WebAssembly 64",
+            Arch::Dalvik => "Dalvik (Android)",
+            Arch::Chip8 => "CHIP-8",
+            Arch::Avr => "AVR 8-bit",
+            Arch::Msp430 => "MSP430 16-bit",
+            Arch::Mos6502 => "MOS 6502",
         }
     }
 
@@ -69,7 +89,7 @@ impl Arch {
             Arch::X86_64 | Arch::Arm64 | Arch::Arm64BE |
             Arch::Mips64LE | Arch::Mips64BE |
             Arch::RiscV64 | Arch::Ppc64 | Arch::Ppc64LE |
-            Arch::Sparc64
+            Arch::Sparc64 | Arch::Wasm64 | Arch::Ebpf
         )
     }
 
@@ -80,13 +100,21 @@ impl Arch {
             Arch::Arm32 | Arch::Arm32Thumb | Arch::Arm64 |
             Arch::Mips32LE | Arch::Mips64LE |
             Arch::RiscV32 | Arch::RiscV64 |
-            Arch::Ppc64LE
+            Arch::Ppc64LE |
+            Arch::Ebpf | Arch::Wasm32 | Arch::Wasm64 |
+            Arch::Dalvik | Arch::Chip8 |
+            Arch::Avr | Arch::Msp430 | Arch::Mos6502
         )
     }
 
     /// Default pointer size in bytes
     pub fn pointer_size(&self) -> usize {
-        if self.is_64bit() { 8 } else { 4 }
+        match self {
+            Arch::Avr | Arch::Mos6502 | Arch::Chip8 => 2,
+            Arch::Msp430 | Arch::Dalvik => 2,
+            _ if self.is_64bit() => 8,
+            _ => 4,
+        }
     }
 
     /// Instruction alignment (minimum address increment)
@@ -98,13 +126,20 @@ impl Arch {
             Arch::RiscV32 | Arch::RiscV64 => 2, // compressed instructions
             Arch::Ppc32 | Arch::Ppc64 | Arch::Ppc64LE => 4,
             Arch::Sparc32 | Arch::Sparc64 => 4,
+            Arch::Ebpf => 8,     // eBPF instructions are 8 bytes
+            Arch::Wasm32 | Arch::Wasm64 => 1, // variable-length
+            Arch::Dalvik => 2,   // Dalvik instructions are 16-bit aligned
+            Arch::Chip8 => 2,    // CHIP-8 instructions are 2 bytes
+            Arch::Avr => 2,      // AVR most instructions are 16-bit (some 32-bit)
+            Arch::Msp430 => 2,   // MSP430 instructions are 16-bit aligned
+            Arch::Mos6502 => 1,  // 6502 variable-length (1-3 bytes)
             _ => 1, // x86 variable-length
         }
     }
 
     /// Does this arch have fixed-length instructions?
     pub fn is_fixed_length(&self) -> bool {
-        !matches!(self, Arch::X86 | Arch::X86_64)
+        !matches!(self, Arch::X86 | Arch::X86_64 | Arch::Wasm32 | Arch::Wasm64 | Arch::Mos6502)
     }
 
     /// Fixed instruction length in bytes (None for variable-length)
@@ -130,6 +165,13 @@ impl Arch {
             Arch::Ppc64 | Arch::Ppc64LE => 32,
             Arch::Sparc32 => 32, // 8 global + 8 out + 8 local + 8 in (windowed)
             Arch::Sparc64 => 32,
+            Arch::Ebpf => 11,    // R0-R10 (R10 is read-only frame pointer)
+            Arch::Wasm32 | Arch::Wasm64 => 0, // stack-based, no GPRs
+            Arch::Dalvik => 16,  // v0-v15 per method (register windowing)
+            Arch::Chip8 => 16,   // V0-VF
+            Arch::Avr => 32,     // r0-r31
+            Arch::Msp430 => 16,  // R0-R15
+            Arch::Mos6502 => 6,  // A, X, Y, S, P, PC
         }
     }
 
@@ -150,6 +192,9 @@ impl Arch {
             0x15 => Some(Arch::Ppc64),
             0x02 => Some(Arch::Sparc32),
             0x2B => Some(Arch::Sparc64),
+            0xF7 => Some(Arch::Ebpf),    // EM_BPF (eBPF)
+            0x53 => Some(Arch::Avr),     // EM_AVR
+            0x69 => Some(Arch::Msp430),  // EM_MSP430
             _ => None,
         }
     }
@@ -190,6 +235,35 @@ impl Arch {
         }
     }
 
+    /// Is this a bytecode/VM architecture (not native CPU)?
+    pub fn is_bytecode(&self) -> bool {
+        matches!(self,
+            Arch::Ebpf | Arch::Wasm32 | Arch::Wasm64 |
+            Arch::Dalvik | Arch::Chip8
+        )
+    }
+
+    /// Is this a microcontroller/embedded architecture?
+    pub fn is_embedded(&self) -> bool {
+        matches!(self,
+            Arch::Avr | Arch::Msp430 | Arch::Mos6502 | Arch::Chip8
+        )
+    }
+
+    /// Try to detect from magic bytes
+    pub fn from_magic(magic: &[u8]) -> Option<Self> {
+        if magic.len() < 4 {
+            return None;
+        }
+        // WebAssembly magic: \0asm
+        if magic.starts_with(b"\x00asm") {
+            return Some(Arch::Wasm32);
+        }
+        // eBPF programs don't have standard magic, but ELF eBPF does
+        // CHIP-8 programs don't have magic either
+        None
+    }
+
     /// All supported architectures
     pub fn all() -> &'static [Arch] {
         &[
@@ -199,6 +273,19 @@ impl Arch {
             Arch::RiscV32, Arch::RiscV64,
             Arch::Ppc32, Arch::Ppc64, Arch::Ppc64LE,
             Arch::Sparc32, Arch::Sparc64,
+            // Lightweight / VM
+            Arch::Ebpf, Arch::Wasm32, Arch::Wasm64, Arch::Dalvik, Arch::Chip8,
+            // Embedded
+            Arch::Avr, Arch::Msp430, Arch::Mos6502,
+        ]
+    }
+
+    /// Lightweight architectures only (easy to analyse)
+    pub fn lightweight() -> &'static [Arch] {
+        &[
+            Arch::Ebpf, Arch::Wasm32, Arch::Wasm64,
+            Arch::Dalvik, Arch::Chip8,
+            Arch::Avr, Arch::Msp430, Arch::Mos6502,
         ]
     }
 
@@ -206,7 +293,7 @@ impl Arch {
     pub fn has_lifter(&self) -> bool {
         matches!(self,
             Arch::X86 | Arch::X86_64 |
-            Arch::Arm32 | Arch::Arm64
+            Arch::Arm32 | Arch::Arm32Thumb | Arch::Arm64
         )
     }
 }
@@ -223,7 +310,16 @@ mod tests {
 
     #[test]
     fn test_all_architectures_count() {
-        assert_eq!(Arch::all().len(), 17);
+        assert_eq!(Arch::all().len(), 25);
+    }
+
+    #[test]
+    fn test_lightweight_architectures() {
+        let light = Arch::lightweight();
+        assert_eq!(light.len(), 8);
+        for arch in light {
+            assert!(arch.is_bytecode() || arch.is_embedded());
+        }
     }
 
     #[test]
@@ -233,6 +329,10 @@ mod tests {
         assert_eq!(Arch::Arm32.pointer_size(), 4);
         assert_eq!(Arch::Arm64.pointer_size(), 8);
         assert_eq!(Arch::RiscV64.pointer_size(), 8);
+        assert_eq!(Arch::Ebpf.pointer_size(), 8);
+        assert_eq!(Arch::Wasm32.pointer_size(), 4);
+        assert_eq!(Arch::Chip8.pointer_size(), 2);
+        assert_eq!(Arch::Mos6502.pointer_size(), 2);
     }
 
     #[test]
@@ -243,6 +343,8 @@ mod tests {
         assert!(Arch::Mips32LE.is_little_endian());
         assert!(!Arch::Ppc32.is_little_endian());
         assert!(Arch::Ppc64LE.is_little_endian());
+        assert!(Arch::Ebpf.is_little_endian());
+        assert!(Arch::Wasm32.is_little_endian());
     }
 
     #[test]
@@ -253,6 +355,30 @@ mod tests {
         assert!(Arch::Arm64.is_fixed_length());
         assert!(Arch::Mips32LE.is_fixed_length());
         assert!(Arch::RiscV32.is_fixed_length());
+        assert!(Arch::Ebpf.is_fixed_length());
+        assert!(!Arch::Wasm32.is_fixed_length());
+        assert!(Arch::Chip8.is_fixed_length());
+        assert!(!Arch::Mos6502.is_fixed_length());
+    }
+
+    #[test]
+    fn test_bytecode_detection() {
+        assert!(Arch::Ebpf.is_bytecode());
+        assert!(Arch::Wasm32.is_bytecode());
+        assert!(Arch::Dalvik.is_bytecode());
+        assert!(Arch::Chip8.is_bytecode());
+        assert!(!Arch::X86.is_bytecode());
+        assert!(!Arch::Avr.is_bytecode());
+    }
+
+    #[test]
+    fn test_embedded_detection() {
+        assert!(Arch::Avr.is_embedded());
+        assert!(Arch::Msp430.is_embedded());
+        assert!(Arch::Mos6502.is_embedded());
+        assert!(Arch::Chip8.is_embedded());
+        assert!(!Arch::X86.is_embedded());
+        assert!(!Arch::Ebpf.is_embedded());
     }
 
     #[test]
@@ -268,6 +394,16 @@ mod tests {
         assert_eq!(Arch::from_elf_machine(0x03), Some(Arch::X86));
         assert_eq!(Arch::from_elf_machine(0x3E), Some(Arch::X86_64));
         assert_eq!(Arch::from_elf_machine(0xB7), Some(Arch::Arm64));
+        assert_eq!(Arch::from_elf_machine(0xF7), Some(Arch::Ebpf));
+        assert_eq!(Arch::from_elf_machine(0x53), Some(Arch::Avr));
+        assert_eq!(Arch::from_elf_machine(0x69), Some(Arch::Msp430));
+    }
+
+    #[test]
+    fn test_wasm_magic_detection() {
+        assert_eq!(Arch::from_magic(b"\x00asm\x01\x00\x00\x00"), Some(Arch::Wasm32));
+        assert_eq!(Arch::from_magic(b"\x7fELF"), None);
+        assert_eq!(Arch::from_magic(b"MZ"), None);
     }
 
     #[test]
@@ -275,5 +411,41 @@ mod tests {
         assert_eq!(Arch::X86_64.display_name(), "x86-64 (AMD64)");
         assert_eq!(Arch::Arm64.display_name(), "AArch64");
         assert_eq!(Arch::RiscV64.display_name(), "RISC-V 64");
+        assert_eq!(Arch::Ebpf.display_name(), "eBPF");
+        assert_eq!(Arch::Wasm32.display_name(), "WebAssembly 32");
+        assert_eq!(Arch::Dalvik.display_name(), "Dalvik (Android)");
+        assert_eq!(Arch::Chip8.display_name(), "CHIP-8");
+        assert_eq!(Arch::Avr.display_name(), "AVR 8-bit");
+        assert_eq!(Arch::Msp430.display_name(), "MSP430 16-bit");
+        assert_eq!(Arch::Mos6502.display_name(), "MOS 6502");
+    }
+
+    #[test]
+    fn test_register_counts() {
+        assert_eq!(Arch::Ebpf.num_gpr(), 11);
+        assert_eq!(Arch::Wasm32.num_gpr(), 0); // stack-based
+        assert_eq!(Arch::Dalvik.num_gpr(), 16);
+        assert_eq!(Arch::Chip8.num_gpr(), 16);
+        assert_eq!(Arch::Avr.num_gpr(), 32);
+        assert_eq!(Arch::Msp430.num_gpr(), 16);
+        assert_eq!(Arch::Mos6502.num_gpr(), 6);
+    }
+
+    #[test]
+    fn test_has_lifter_matches_registry() {
+        // Thumb has a registry-backed lifter and must be reported as such.
+        assert!(Arch::Arm32Thumb.has_lifter());
+        assert!(Arch::Arm32.has_lifter());
+        assert!(Arch::Arm64.has_lifter());
+        assert!(!Arch::Arm64BE.has_lifter());
+        use crate::lifter::LifterRegistry;
+        assert!(LifterRegistry::get("arm32_thumb").is_some());
+        for key in LifterRegistry::supported_architectures() {
+            assert!(
+                LifterRegistry::get(key).is_some(),
+                "registry advertises {} but get() fails",
+                key
+            );
+        }
     }
 }

@@ -1,12 +1,17 @@
 //! Shellcode detection engine.
-//! Identifies raw shellcode blobs within binary data using multiple heuristics:
-//! - Instruction pattern matching (x86/x64)
-//! - Entropy analysis
-//! - API hash presence
-//! - Characteristic byte sequences
-//! - Encoder/decoder stub detection (XOR loops, alpha-mixed encoders)
-//! - Egg hunter patterns
-//! - Anti-analysis tricks in shellcode context
+//!
+//! Design goals:
+//! - High precision: a single weak heuristic (a high-entropy region, an INT3
+//!   padding block, a lone PEB/GetPC pattern) is NOT enough to flag a binary
+//!   as shellcode. Those occur constantly in legitimate compiled code (MSVC
+//!   padding, normal .text/.rsrc entropy, gs:[0x60] PEB access for module
+//!   enumeration, etc.).
+//! - Strong, specific signals (resolved API hashes, XOR decoder loops, egg
+//!   hunters, XOR-encoded blobs, FPU GetPC, long NOP sleds, alphanumeric
+//!   encoders) are emitted as findings.
+//! - Correlation: weak signals only matter when they co-occur, e.g. PEB/GetPC
+//!   (position-independent code) inside a genuinely random (entropy >= 7.0)
+//!   region.
 
 use crate::api_hashes;
 use crate::report::{ShellcodeFinding, ShellcodeReport, ShellcodeVerdict};
@@ -14,73 +19,79 @@ use crate::report::{ShellcodeFinding, ShellcodeReport, ShellcodeVerdict};
 /// Configuration for shellcode detection sensitivity.
 #[derive(Debug, Clone)]
 pub struct ShellcodeConfig {
-    /// Minimum blob size to consider as potential shellcode.
     pub min_blob_size: usize,
-    /// Maximum blob size to scan (prevents scanning entire large files).
     pub max_blob_size: usize,
-    /// Sliding window size for entropy-based detection.
     pub window_size: usize,
-    /// Step size for sliding window.
     pub window_step: usize,
-    /// Minimum entropy threshold for shellcode candidate regions.
     pub min_entropy: f64,
-    /// Minimum number of resolved API hashes to trigger detection.
     pub min_api_hashes: usize,
+    /// File-offset ranges (start, end) that belong to non-code sections
+    /// (e.g. `.rsrc`, `.data`, `.reloc`). High entropy there is normal
+    /// (icons, compressed resources, constants) and must NOT be treated as
+    /// packing/shellcode.
+    pub ignore_ranges: Vec<(usize, usize)>,
 }
 
 impl Default for ShellcodeConfig {
     fn default() -> Self {
         Self {
             min_blob_size: 32,
-            max_blob_size: 0x100000, // 1 MB
+            max_blob_size: 0x100000,
             window_size: 256,
             window_step: 64,
             min_entropy: 5.5,
             min_api_hashes: 2,
+            ignore_ranges: Vec::new(),
         }
     }
+}
+
+/// True if `off` lies within any of the configured ignore ranges.
+fn in_ignore(ranges: &[(usize, usize)], off: usize) -> bool {
+    ranges.iter().any(|(s, e)| off >= *s && off < *e)
+}
+
+/// Accumulates weak (non-conclusive) indicators during a scan. These only
+/// matter when several correlate, so they never produce lone noisy findings.
+#[derive(Default)]
+struct WeakSignals {
+    has_getpc: bool,
+    has_peb: bool,
+    has_int3_run: bool,
+    max_entropy: f64,
+    high_entropy_bytes: usize,
 }
 
 /// Detect shellcode in raw binary data.
 pub fn detect_shellcode(data: &[u8], config: &ShellcodeConfig) -> ShellcodeReport {
     let mut findings: Vec<ShellcodeFinding> = Vec::new();
+    let mut weak = WeakSignals::default();
 
-    // Phase 1: Scan for API hashes (strongest signal)
+    // Phase 1: Resolved API hashes (strongest signal; almost never in legit code).
     let api_hash_results = api_hashes::scan_for_api_hashes(data);
-    if api_hash_results.len() >= config.min_api_hashes {
+    let min_api_hashes = config.min_api_hashes.max(1);
+    if api_hash_results.len() >= min_api_hashes {
         let apis: Vec<String> = api_hash_results
             .iter()
             .map(|(off, resolved)| format!("{}!{} @ 0x{:X}", resolved.dll_name, resolved.function_name, off))
             .collect();
 
-        findings.push(ShellcodeFinding {
-            description: format!(
-                "Found {} resolved Windows API hashes (shellcode indicator)",
-                api_hash_results.len()
-            ),
-            evidence: apis,
-            offset: api_hash_results[0].0,
-            confidence: 0.9,
-        });
+        findings.push(ShellcodeFinding::new(
+            "SHELLCODE_API_HASHES",
+            format!("Found {} resolved Windows API hashes (shellcode indicator)", api_hash_results.len()),
+            apis,
+            api_hash_results[0].0,
+            0.9,
+        ));
     }
 
-    // Phase 2: Check for characteristic shellcode patterns
-    check_shellcode_patterns(data, &mut findings);
-
-    // Phase 3: Entropy-based region detection
-    check_entropy_regions(data, config, &mut findings);
-
-    // Phase 4: Check for common shellcode prologues/epilogues
-    check_prologue_epilogue(data, &mut findings);
-
-    // Phase 5: Encoder/decoder stub detection (NEW — handles obfuscated shellcode)
-    check_encoder_stubs(data, &mut findings);
-
-    // Phase 6: Egg hunter patterns (NEW — multi-stage shellcode indicator)
-    check_egg_hunters(data, &mut findings);
-
-    // Phase 7: XOR-encoded blob detection (NEW — detects encoded shellcode bodies)
-    check_encoded_blobs(data, &mut findings);
+    check_shellcode_patterns(data, &mut findings, &mut weak, config);
+    check_entropy_regions(data, config, &mut findings, &mut weak);
+    check_int3_padding(data, &mut weak);
+    check_encoder_stubs(data, &mut findings, &mut weak);
+    check_egg_hunters(data, &mut findings, &mut weak);
+    check_encoded_blobs(data, &mut findings, &mut weak, config);
+    correlate_weak(&mut findings, &weak);
 
     let verdict = if findings.is_empty() {
         ShellcodeVerdict::NoShellcode
@@ -102,10 +113,12 @@ pub fn detect_shellcode(data: &[u8], config: &ShellcodeConfig) -> ShellcodeRepor
 
 // ─── Pattern Detection ───────────────────────────────────────────────
 
-fn check_shellcode_patterns(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
-    // Common x86 shellcode patterns
-
-    // GetPC via call/pop or fnstenv
+fn check_shellcode_patterns(
+    data: &[u8],
+    findings: &mut Vec<ShellcodeFinding>,
+    weak: &mut WeakSignals,
+    config: &ShellcodeConfig,
+) {
     let getpc_patterns: &[(&[u8], &str)] = &[
         (&[0xE8, 0x00, 0x00, 0x00, 0x00, 0x58], "call $+5 / pop eax (GetPC)"),
         (&[0xE8, 0x00, 0x00, 0x00, 0x00, 0x5B], "call $+5 / pop ebx (GetPC)"),
@@ -116,19 +129,14 @@ fn check_shellcode_patterns(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
         (&[0xD9, 0xE0], "fnstenv (FPU GetPC)"),
         (&[0xEB, 0x00], "jmp $+2 (short jump NOP sled)"),
     ];
-
-    for (pattern, desc) in getpc_patterns {
-        if let Some(offset) = find_pattern(data, pattern) {
-            findings.push(ShellcodeFinding {
-                description: format!("Shellcode GetPC pattern: {}", desc),
-                evidence: vec![format!("pattern at offset 0x{:X}", offset)],
-                offset,
-                confidence: 0.6,
-            });
+    for (pattern, _desc) in getpc_patterns {
+        if let Some(off) = find_pattern(data, pattern) {
+            if !in_ignore(&config.ignore_ranges, off) {
+                weak.has_getpc = true;
+            }
         }
     }
 
-    // PEB access patterns (Windows shellcode hallmark)
     let peb_patterns: &[(&[u8], &str)] = &[
         (&[0x64, 0xA1, 0x30, 0x00, 0x00, 0x00], "mov eax, fs:[0x30] (PEB access x86)"),
         (&[0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0x00, 0x00, 0x00], "mov rax, gs:[0x60] (PEB access x64)"),
@@ -136,47 +144,33 @@ fn check_shellcode_patterns(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
         (&[0x64, 0x8B, 0x35], "mov esi, fs:[...] (TEB/PEB access)"),
         (&[0x33, 0xC0, 0x64, 0x8B], "xor eax,eax / mov eax,fs:[...] (x86 PEB)"),
     ];
-
-    for (pattern, desc) in peb_patterns {
-        if let Some(offset) = find_pattern(data, pattern) {
-            findings.push(ShellcodeFinding {
-                description: format!("PEB access pattern: {}", desc),
-                evidence: vec![format!("pattern at offset 0x{:X}", offset)],
-                offset,
-                confidence: 0.8,
-            });
+    for (pattern, _desc) in peb_patterns {
+        if let Some(off) = find_pattern(data, pattern) {
+            if !in_ignore(&config.ignore_ranges, off) {
+                weak.has_peb = true;
+            }
         }
     }
 
-    // API hash resolution loop patterns
-    // Typical: loop iterating over export table, computing hash
-    // Common: mov esi, [ebp+XX]  →  lodsd  →  hash computation →  cmp
     let hash_resolution: &[(&[u8], &str)] = &[
-        // Metasploit-style hash resolution: pushad/popad around the loop
         (&[0x60, 0x8B, 0x45, 0x3C], "pushad / mov eax, [ebp+0x3C] (PE header parsing)"),
         (&[0x60, 0x8B, 0x75, 0x7C], "pushad / mov esi, [ebp+0x7C] (export table access)"),
     ];
-
-    for (pattern, desc) in hash_resolution {
-        if let Some(offset) = find_pattern(data, pattern) {
-            findings.push(ShellcodeFinding {
-                description: format!("API hash resolution: {}", desc),
-                evidence: vec![format!("pattern at offset 0x{:X}", offset)],
-                offset,
-                confidence: 0.75,
-            });
+    for (pattern, _desc) in hash_resolution {
+        if let Some(off) = find_pattern(data, pattern) {
+            if !in_ignore(&config.ignore_ranges, off) {
+                weak.has_getpc = true;
+            }
         }
     }
 
-    // NOP sled detection (long sequences of 0x90 or equivalent)
     check_nop_sled(data, findings);
 }
 
 fn check_nop_sled(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
-    let min_sled_len = 16;
+    let min_sled_len = 32;
     let mut i = 0;
 
-    // Classic NOP sleds: 0x90 (NOP)
     while i < data.len() {
         if data[i] == 0x90 {
             let start = i;
@@ -185,29 +179,22 @@ fn check_nop_sled(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
             }
             let len = i - start;
             if len >= min_sled_len {
-                findings.push(ShellcodeFinding {
-                    description: format!("NOP sled detected ({} bytes)", len),
-                    evidence: vec![format!("offset 0x{:X}, length {}", start, len)],
-                    offset: start,
-                    confidence: 0.5,
-                });
+                findings.push(ShellcodeFinding::new(
+                    "SHELLCODE_NOP_SLED",
+                    format!("NOP sled detected ({} bytes)", len),
+                    vec![format!("offset 0x{:X}, length {}", start, len)],
+                    start,
+                    0.5,
+                ));
             }
         } else {
             i += 1;
         }
     }
 
-    // Multi-byte NOP-equivalent sleds (used to evade simple NOP sled detection)
-    // xchg eax,eax = 0x90 (same as NOP, already covered)
-    // mov eax,eax = 0x89 0xC0 or 0x8B 0xC0
-    // mov ebx,ebx = 0x89 0xDB or 0x8B 0xDB
     let nop_equivalents: &[[u8; 2]] = &[
-        [0x89, 0xC0], // mov eax,eax
-        [0x89, 0xDB], // mov ebx,ebx
-        [0x89, 0xC9], // mov ecx,ecx
-        [0x89, 0xD2], // mov edx,edx
-        [0x89, 0xF6], // mov esi,esi
-        [0x89, 0xFF], // mov edi,edi
+        [0x89, 0xC0], [0x89, 0xDB], [0x89, 0xC9],
+        [0x89, 0xD2], [0x89, 0xF6], [0x89, 0xFF],
     ];
 
     for equiv in nop_equivalents {
@@ -220,16 +207,14 @@ fn check_nop_sled(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
                     i += 2;
                     count += 1;
                 }
-                if count >= 8 { // 8 repetitions = 16 bytes
-                    findings.push(ShellcodeFinding {
-                        description: format!(
-                            "Multi-byte NOP sled detected ({} repetitions of 0x{:02X}{:02X})",
-                            count, equiv[0], equiv[1]
-                        ),
-                        evidence: vec![format!("offset 0x{:X}, {} bytes", start, count * 2)],
-                        offset: start,
-                        confidence: 0.45,
-                    });
+                if count >= 8 {
+                    findings.push(ShellcodeFinding::new(
+                        "SHELLCODE_NOP_SLED",
+                        format!("Multi-byte NOP sled detected ({} repetitions of 0x{:02X}{:02X})", count, equiv[0], equiv[1]),
+                        vec![format!("offset 0x{:X}, {} bytes", start, count * 2)],
+                        start,
+                        0.45,
+                    ));
                 }
             } else {
                 i += 1;
@@ -238,124 +223,96 @@ fn check_nop_sled(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
     }
 }
 
-fn check_prologue_epilogue(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
-    // Check for int3 padding (0xCC) which suggests debug/breakpoint artifacts
+/// Records INT3 padding runs (a normal MSVC artifact) as a weak signal only.
+fn check_int3_padding(data: &[u8], weak: &mut WeakSignals) {
     let mut cc_count = 0;
-    let mut cc_start = None;
-    for (i, &byte) in data.iter().enumerate() {
+    for &byte in data {
         if byte == 0xCC {
-            if cc_start.is_none() {
-                cc_start = Some(i);
-            }
             cc_count += 1;
         } else {
             if cc_count >= 8 {
-                if let Some(start) = cc_start {
-                    findings.push(ShellcodeFinding {
-                        description: format!("INT3 padding block ({} bytes)", cc_count),
-                        evidence: vec![format!("offset 0x{:X}", start)],
-                        offset: start,
-                        confidence: 0.3,
-                    });
-                }
+                weak.has_int3_run = true;
             }
             cc_count = 0;
-            cc_start = None;
         }
+    }
+    if cc_count >= 8 {
+        weak.has_int3_run = true;
     }
 }
 
 // ─── Encoder/Decoder Stub Detection ───────────────────────────────────
 
-/// Detect common shellcode encoder/decoder stubs.
-/// These are small loops that decode an encoded payload at runtime,
-/// commonly used by Metasploit, Cobalt Strike, and custom encoders.
-fn check_encoder_stubs(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
+fn check_encoder_stubs(
+    data: &[u8],
+    findings: &mut Vec<ShellcodeFinding>,
+    _weak: &mut WeakSignals,
+) {
     if data.len() < 20 {
         return;
     }
 
-    // ─── XOR-based decoder loops ─────────────────────────────
-    // Pattern: XOR [reg], imm8 / inc reg / cmp reg, end / jne loop
-    // Common in Shikata Ga Nai and similar polymorphic encoders.
-    //
-    // Byte patterns for XOR decoder stubs:
-    //   80 30 XX    — xor byte [eax], XX
-    //   80 31 XX    — xor byte [ecx], XX
-    //   80 33 XX    — xor byte [ebx], XX
-    //   80 34 XX XX — xor byte [si+XX], XX  (with SIB)
-    //   80 35 XX..  — xor byte [imm32], XX  (direct address)
-    //
-    // Full stub: setup + XOR loop + counter
-
-    let _xor_decoder_patterns: &[(u8, &str)] = &[
-        (0x30, "xor [eax], imm8 (XOR decoder stub)"),
-        (0x31, "xor [ecx], imm8 (XOR decoder stub)"),
-        (0x32, "xor [edx], imm8 (XOR decoder stub)"),
-        (0x33, "xor [ebx], imm8 (XOR decoder stub)"),
-        (0x34, "xor [esp], imm8 (XOR decoder stub)"),
-        (0x35, "xor [ebp], imm8 (XOR decoder stub)"),
-        (0x36, "xor [esi], imm8 (XOR decoder stub)"),
-        (0x37, "xor [edi], imm8 (XOR decoder stub)"),
-    ];
-
+    // XOR-based decoder loops.
     for i in 0..data.len().saturating_sub(8) {
-        // Check for: 0x80 (group 1, 8-bit operand), ModRM with 00 (indirect), opcode extension 110 (XOR)
-        // ModRM: 00 rr r 000 where rr is register → 0x00, 0x08, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38
-        // But actually: 80 XX YY where XX is ModRM byte
-        // ModRM for [reg] indirect: bits 7-6 = 00, bits 5-3 = opcode extension, bits 2-0 = reg
-        // XOR has opcode extension 110 in the ModRM, so bits 5-3 = 110
-        // So ModRM byte = 00 110 rrr = 0x30 | reg
         if data[i] == 0x80 {
             let modrm = data[i + 1];
             let mod_field = (modrm >> 6) & 0x03;
             let reg_field = (modrm >> 3) & 0x07;
+            let rm_field = modrm & 0x07;
 
-            // mod=00 (indirect), reg=110 (XOR)
             if mod_field == 0 && reg_field == 6 {
-                let xor_key = data[i + 2];
-                // Only flag if the XOR key is non-zero and non-trivial
-                if xor_key != 0 && xor_key != 0xFF {
-                    // Check if this is near a loop (look for conditional jumps nearby)
-                    let has_loop = (i > 0 && is_short_jump_back(data[i - 1]))
-                        || (i + 3 < data.len() && has_loop_after(&data[i + 3..]));
+                // Locate the imm8 operand. For mod=00 the ModR/M byte is
+                // followed by: disp32 when rm=101, or a SIB byte when rm=100
+                // (whose base=101 adds another disp32) before the imm8.
+                let mut op = i + 2;
+                if rm_field == 5 {
+                    op += 4;
+                } else if rm_field == 4 && op < data.len() {
+                    let sib_base = data[op] & 0x07;
+                    op += 1;
+                    if sib_base == 5 {
+                        op += 4;
+                    }
+                }
 
-                    if has_loop {
-                        let reg_idx = modrm & 0x07;
-                        let reg_name = match reg_idx {
-                            0 => "eax", 1 => "ecx", 2 => "edx", 3 => "ebx",
-                            4 => "esp", 5 => "ebp", 6 => "esi", 7 => "edi",
-                            _ => "?",
-                        };
-                        findings.push(ShellcodeFinding {
-                            description: format!(
-                                "XOR decoder stub: xor [{}], 0x{:02X} (encoder detected)",
-                                reg_name, xor_key
-                            ),
-                            evidence: vec![
-                                format!("decoder at offset 0x{:X}", i),
-                                format!("XOR key: 0x{:02X}", xor_key),
-                            ],
-                            offset: i,
-                            confidence: 0.75,
-                        });
-                        // Don't flood findings — one per region is enough
-                        break;
+                if op < data.len() {
+                    let xor_key = data[op];
+                    if xor_key != 0 && xor_key != 0xFF {
+                        // A lone `xor [reg], imm8` is extremely common in normal
+                        // code (buffer zeroing, obfuscation). A real XOR *decoder*
+                        // is a tight loop: the pointer register is advanced (inc /
+                        // add / lods) and control loops back. Require that loop
+                        // structure so we don't flag coincidental byte patterns.
+                        let has_loop = (i > 0 && is_short_jump_back(data[i - 1]))
+                            || is_xor_decoder_loop(data, op + 1, modrm & 0x07);
+
+                        if has_loop {
+                            let reg_idx = modrm & 0x07;
+                            let reg_name = match reg_idx {
+                                0 => "eax", 1 => "ecx", 2 => "edx", 3 => "ebx",
+                                4 => "esp", 5 => "ebp", 6 => "esi", 7 => "edi",
+                                _ => "?",
+                            };
+                            findings.push(ShellcodeFinding::new(
+                                "SHELLCODE_XOR_DECODER",
+                                format!("XOR decoder stub: xor [{}], 0x{:02X} (encoder detected)", reg_name, xor_key),
+                                vec![
+                                    format!("decoder at offset 0x{:X}", i),
+                                    format!("XOR key: 0x{:02X}", xor_key),
+                                ],
+                                i,
+                                0.75,
+                            ));
+                            break;
+                        }
                     }
                 }
             }
         }
     }
 
-    // ─── Alpha-mixed / alphanumeric encoder stubs ──────────
-    // These use only ASCII alphanumeric bytes to evade content filters.
-    // Common pattern: sequence of bytes all in [0x30-0x39, 0x41-0x5A, 0x61-0x7A]
-    // for 30+ bytes is highly suspicious in a binary.
     check_alphanumeric_shellcode(data, findings);
 
-    // ─── FPU-based GetPC techniques ─────────────────────────
-    // fnstenv stores FPU state, and the instruction pointer is saved at offset 12.
-    // Pattern: fldz / fnstenv [esp-12] / pop ecx
     let fpu_getpc: &[(&[u8], &str)] = &[
         (&[0xD9, 0xEE, 0xD9, 0x74, 0x24, 0xF4], "fldz / fnstenv [esp-0xC] (FPU GetPC)"),
         (&[0xD9, 0xE1, 0xD9, 0x74, 0x24, 0xF4], "fldpi / fnstenv [esp-0xC] (FPU GetPC)"),
@@ -363,94 +320,96 @@ fn check_encoder_stubs(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
         (&[0xD9, 0xE8, 0xD9, 0x74, 0x24, 0xF4], "fucomip / fnstenv [esp-0xC] (FPU GetPC)"),
     ];
 
-    for (pattern, desc) in fpu_getpc {
+    for (pattern, _desc) in fpu_getpc {
         if let Some(offset) = find_pattern(data, pattern) {
-            findings.push(ShellcodeFinding {
-                description: format!("FPU GetPC technique: {}", desc),
-                evidence: vec![format!("offset 0x{:X}", offset)],
+            findings.push(ShellcodeFinding::new(
+                "SHELLCODE_FPU_GETPC",
+                format!("FPU GetPC technique: {}", _desc),
+                vec![format!("offset 0x{:X}", offset)],
                 offset,
-                confidence: 0.85,
-            });
+                0.85,
+            ));
         }
     }
 
-    // ─── Call $+N / pop (non-standard offsets) ──────────────
-    // call $+5 / pop is the most common, but malware uses other offsets to evade
     for i in 0..data.len().saturating_sub(7) {
         if data[i] == 0xE8 {
             let offset_bytes = i32::from_le_bytes([data[i + 1], data[i + 2], data[i + 3], data[i + 4]]);
-            let _call_size = 5i32;
-            // call target = (i + 5) + offset_bytes
-            // We want: call target == i + 5 + offset_bytes, which lands somewhere after the call
-            // Pop should follow the call target
             let target_rel = offset_bytes;
-            // If offset is small and positive (0..16), the call lands nearby
-            // and the next instruction at that offset should be a pop
-            if target_rel >= 0 && target_rel < 16 {
+            if (0..16).contains(&target_rel) {
                 let pop_offset = (5 + target_rel) as usize;
                 if i + pop_offset < data.len() {
                     let next_byte = data[i + pop_offset];
-                    // pop eax=0x58, ecx=0x59, edx=0x5A, ebx=0x5B, esi=0x5E, edi=0x5F
-                    if (0x58..=0x5F).contains(&next_byte) && next_byte != 0x5C && next_byte != 0x5D {
-                        if target_rel != 0 { // Skip call $+5 (already detected above)
+                    if (0x58..=0x5F).contains(&next_byte) && next_byte != 0x5C && next_byte != 0x5D
+                        && target_rel != 0 {
                             let reg = match next_byte {
                                 0x58 => "eax", 0x59 => "ecx", 0x5A => "edx",
                                 0x5B => "ebx", 0x5E => "esi", 0x5F => "edi",
                                 _ => "?",
                             };
-                            findings.push(ShellcodeFinding {
-                                description: format!(
-                                    "call $+{} / pop {} (non-standard GetPC)",
-                                    target_rel + 5, reg
-                                ),
-                                evidence: vec![format!("offset 0x{:X}", i)],
-                                offset: i,
-                                confidence: 0.7,
-                            });
+                            findings.push(ShellcodeFinding::new(
+                                "SHELLCODE_GETPC",
+                                format!("call $+{} / pop {} (non-standard GetPC)", target_rel + 5, reg),
+                                vec![format!("offset 0x{:X}", i)],
+                                i,
+                                0.7,
+                            ));
                         }
-                    }
                 }
             }
         }
     }
 }
 
-/// Check if a byte is a short backward jump (used to detect loop patterns).
 fn is_short_jump_back(byte: u8) -> bool {
-    // jne/jnz short: 0x75 XX where XX < 0x80 (backward)
-    // jmp short: 0xEB XX where XX < 0x80 (backward)
-    // je/jz short: 0x74 XX
-    // But we just check the byte before our pattern — this is called with data[i-1]
-    // so we check if the PREVIOUS byte could be a backward jump offset
-    // Actually we check if the byte IS a conditional jump opcode that precedes our pattern
     byte == 0x75 || byte == 0x74 || byte == 0xEB || byte == 0x7C || byte == 0x7E
 }
 
-/// Check if there's a backward conditional jump after a given slice.
-fn has_loop_after(data: &[u8]) -> bool {
-    // Check first 8 bytes for a backward short jump
-    for i in 0..data.len().min(8) {
-        match data[i] {
-            0x74 | 0x75 | 0x7C | 0x7D | 0x7E | 0x7F | 0xEB => {
-                // Next byte should be a negative offset (backward jump)
-                if i + 1 < data.len() {
-                    let offset = data[i + 1] as i8;
-                    if offset < 0 {
-                        return true;
-                    }
-                }
-            }
-            _ => {}
+/// Returns true when the bytes following a `xor r/m8, imm8` instruction form a
+/// real decode loop: the pointer register is advanced (inc / add / lods / stos)
+/// and control branches backward (short/conditional jump or LOOP). `search_start`
+/// is the offset just past the whole instruction (opcode + ModR/M + any
+/// disp32/SIB + imm8).
+fn is_xor_decoder_loop(data: &[u8], search_start: usize, reg: u8) -> bool {
+    let end = (search_start + 16).min(data.len());
+    let mut advanced = false;
+    let mut back_jump = false;
+    let mut j = search_start;
+    while j < end {
+        let b = data[j];
+        // inc reg32
+        if b == 0x40 | reg
+            // add reg32, imm8 / imm32  (0x83/0x81, /0)
+            || ((b == 0x83 || b == 0x81)
+                && j + 1 < data.len()
+                && (data[j + 1] & 0x38) == (reg << 3))
+            // lods (advances esi) / stos (advances edi)
+            || (reg == 6 && (b == 0xAC || b == 0xAD))
+            || (reg == 7 && (b == 0xAA || b == 0xAB))
+        {
+            advanced = true;
         }
+        // backward short/conditional jump or LOOP
+        if (0x70..=0x7F).contains(&b) || b == 0xEB {
+            if j + 1 < data.len() && (data[j + 1] as i8) < 0 {
+                back_jump = true;
+            }
+        } else if (0xE0..=0xE3).contains(&b) {
+            back_jump = true;
+        }
+        if advanced && back_jump {
+            return true;
+        }
+        j += 1;
     }
     false
 }
 
 /// Detect alphanumeric (alpha-mixed) encoded shellcode.
-/// These encoders produce output using only [0-9A-Za-z] bytes.
-/// A 32+ byte run of purely alphanumeric bytes in a binary blob is very suspicious.
+/// A 64+ byte run of purely alphanumeric bytes is very suspicious (legitimate
+/// strings almost always contain non-alphanumeric characters such as : / . = +).
 fn check_alphanumeric_shellcode(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
-    let min_run = 32;
+    let min_run = 64;
     let mut run_start: Option<usize> = None;
     let mut run_len = 0;
 
@@ -464,15 +423,13 @@ fn check_alphanumeric_shellcode(data: &[u8], findings: &mut Vec<ShellcodeFinding
         } else {
             if run_len >= min_run {
                 if let Some(start) = run_start {
-                    findings.push(ShellcodeFinding {
-                        description: format!(
-                            "Alphanumeric-encoded shellcode region ({} bytes)",
-                            run_len
-                        ),
-                        evidence: vec![format!("offset 0x{:X}, length {}", start, run_len)],
-                        offset: start,
-                        confidence: 0.6,
-                    });
+                    findings.push(ShellcodeFinding::new(
+                        "SHELLCODE_ALPHANUMERIC",
+                        format!("Alphanumeric-encoded shellcode region ({} bytes)", run_len),
+                        vec![format!("offset 0x{:X}, length {}", start, run_len)],
+                        start,
+                        0.6,
+                    ));
                 }
             }
             run_start = None;
@@ -480,186 +437,180 @@ fn check_alphanumeric_shellcode(data: &[u8], findings: &mut Vec<ShellcodeFinding
         }
     }
 
-    // Flush last run
     if run_len >= min_run {
         if let Some(start) = run_start {
-            findings.push(ShellcodeFinding {
-                description: format!(
-                    "Alphanumeric-encoded shellcode region ({} bytes)",
-                    run_len
-                ),
-                evidence: vec![format!("offset 0x{:X}, length {}", start, run_len)],
-                offset: start,
-                confidence: 0.6,
-            });
+            findings.push(ShellcodeFinding::new(
+                "SHELLCODE_ALPHANUMERIC",
+                format!("Alphanumeric-encoded shellcode region ({} bytes)", run_len),
+                vec![format!("offset 0x{:X}, length {}", start, run_len)],
+                start,
+                0.6,
+            ));
         }
     }
 }
 
 // ─── Egg Hunter Detection ─────────────────────────────────────────────
 
-/// Detect egg hunter patterns.
-/// Egg hunters are tiny shellcode stubs (typically 32 bytes) that search
-/// memory for a specific 4-byte "egg" tag to locate the main shellcode body.
-fn check_egg_hunters(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
-    // Classic Windows egg hunter patterns:
-    // Uses NtAccessCheckAndAuditAlarm (syscall 0x0C) or
-    // IsBadReadPtr / VirtualQuery to validate memory before checking for the egg.
-
-    // Common egg hunter prologue:
-    // 66 81 CB xx xx  — or bx, xxxx (page alignment)
-    // 43              — inc ebx
-    // 53              — push ebx
-    // 6A 02           — push 2
-    // 58              — pop eax
-    // CD 2E           — int 0x2E (syscall gate)
-    // 3C 05           — cmp al, 5 (check for ACCESS_VIOLATION)
-    // 5A              — pop edx
-    // 74 EF           — jz back to page alignment
-
+fn check_egg_hunters(
+    data: &[u8],
+    findings: &mut Vec<ShellcodeFinding>,
+    _weak: &mut WeakSignals,
+) {
     let egg_patterns: &[(&[u8], &str)] = &[
-        // NtAccessCheckAndAuditAlarm egg hunter (Skape)
-        (
-            &[0x66, 0x81, 0xCA, 0xFF, 0x0F, 0x42, 0x52],
-            "or dx, 0x0FFF / inc edx / push edx (egg hunter page alignment)",
-        ),
-        // int 0x2e syscall-based egg hunter
-        (
-            &[0x6A, 0x02, 0x58, 0xCD, 0x2E, 0x3C, 0x05],
-            "push 2 / pop eax / int 0x2E / cmp al, 5 (egg hunter syscall)",
-        ),
-        // NtDisplayString egg hunter
-        (
-            &[0x6A, 0x43, 0x58, 0xCD, 0x2E],
-            "push 0x43 / pop eax / int 0x2E (NtDisplayString egg hunter)",
-        ),
+        (&[0x66, 0x81, 0xCA, 0xFF, 0x0F, 0x42, 0x52], "or dx, 0x0FFF / inc edx / push edx (egg hunter page alignment)"),
+        (&[0x6A, 0x02, 0x58, 0xCD, 0x2E, 0x3C, 0x05], "push 2 / pop eax / int 0x2E / cmp al, 5 (egg hunter syscall)"),
+        (&[0x6A, 0x43, 0x58, 0xCD, 0x2E], "push 0x43 / pop eax / int 0x2E (NtDisplayString egg hunter)"),
     ];
 
-    for (pattern, desc) in egg_patterns {
+    for (pattern, _desc) in egg_patterns {
         if let Some(offset) = find_pattern(data, pattern) {
-            findings.push(ShellcodeFinding {
-                description: format!("Egg hunter pattern: {}", desc),
-                evidence: vec![format!("offset 0x{:X}", offset)],
+            findings.push(ShellcodeFinding::new(
+                "SHELLCODE_EGG_HUNTER",
+                format!("Egg hunter pattern: {}", _desc),
+                vec![format!("offset 0x{:X}", offset)],
                 offset,
-                confidence: 0.85,
-            });
+                0.85,
+            ));
         }
     }
 
-    // Generic egg hunter: look for the characteristic 4-byte egg tag comparison
-    // Pattern: cmp dword [reg], EGG_TAG / jne loop
-    // The egg tag is typically a 4-byte value like 0x50905090 ("push eax / nop / push eax / nop")
     for i in 0..data.len().saturating_sub(8) {
-        // cmp [ebx], imm32 = 81 3B XX XX XX XX
-        // cmp [ecx], imm32 = 81 39 XX XX XX XX
-        // cmp [edx], imm32 = 81 3A XX XX XX XX
         if data[i] == 0x81 {
             let modrm = data[i + 1];
             let mod_field = (modrm >> 6) & 0x03;
             let reg_field = (modrm >> 3) & 0x07;
-            // mod=00, reg=111 (CMP), r/m=any
-            if mod_field == 0 && reg_field == 7 {
-                // This is a cmp [reg], imm32 instruction
-                if i + 6 < data.len() {
+            if mod_field == 0 && reg_field == 7
+                && i + 6 < data.len() {
                     let egg = u32::from_le_bytes([data[i + 2], data[i + 3], data[i + 4], data[i + 5]]);
-                    // Check if the egg value looks like a valid egg tag (not a normal pointer)
-                    // Egg tags are usually carefully chosen values like:
-                    //   0x50905090, 0x6A5B6A5B, etc. — repeated 2-byte patterns
                     let low_word = (egg & 0xFFFF) as u16;
                     let high_word = ((egg >> 16) & 0xFFFF) as u16;
-                    if low_word == high_word && low_word != 0 && low_word != 0xFFFF {
-                        // Check for backward jump after this comparison
-                        if i + 6 < data.len() {
+                    if low_word == high_word && low_word != 0 && low_word != 0xFFFF
+                        && i + 6 < data.len() {
                             let next = data[i + 6];
                             if next == 0x75 || next == 0x74 || next == 0xEB {
-                                findings.push(ShellcodeFinding {
-                                    description: format!(
-                                        "Egg hunter: cmp [reg], 0x{:08X} (egg tag search)",
-                                        egg
-                                    ),
-                                    evidence: vec![
+                                findings.push(ShellcodeFinding::new(
+                                    "SHELLCODE_EGG_HUNTER",
+                                    format!("Egg hunter: cmp [reg], 0x{:08X} (egg tag search)", egg),
+                                    vec![
                                         format!("offset 0x{:X}", i),
                                         format!("egg tag: 0x{:08X}", egg),
                                     ],
-                                    offset: i,
-                                    confidence: 0.7,
-                                });
-                                break; // One per region is enough
+                                    i,
+                                    0.7,
+                                ));
+                                break;
                             }
                         }
-                    }
                 }
-            }
         }
     }
 }
 
 // ─── Encoded Blob Detection ───────────────────────────────────────────
 
-/// Detect XOR-encoded or ADD/SUB-encoded shellcode bodies.
-/// Strategy: try XOR-ing the data with each possible single-byte key (0x01..0xFF)
-/// and check if the result has significantly lower entropy or contains
-/// recognizable shellcode patterns.
-fn check_encoded_blobs(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
+fn check_encoded_blobs(
+    data: &[u8],
+    findings: &mut Vec<ShellcodeFinding>,
+    _weak: &mut WeakSignals,
+    config: &ShellcodeConfig,
+) {
     if data.len() < 64 {
         return;
     }
 
-    // Respect max_blob_size from config to prevent DoS on large files.
-    // Use a reasonable default if called without config context.
-    let max_scan_size: usize = 0x100000; // 1 MB default
+    let max_scan_size: usize = config.max_blob_size;
     let scan_data = if data.len() > max_scan_size {
         &data[..max_scan_size]
     } else {
         data
     };
 
-    // Only scan high-entropy regions (encoded shellcode has high entropy)
     let window = 128;
     let step = 64;
     let mut offset = 0;
 
+    // A single-byte XOR is a permutation of the byte alphabet, so it preserves
+    // Shannon entropy exactly — an "encoded high entropy dropping after decode"
+    // check can never fire. Instead we brute-force every key and look for a
+    // *decoded* region that contains a strong shellcode indicator: the classic
+    // PEB/`fs` access preamble, an FPU/relative GetPC, or a cluster of resolved
+    // API-hash DWORDs. Such a pattern appearing after a single-byte XOR is the
+    // real signature of XOR-staged shellcode.
+    let mut buf = vec![0u8; window];
+
+    // Budget: brute-forcing 255 keys per window is expensive; cap the number
+    // of windows that undergo the full decode sweep so multi-MB inputs stay
+    // bounded (64 windows * 255 keys * 128 bytes ≈ 2M byte ops max).
+    let max_bruteforce_windows = 64usize;
+    let mut bruteforced_windows = 0usize;
+
     while offset + window <= scan_data.len() {
+        if in_ignore(&config.ignore_ranges, offset) {
+            offset += step;
+            continue;
+        }
+        if bruteforced_windows >= max_bruteforce_windows {
+            break;
+        }
+        bruteforced_windows += 1;
+
         let region = &scan_data[offset..offset + window];
-        let entropy_result = entropy_rs::calculate_entropy(region);
 
-        // Only check regions with entropy > 6.5 (likely encoded/encrypted)
-        if entropy_result.entropy > 6.5 {
-            // Try XOR decoding with common keys
-            for key in 0x01u8..=0xFFu8 {
-                let decoded: Vec<u8> = region.iter().map(|b| b ^ key).collect();
-                let decoded_entropy = entropy_rs::calculate_entropy(&decoded).entropy;
+        let mut found_key: Option<u8> = None;
+        let mut decoded_hits: Vec<String> = Vec::new();
 
-                // If XOR decoding significantly reduces entropy, it was likely encoded
-                if decoded_entropy < entropy_result.entropy - 2.0 && decoded_entropy < 5.5 {
-                    // Check for shellcode patterns in decoded data
-                    let has_peb = decoded.windows(6).any(|w| {
-                        w == &[0x64, 0xA1, 0x30, 0x00, 0x00, 0x00]
-                    });
-                    let has_getpc = decoded.windows(5).any(|w| {
-                        w[0] == 0xE8 && w[1] == 0x00 && w[2] == 0x00 && w[3] == 0x00 && w[4] == 0x00
-                    });
-
-                    if has_peb || has_getpc {
-                        findings.push(ShellcodeFinding {
-                            description: format!(
-                                "XOR-encoded shellcode detected (key=0x{:02X})",
-                                key
-                            ),
-                            evidence: vec![
-                                format!("encoded region at offset 0x{:X}", offset),
-                                format!("XOR key: 0x{:02X}", key),
-                                format!("encoded entropy: {:.2} → decoded entropy: {:.2}", entropy_result.entropy, decoded_entropy),
-                            ],
-                            offset,
-                            confidence: 0.9,
-                        });
-                        // Skip this region — we found the encoding
-                        offset += window;
-                        continue;
-                    }
-                }
+        for key in 0x01u8..=0xFFu8 {
+            for (i, b) in region.iter().enumerate() {
+                buf[i] = b ^ key;
             }
+
+            let has_peb = buf.windows(6).any(|w| w == [0x64, 0xA1, 0x30, 0x00, 0x00, 0x00]);
+            let has_gs = buf.windows(4).any(|w| w == [0x65, 0x33, 0x00, 0x00]);
+            let has_fpu_getpc = buf.windows(6).any(|w| w == [0xD9, 0xEE, 0xD9, 0x74, 0x24, 0xF4]);
+            let has_getpc = buf.windows(5).any(|w| w[0] == 0xE8 && w[1] == 0x00 && w[2] == 0x00 && w[3] == 0x00 && w[4] == 0x00);
+            // The full API-hash DB scan is expensive; only run it when a cheap
+            // preamble already matched, otherwise a 255-key brute force over a
+            // large binary would scan the entire DB on every window/key.
+            let api_hashes_found = if has_peb || has_gs || has_fpu_getpc || has_getpc {
+                api_hashes::scan_for_api_hashes(&buf).len()
+            } else {
+                0
+            };
+
+            let mut reasons = Vec::new();
+            if has_peb { reasons.push("PEB/fs access preamble".to_string()); }
+            if has_gs { reasons.push("gs segment access".to_string()); }
+            if has_fpu_getpc { reasons.push("FPU GetPC".to_string()); }
+            if has_getpc { reasons.push("E8 call GetPC".to_string()); }
+            if api_hashes_found >= 2 {
+                reasons.push(format!("{} resolved API hashes", api_hashes_found));
+            }
+
+            if !reasons.is_empty() {
+                found_key = Some(key);
+                decoded_hits = reasons;
+                break;
+            }
+        }
+
+        if let Some(key) = found_key {
+            findings.push(ShellcodeFinding::new(
+                "SHELLCODE_XOR_ENCODED",
+                format!("XOR-encoded shellcode detected (key=0x{:02X})", key),
+                {
+                    let mut v = vec![
+                        format!("encoded region at offset 0x{:X}", offset),
+                        format!("XOR key: 0x{:02X}", key),
+                    ];
+                    v.extend(decoded_hits.iter().cloned());
+                    v
+                },
+                offset,
+                0.9,
+            ));
+            offset += window;
+            continue;
         }
 
         offset += step;
@@ -668,29 +619,52 @@ fn check_encoded_blobs(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
 
 // ─── Entropy Region Detection ────────────────────────────────────────
 
-fn check_entropy_regions(data: &[u8], config: &ShellcodeConfig, findings: &mut Vec<ShellcodeFinding>) {
+/// Records entropy statistics in `weak`. A single low-severity finding is
+/// emitted only for genuinely random regions (entropy >= 7.0), i.e. packing or
+/// encryption, which never occurs in normal compiled code or resources.
+fn check_entropy_regions(
+    data: &[u8],
+    config: &ShellcodeConfig,
+    findings: &mut Vec<ShellcodeFinding>,
+    weak: &mut WeakSignals,
+) {
     if data.len() < config.window_size {
         return;
     }
 
-    let mut high_entropy_runs = Vec::new();
     let mut current_run_start: Option<usize> = None;
     let mut current_run_len = 0usize;
-
+    let mut last_run_start = 0usize;
     let mut offset = 0;
+
     while offset + config.window_size <= data.len() {
+        // Skip windows that fall inside non-code sections (resources, data).
+        if in_ignore(&config.ignore_ranges, offset) {
+            if let Some(_start) = current_run_start {
+                if current_run_len >= config.min_blob_size {
+                    weak.high_entropy_bytes += current_run_len;
+                }
+            }
+            current_run_start = None;
+            current_run_len = 0;
+            offset += config.window_step;
+            continue;
+        }
+
         let window = &data[offset..offset + config.window_size];
         let entropy_result = entropy_rs::calculate_entropy(window);
 
         if entropy_result.entropy >= config.min_entropy {
+            weak.max_entropy = weak.max_entropy.max(entropy_result.entropy);
             if current_run_start.is_none() {
                 current_run_start = Some(offset);
+                last_run_start = offset;
             }
             current_run_len += config.window_step;
         } else {
-            if let Some(start) = current_run_start {
+            if let Some(_start) = current_run_start {
                 if current_run_len >= config.min_blob_size {
-                    high_entropy_runs.push((start, current_run_len));
+                    weak.high_entropy_bytes += current_run_len;
                 }
             }
             current_run_start = None;
@@ -700,23 +674,54 @@ fn check_entropy_regions(data: &[u8], config: &ShellcodeConfig, findings: &mut V
         offset += config.window_step;
     }
 
-    // Flush last run
-    if let Some(start) = current_run_start {
+    if let Some(_start) = current_run_start {
         if current_run_len >= config.min_blob_size {
-            high_entropy_runs.push((start, current_run_len));
+            weak.high_entropy_bytes += current_run_len;
         }
     }
 
-    for (start, len) in high_entropy_runs {
-        findings.push(ShellcodeFinding {
-            description: format!(
-                "High-entropy region ({} bytes at 0x{:X}) consistent with shellcode/encrypted payload",
-                len, start
+    if weak.max_entropy >= 7.0 && weak.high_entropy_bytes >= 512 {
+        findings.push(ShellcodeFinding::new(
+            "SHELLCODE_HIGH_ENTROPY",
+            format!(
+                "High-entropy region (max entropy {:.2}, ~{} bytes) consistent with packing/encryption",
+                weak.max_entropy, weak.high_entropy_bytes
             ),
-            evidence: vec![format!("offset=0x{:X} size={}", start, len)],
-            offset: start,
-            confidence: 0.4,
-        });
+            vec![format!("offset=0x{:X} size={}", last_run_start, weak.high_entropy_bytes)],
+            last_run_start,
+            0.4,
+        ));
+    }
+}
+
+// ─── Weak-signal correlation ──────────────────────────────────────────
+
+/// Emits at most ONE finding when weak indicators correlate into something that
+/// looks like position-independent shellcode: PEB/GetPC access inside a
+/// genuinely random (entropy >= 7.0) region.
+fn correlate_weak(findings: &mut Vec<ShellcodeFinding>, weak: &WeakSignals) {
+    if weak.max_entropy >= 7.0 && (weak.has_getpc || weak.has_peb) {
+        let mut indicators = Vec::new();
+        if weak.has_getpc {
+            indicators.push("GetPC pattern");
+        }
+        if weak.has_peb {
+            indicators.push("PEB access");
+        }
+        if weak.has_int3_run {
+            indicators.push("INT3 padding");
+        }
+        findings.push(ShellcodeFinding::new(
+            "SHELLCODE_PIC_HIGH_ENTROPY",
+            format!(
+                "Position-independent code ({}) inside high-entropy region (entropy {:.2}) - possible shellcode bootstrap",
+                indicators.join(", "),
+                weak.max_entropy
+            ),
+            vec![format!("max entropy: {:.2}", weak.max_entropy)],
+            0,
+            0.55,
+        ));
     }
 }
 
@@ -734,9 +739,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_detect_peb_access() {
+    fn test_peb_access_not_false_positive() {
         let mut data = vec![0u8; 128];
-        // Insert x86 PEB access pattern at offset 32
         data[32] = 0x64;
         data[33] = 0xA1;
         data[34] = 0x30;
@@ -746,13 +750,34 @@ mod tests {
 
         let config = ShellcodeConfig::default();
         let report = detect_shellcode(&data, &config);
-        assert!(!report.findings.is_empty());
-        assert!(report.findings.iter().any(|f| f.description.contains("PEB")));
+        assert!(
+            !report.findings.iter().any(|f| f.description.contains("PEB")),
+            "Lone PEB access should not be flagged: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn test_pic_high_entropy_correlation() {
+        let mut data = vec![0u8; 4096];
+        for (i, b) in data.iter_mut().enumerate() {
+            *b = ((i as u32).wrapping_mul(31).wrapping_add(7)) as u8;
+        }
+        let off = 1024;
+        data[off..off + 9].copy_from_slice(&[0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0x00, 0x00, 0x00]);
+
+        let config = ShellcodeConfig::default();
+        let report = detect_shellcode(&data, &config);
+        assert!(
+            report.findings.iter().any(|f| f.rule_id == "SHELLCODE_PIC_HIGH_ENTROPY"),
+            "Expected PIC+high-entropy correlation. Findings: {:?}",
+            report.findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn test_clean_data_no_findings() {
-        let data = vec![0u8; 256]; // All zeros
+        let data = vec![0u8; 256];
         let config = ShellcodeConfig::default();
         let report = detect_shellcode(&data, &config);
         assert_eq!(report.verdict, ShellcodeVerdict::NoShellcode);
@@ -761,10 +786,7 @@ mod tests {
     #[test]
     fn test_nop_sled_detection() {
         let mut data = vec![0xFFu8; 128];
-        // Insert 32-byte NOP sled
-        for i in 40..72 {
-            data[i] = 0x90;
-        }
+        data[40..72].fill(0x90);
 
         let config = ShellcodeConfig::default();
         let report = detect_shellcode(&data, &config);
@@ -773,32 +795,29 @@ mod tests {
 
     #[test]
     fn test_api_hash_detection() {
+        // Place two genuine ROR13 API-hash DWORDs (computed from the live DB).
+        let h1 = api_hashes::compute_ror13("CreateThread");
+        let h2 = api_hashes::compute_ror13("VirtualAlloc");
+
         let mut data = vec![0u8; 128];
-        // Place two known API hashes
-        // VirtualAlloc ROR13 = 0x519E5A8
-        data[0] = 0xA8; data[1] = 0xE5; data[2] = 0x9E; data[3] = 0x05;
-        // Sleep ROR13 = 0x6A7694F8
-        data[4] = 0xF8; data[5] = 0x94; data[6] = 0x76; data[7] = 0x6A;
+        data[0..4].copy_from_slice(&h1.to_le_bytes());
+        data[4..8].copy_from_slice(&h2.to_le_bytes());
 
         let config = ShellcodeConfig::default();
         let report = detect_shellcode(&data, &config);
-        assert!(report.total_api_hashes_found >= 2);
+        assert!(report.total_api_hashes_found >= 2, "expected >=2 api hashes, got {}", report.total_api_hashes_found);
         assert!(report.findings.iter().any(|f| f.description.contains("API hash")));
     }
 
     #[test]
     fn test_encoder_stub_detection() {
         let mut data = vec![0x90u8; 128];
-        // Insert XOR decoder stub: xor [ebx], 0x41 / inc ebx / jmp back
-        // 80 33 41 — xor byte [ebx], 0x41
-        // 43       — inc ebx
-        // EB F9    — jmp -7 (back to xor)
         data[50] = 0x80;
-        data[51] = 0x33; // mod=00, reg=110(XOR), rm=011(ebx)
-        data[52] = 0x41; // XOR key
-        data[53] = 0x43; // inc ebx
-        data[54] = 0xEB; // jmp short
-        data[55] = 0xF9; // -7 (backward)
+        data[51] = 0x33;
+        data[52] = 0x41;
+        data[53] = 0x43;
+        data[54] = 0xEB;
+        data[55] = 0xF9;
 
         let config = ShellcodeConfig::default();
         let report = detect_shellcode(&data, &config);
@@ -810,9 +829,53 @@ mod tests {
     }
 
     #[test]
+    fn test_xor_decoder_modrm_disp32() {
+        // xor dword ptr [0xDEADBEEF], 0x37 → 80 /6, mod=00 rm=101 (disp32).
+        let mut data = vec![0x90u8; 64];
+        data[10..17].copy_from_slice(&[0x80, 0x35, 0xEF, 0xBE, 0xAD, 0xDE, 0x37]);
+        data[17] = 0x45; // inc ebp
+        data[18] = 0xEB; // jmp short back
+        data[19] = 0xF9;
+
+        let config = ShellcodeConfig::default();
+        let report = detect_shellcode(&data, &config);
+        let f = report
+            .findings
+            .iter()
+            .find(|f| f.description.contains("XOR decoder"))
+            .expect("disp32 xor decoder must be detected");
+        assert!(
+            f.evidence.iter().any(|e| e.contains("0x37")),
+            "imm8 must be read past the disp32, evidence: {:?}",
+            f.evidence
+        );
+    }
+
+    #[test]
+    fn test_xor_decoder_modrm_sib() {
+        // xor dword ptr [ds:0xDEADBEEF], 0x37 → 80 /6, mod=00 rm=100 with
+        // SIB base=101 (disp32 follows the SIB byte).
+        let mut data = vec![0x90u8; 64];
+        data[19] = 0xEB; // jmp short back (loop structure before the stub)
+        data[20..28].copy_from_slice(&[0x80, 0x34, 0x25, 0xEF, 0xBE, 0xAD, 0xDE, 0x37]);
+
+        let config = ShellcodeConfig::default();
+        let report = detect_shellcode(&data, &config);
+        let f = report
+            .findings
+            .iter()
+            .find(|f| f.description.contains("XOR decoder"))
+            .expect("SIB xor decoder must be detected");
+        assert!(
+            f.evidence.iter().any(|e| e.contains("0x37")),
+            "imm8 must be read past SIB+disp32, evidence: {:?}",
+            f.evidence
+        );
+    }
+
+    #[test]
     fn test_fpu_getpc_detection() {
         let mut data = vec![0u8; 128];
-        // fldz / fnstenv [esp-0xC]
         data[20] = 0xD9;
         data[21] = 0xEE;
         data[22] = 0xD9;
@@ -830,9 +893,8 @@ mod tests {
 
     #[test]
     fn test_alphanumeric_shellcode() {
-        // 40 bytes of pure alphanumeric data in a binary blob context
-        let mut data = vec![0u8; 64];
-        let alnum = b"ABCDEFGHabcdefgh12345678ABCDEFGHabcdefgh";
+        let mut data = vec![0u8; 128];
+        let alnum = b"ABCDEFGHabcdefgh12345678ABCDEFGHabcdefghABCDEFGHabcdefgh12345678";
         data[10..10 + alnum.len()].copy_from_slice(alnum);
 
         let mut findings = Vec::new();
@@ -845,10 +907,9 @@ mod tests {
 
     #[test]
     fn test_xor_encoded_blob() {
-        // Create a small PEB access pattern, XOR-encode it, embed in data
         let shellcode: Vec<u8> = vec![
-            0x64, 0xA1, 0x30, 0x00, 0x00, 0x00, // mov eax, fs:[0x30]
-            0x8B, 0x40, 0x0C,                    // mov eax, [eax+0x0C]
+            0x64, 0xA1, 0x30, 0x00, 0x00, 0x00,
+            0x8B, 0x40, 0x0C,
         ];
         let key = 0x42u8;
         let encoded: Vec<u8> = shellcode.iter().map(|b| b ^ key).collect();
@@ -857,8 +918,8 @@ mod tests {
         data[50..50 + encoded.len()].copy_from_slice(&encoded);
 
         let mut findings = Vec::new();
-        check_encoded_blobs(&data, &mut findings);
-        // This should detect the XOR-encoded shellcode
+        let mut weak = WeakSignals::default();
+        check_encoded_blobs(&data, &mut findings, &mut weak, &ShellcodeConfig::default());
         assert!(
             findings.iter().any(|f| f.description.contains("XOR-encoded")),
             "Should detect XOR-encoded shellcode. Findings: {:?}",

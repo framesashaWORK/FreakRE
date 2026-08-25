@@ -466,7 +466,7 @@ impl IrInst {
 // ─── Block and Function ──────────────────────────────────────────────
 
 /// Block identifier within a function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BlockId(pub u32);
 
 impl std::fmt::Display for BlockId {
@@ -593,7 +593,15 @@ impl IrFunction {
     }
 
     /// Push an instruction to a block.
+    ///
+    /// Defensive: an unknown `block` is a lifter bug (flagged in debug
+    /// builds) but is silently skipped in release instead of panicking.
     pub fn push_inst(&mut self, block: BlockId, inst: IrInst) {
+        debug_assert!(
+            self.blocks.iter().any(|b| b.id == block),
+            "push_inst on unknown BlockId({})",
+            block.0
+        );
         if let Some(b) = self.blocks.iter_mut().find(|b| b.id == block) {
             b.insts.push(inst);
         }
@@ -605,6 +613,10 @@ impl IrFunction {
     }
 
     /// Build predecessor/successor edges from terminators.
+    ///
+    /// Defensive: terminators referencing blocks that were never added are
+    /// a lifter bug (debug_assert) but their edges are skipped gracefully
+    /// in release builds instead of corrupting the CFG.
     pub fn build_cfg(&mut self) {
         // Clear existing edges
         for block in &mut self.blocks {
@@ -624,6 +636,15 @@ impl IrFunction {
                     }
                     _ => {}
                 }
+                succs.retain(|s| {
+                    let known = self.blocks.iter().any(|blk| blk.id == *s);
+                    debug_assert!(
+                        known,
+                        "build_cfg: terminator references unknown BlockId({})",
+                        s.0
+                    );
+                    known
+                });
                 succs.into_iter().map(move |s| (b.id, s))
             })
             .collect();
@@ -666,6 +687,85 @@ impl IrFunction {
         }
 
         out
+    }
+}
+
+// ─── Block graph repair ──────────────────────────────────────────────
+
+/// Re-target branch terminators from empty label blocks onto the non-empty
+/// `bb_N` continuation chunks that start at the same address.
+///
+/// Lifters pre-create empty `loc_`/`fall_`-style label blocks when a branch
+/// is decoded, while the actual instructions land in `bb_N` continuation
+/// chunks. Without repair the CFG edges all point at empty labels and every
+/// code chunk becomes an unreachable island. Arch-specific guarded/after/
+/// taken blocks are deliberately *not* resolution targets: they carry
+/// true-path-only effects and are reached exclusively through their own
+/// direct edges.
+///
+/// `parse_label` extracts the source address encoded in a block label
+/// (`None` for labels carrying no address). Label addresses may be off by up
+/// to one instruction (length computation drift), so the nearest following
+/// code chunk within a 15-byte window is accepted.
+pub(crate) fn repair_block_graph(
+    func: &mut IrFunction,
+    parse_label: fn(&str, u64) -> Option<u64>,
+) {
+    let base = func.entry_address;
+    // (address, rank, block) — rank 0 = bb_ chunk, 1 = entry block.
+    let mut code_starts: Vec<(u64, u8, BlockId)> = Vec::new();
+    let mut label_addrs: Vec<(BlockId, u64)> = Vec::new();
+
+    for b in &func.blocks {
+        match parse_label(&b.label, base) {
+            Some(addr) => {
+                if b.insts.is_empty() {
+                    label_addrs.push((b.id, addr));
+                } else if b.label.starts_with("bb_") {
+                    code_starts.push((addr, 0, b.id));
+                }
+            }
+            None => {
+                if b.id == func.entry_block && !b.insts.is_empty() {
+                    code_starts.push((base, 1, b.id));
+                }
+            }
+        }
+    }
+    code_starts.sort_unstable();
+
+    let resolve = |id: BlockId| -> Option<BlockId> {
+        let &(_, addr) = label_addrs.iter().find(|(bid, _)| *bid == id)?;
+        let idx = code_starts.partition_point(|&(a, _, _)| a < addr);
+        code_starts.get(idx).filter(|&&(a, _, _)| a - addr <= 15).map(|&(_, _, b)| b)
+    };
+
+    if std::env::var("REPAIR_DEBUG").is_ok() {
+        for b in &func.blocks {
+            eprintln!("[repair] {} {} insts={}", b.id.0, b.label, b.insts.len());
+        }
+        eprintln!("[repair] code_starts: {:?}", code_starts);
+        eprintln!("[repair] labels: {:?}", label_addrs);
+    }
+
+    for b in func.blocks.iter_mut() {
+        let Some(last) = b.insts.last_mut() else { continue };
+        match last {
+            IrInst::Branch { target } => {
+                if let Some(new) = resolve(*target) {
+                    *target = new;
+                }
+            }
+            IrInst::CBranch { target_true, target_false, .. } => {
+                if let Some(new) = resolve(*target_true) {
+                    *target_true = new;
+                }
+                if let Some(new) = resolve(*target_false) {
+                    *target_false = new;
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -859,5 +959,41 @@ mod tests {
         assert!(!OpCode::Sub.is_commutative());
         assert!(OpCode::Eq.is_comparison());
         assert!(OpCode::Not.is_unary());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "unknown BlockId")]
+    fn test_push_inst_unknown_block_debug_assert() {
+        let mut func = IrFunction::new("t", 0);
+        func.push_inst(BlockId(42), IrInst::Nop);
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn test_push_inst_unknown_block_skipped_gracefully() {
+        let mut func = IrFunction::new("t", 0);
+        func.push_inst(BlockId(42), IrInst::Nop);
+        assert_eq!(func.total_instructions(), 0);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "unknown BlockId")]
+    fn test_build_cfg_dangling_edge_debug_assert() {
+        let mut func = IrFunction::new("t", 0);
+        func.push_inst(func.entry_block, IrInst::Branch { target: BlockId(7) });
+        func.build_cfg();
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn test_build_cfg_dangling_edge_skipped_gracefully() {
+        let mut func = IrFunction::new("t", 0);
+        func.push_inst(func.entry_block, IrInst::Branch { target: BlockId(7) });
+        func.build_cfg();
+        let entry = func.block(func.entry_block).unwrap();
+        assert!(entry.successors.is_empty());
+        assert!(entry.predecessors.is_empty());
     }
 }

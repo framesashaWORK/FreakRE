@@ -49,7 +49,7 @@ impl Ty {
 
     /// Size of this type in bytes, rounded up.
     pub fn size_bytes(&self) -> Option<u32> {
-        self.size_bits().map(|b| (b + 7) / 8)
+        self.size_bits().map(|b| b.div_ceil(8))
     }
 
     /// Whether this is an integer type (signed or unsigned).
@@ -118,43 +118,6 @@ impl std::fmt::Display for Ty {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_size_bits() {
-        assert_eq!(Ty::Bool.size_bits(), Some(1));
-        assert_eq!(Ty::i32().size_bits(), Some(32));
-        assert_eq!(Ty::i64().size_bits(), Some(64));
-        assert_eq!(Ty::Ptr(Box::new(Ty::u8())).size_bits(), Some(64));
-    }
-
-    #[test]
-    fn test_size_bytes() {
-        assert_eq!(Ty::i8().size_bytes(), Some(1));
-        assert_eq!(Ty::i32().size_bytes(), Some(4));
-        assert_eq!(Ty::i64().size_bytes(), Some(8));
-    }
-
-    #[test]
-    fn test_type_queries() {
-        assert!(Ty::i32().is_integer());
-        assert!(Ty::u64().is_integer());
-        assert!(!Ty::Bool.is_integer());
-        assert!(Ty::f64().is_float());
-        assert!(Ty::ptr().is_pointer());
-        assert!(Ty::i32().is_signed());
-        assert!(!Ty::u32().is_signed());
-    }
-
-    #[test]
-    fn test_resize() {
-        assert_eq!(Ty::i32().resize(64), Ty::i64());
-        assert_eq!(Ty::u32().resize(8), Ty::u8());
-    }
-}
-
 impl PartialOrd for Ty {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -191,5 +154,42 @@ impl Ord for Ty {
             (_, Ty::Unknown) => Greater,
             (Ty::Void, Ty::Void) => Equal,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_size_bits() {
+        assert_eq!(Ty::Bool.size_bits(), Some(1));
+        assert_eq!(Ty::i32().size_bits(), Some(32));
+        assert_eq!(Ty::i64().size_bits(), Some(64));
+        assert_eq!(Ty::Ptr(Box::new(Ty::u8())).size_bits(), Some(64));
+    }
+
+    #[test]
+    fn test_size_bytes() {
+        assert_eq!(Ty::i8().size_bytes(), Some(1));
+        assert_eq!(Ty::i32().size_bytes(), Some(4));
+        assert_eq!(Ty::i64().size_bytes(), Some(8));
+    }
+
+    #[test]
+    fn test_type_queries() {
+        assert!(Ty::i32().is_integer());
+        assert!(Ty::u64().is_integer());
+        assert!(!Ty::Bool.is_integer());
+        assert!(Ty::f64().is_float());
+        assert!(Ty::ptr().is_pointer());
+        assert!(Ty::i32().is_signed());
+        assert!(!Ty::u32().is_signed());
+    }
+
+    #[test]
+    fn test_resize() {
+        assert_eq!(Ty::i32().resize(64), Ty::i64());
+        assert_eq!(Ty::u32().resize(8), Ty::u8());
     }
 }

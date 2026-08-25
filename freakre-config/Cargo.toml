@@ -1,0 +1,7 @@
+[package]
+name = "freakre-config"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal JSON/TOML parser. No serde, no external deps."
+
+[dependencies]

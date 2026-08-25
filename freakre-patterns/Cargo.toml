@@ -1,0 +1,7 @@
+[package]
+name = "freakre-patterns"
+version = "0.1.0"
+edition = "2021"
+description = "Safe pattern matching: Aho-Corasick + bounded regex subset. No backtracking, no ReDoS."
+
+[dependencies]

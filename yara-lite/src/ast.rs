@@ -28,7 +28,10 @@ pub enum Pattern {
 
 #[derive(Debug, Clone)]
 pub struct TextPattern {
-    pub value: String,
+    /// Pattern bytes exactly as they must appear in the scanned data.
+    /// Quoted strings support `\xNN` escapes producing arbitrary raw bytes
+    /// (including >= 0x80), which a `String` could not represent losslessly.
+    pub value: Vec<u8>,
     pub is_regex: bool,
 }
 
@@ -135,14 +138,26 @@ impl Condition {
             Condition::Not(c) => c.collect_refs(out),
             Condition::StringMatch(s) | Condition::StringCount(s) => out.push(s.as_str()),
             Condition::At(s, _) | Condition::In(s, _, _) => out.push(s.as_str()),
-            Condition::IntComp(_, _a, _b) => {
-                // IntExpr doesn't have collect_refs; integer expressions
-                // don't reference string identifiers directly.
+            Condition::IntComp(_, a, b) => {
+                a.collect_string_refs(out);
+                b.collect_string_refs(out);
             }
             Condition::OfSet(_, ids) => {
                 for id in ids {
                     out.push(id.as_str());
                 }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl IntExpr {
+    fn collect_string_refs<'a>(&'a self, out: &mut Vec<&'a str>) {
+        match self {
+            IntExpr::Count(id) | IntExpr::MatchOffset(id) => out.push(id.as_str()),
+            IntExpr::Uint8(inner) | IntExpr::Uint16(inner) | IntExpr::Uint32(inner) => {
+                inner.collect_string_refs(out)
             }
             _ => {}
         }

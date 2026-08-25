@@ -8,46 +8,47 @@ description = "Core scanning engine for FreakRE — static binary analysis"
 name = "freakre_scanner"
 path = "src/lib.rs"
 
-[[bin]]
-name = "freakre"
-path = "src/main.rs"
-required-features = ["cli"]
+
 
 [features]
 default = ["cli"]
-cli = ["dep:clap", "dep:colored", "dep:walkdir", "dep:rayon"]
-decompiler = ["dep:freakre-ir", "dep:freakre-decompiler"]
+decompiler = ["dep:freakre-ir", "dep:decompiler"]
+cli = ["dep:clap", "dep:rayon", "dep:walkdir", "dep:colored", "dep:serde_json"]
 
 [dependencies]
+serde = { workspace = true }
+clap = { version = "4", features = ["derive"], optional = true }
+rayon = { version = "1", optional = true }
+walkdir = { version = "2", optional = true }
+colored = { version = "2", optional = true }
+serde_json = { version = "1.0", optional = true }
 # Core analysis crates (always needed)
 pe-parser = { path = "../pe-parser" }
+elf-parser = { path = "../elf-parser" }
+macho-parser = { path = "../macho-parser" }
+coff-parser = { path = "../coff-parser" }
+dex-parser = { path = "../dex-parser" }
+wasm-parser = { path = "../wasm-parser" }
+flat-binary = { path = "../flat-binary" }
 entropy-rs = { path = "../entropy-rs" }
 str-extract = { path = "../str-extract" }
 import-analyzer = { path = "../import-analyzer" }
 yara-lite = { path = "../yara-lite" }
 backdoor-analyzer = { path = "../backdoor-analyzer" }
-elf-parser = { path = "../elf-parser" }
-macho-parser = { path = "../macho-parser" }
 shellcode-analyzer = { path = "../shellcode-analyzer" }
 xrefs = { path = "../xrefs" }
 cfg-builder = { path = "../cfg-builder" }
 func-sigs = { path = "../func-sigs" }
 ml-detection = { path = "../ml-detection" }
+freakre-x86 = { path = "../freakre-x86" }
 freakre-ir = { path = "../freakre-ir", optional = true }
-freakre-decompiler = { path = "../decompiler", optional = true }
+decompiler = { path = "../decompiler", optional = true }
 
-# Common dependencies
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
-md-5 = "0.10"
-hex = "0.4"
+# Own zero-dep replacements
+freakre-hash = { path = "../freakre-hash" }
+freakre-config = { path = "../freakre-config" }
 
-# CLI-only dependencies (optional)
-clap = { version = "4", features = ["derive"], optional = true }
-colored = { version = "2", optional = true }
-walkdir = { version = "2", optional = true }
-rayon = { version = "1", optional = true }
+
 
 [dev-dependencies]
 tempfile = "3"

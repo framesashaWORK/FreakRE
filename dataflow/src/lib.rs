@@ -22,12 +22,14 @@ pub mod reaching_definitions;
 pub mod live_variables;
 pub mod use_def_chains;
 pub mod worklist;
+pub mod value_set;
 
 pub use reaching_definitions::ReachingDefinitions;
 pub use live_variables::LiveVariables;
 pub use use_def_chains::UseDefChains;
+pub use value_set::{ValueSetAnalysis, AbstractValue};
 
-use bibleteks_ir::IrFunction;
+use freakre_ir::IrFunction;
 
 /// Combined data flow analysis result
 #[derive(Debug, Clone)]
@@ -35,6 +37,7 @@ pub struct DataFlowAnalysis {
     pub reaching_defs: ReachingDefinitions,
     pub live_vars: LiveVariables,
     pub use_def: UseDefChains,
+    pub value_sets: ValueSetAnalysis,
 }
 
 impl DataFlowAnalysis {
@@ -43,11 +46,13 @@ impl DataFlowAnalysis {
         let reaching_defs = ReachingDefinitions::analyze(func);
         let live_vars = LiveVariables::analyze(func);
         let use_def = UseDefChains::build(func, &reaching_defs);
+        let value_sets = ValueSetAnalysis::analyze(func);
         
         DataFlowAnalysis {
             reaching_defs,
             live_vars,
             use_def,
+            value_sets,
         }
     }
     

@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_assignments)]
+﻿#![allow(dead_code, unused_assignments)]
 //! # str-extract
 //!
 //! Binary string extractor designed for malware analysis.
@@ -8,8 +8,8 @@
 //!   with PE sections, overlays, and resource entries)
 //! - **ASCII + UTF-16LE + UTF-16BE** extraction in a single pass
 //! - **Configurable minimum length** to filter noise
-//! - **Zero-copy** where possible — strings reference the original buffer
-//! - **Iterator API** — no intermediate allocations
+//! - **Zero-copy** where possible вЂ" strings reference the original buffer
+//! - **Iterator API** вЂ" no intermediate allocations
 //!
 //! ## Malware Analysis Use Cases
 //! - Extract C2 URLs, IPs, registry keys, file paths from binaries
@@ -25,7 +25,7 @@ const ASCII_PRINTABLE_MAX: u8 = 0x7E;
 /// Encoding of an extracted string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Encoding {
-    /// Standard 7-bit printable ASCII (0x20–0x7E).
+    /// Standard 7-bit printable ASCII (0x20вЂ"0x7E).
     Ascii,
     /// UTF-16 Little Endian (common in Windows PE files).
     Utf16Le,
@@ -115,13 +115,13 @@ impl ExtractConfig {
 /// Check if a byte is printable ASCII.
 #[inline]
 fn is_ascii_printable(b: u8) -> bool {
-    b >= ASCII_PRINTABLE_MIN && b <= ASCII_PRINTABLE_MAX
+    (ASCII_PRINTABLE_MIN..=ASCII_PRINTABLE_MAX).contains(&b)
 }
 
 /// Extract all strings from a binary buffer using the given configuration.
 ///
 /// Returns a `Vec` of [`ExtractedString`] sorted by offset.
-/// Strings from different encodings may overlap in the buffer — this is
+/// Strings from different encodings may overlap in the buffer вЂ" this is
 /// intentional, as malware sometimes embeds the same data in multiple encodings.
 ///
 /// # Examples
@@ -149,7 +149,41 @@ pub fn extract_strings<'a>(data: &'a [u8], config: &ExtractConfig) -> Vec<Extrac
 
     // Sort by offset for consistent output regardless of encoding order.
     results.sort_by_key(|s| s.offset);
-    results
+
+    // Deduplicate phantom duplicates produced by the dual-alignment UTF-16
+    // passes: within a single encoding, legitimate strings never overlap
+    // (adjacent strings are separated by terminators), so any two overlapping
+    // runs of the same encoding are an artifact of scanning at both even and
+    // odd byte alignments. Later overlapping runs are dropped, keeping the
+    // earliest. Cross-encoding overlaps are intentionally preserved (same
+    // data embedded in multiple encodings).
+    let mut kept: std::collections::HashMap<Encoding, std::collections::VecDeque<(usize, usize)>> =
+        std::collections::HashMap::new();
+
+    let mut deduped: Vec<ExtractedString<'a>> = Vec::with_capacity(results.len());
+    for s in results {
+        let end = s.offset + s.raw_bytes.len();
+        let queue = kept.entry(s.encoding).or_default();
+
+        // Runs arrive in ascending offset order and kept runs of one encoding
+        // are pairwise non-overlapping, so runs ending at or before this
+        // offset can never conflict with this or any later candidate.
+        while queue.front().map_or(false, |&(_, ke)| ke <= s.offset) {
+            queue.pop_front();
+        }
+
+        // After eviction, the front run is the only possible overlapper.
+        let overlaps = queue
+            .front()
+            .map_or(false, |&(ko, ke)| ko < end && s.offset < ke);
+
+        if !overlaps {
+            queue.push_back((s.offset, end));
+            deduped.push(s);
+        }
+    }
+
+    deduped
 }
 
 /// Extract ASCII strings.
@@ -210,8 +244,8 @@ fn extract_utf16<'a>(
     }
 
     let decode_u16 = match encoding {
-        Encoding::Utf16Le => |hi: u8, lo: u8| u16::from_le_bytes([lo, hi]),
-        Encoding::Utf16Be => |hi: u8, lo: u8| u16::from_be_bytes([hi, lo]),
+        Encoding::Utf16Le => |first: u8, second: u8| u16::from_le_bytes([first, second]),
+        Encoding::Utf16Be => |first: u8, second: u8| u16::from_be_bytes([first, second]),
         _ => unreachable!(),
     };
 
@@ -276,13 +310,18 @@ fn extract_utf16<'a>(
 #[inline]
 fn is_utf16_printable(c: u16) -> bool {
     // Printable ASCII range in UTF-16
-    (c >= 0x0020 && c <= 0x007E)
+    (0x0020..=0x007E).contains(&c)
         // Common Latin Extended
-        || (c >= 0x00A0 && c <= 0x024F)
+        || (0x00A0..=0x024F).contains(&c)
         // CJK Unified Ideographs (malware targeting Asia)
-        || (c >= 0x4E00 && c <= 0x9FFF)
+        || (0x4E00..=0x9FFF).contains(&c)
         // Cyrillic
-        || (c >= 0x0400 && c <= 0x04FF)
+        || (0x0400..=0x04FF).contains(&c)
+        // Surrogate range: must be accepted so strings containing astral
+        // characters (encoded as surrogate pairs) are not split and dropped.
+        // `String::from_utf16_lossy` performs the final pair-aware decoding;
+        // lone surrogates degrade to U+FFFD instead of truncating the run.
+        || (0xD800..=0xDFFF).contains(&c)
 }
 
 /// Convenience: extract strings with default configuration.
@@ -443,6 +482,107 @@ mod tests {
         );
         assert_eq!(results.iter().find(|s| s.value.contains("evil.example.com")).unwrap().offset, 20);
     }
+
+    #[test]
+    fn utf16le_surrogate_pair_not_split() {
+        // "Test😀ing" — U+1F600 is encoded as surrogate pair D83D DE00.
+        // The astral char must not split the run into fragments that get
+        // dropped by min_length.
+        let mut units: Vec<u16> = "Test".chars().map(|c| c as u16).collect();
+        units.extend_from_slice(&[0xD83D, 0xDE00]);
+        units.extend("ing".chars().map(|c| c as u16));
+
+        let mut data = Vec::new();
+        for u in &units {
+            data.extend_from_slice(&u.to_le_bytes());
+        }
+
+        let config = ExtractConfig {
+            min_length: 4,
+            ascii: false,
+            utf16le: true,
+            utf16be: false,
+        };
+        let results = extract_strings(&data, &config);
+        assert_eq!(
+            results.len(),
+            1,
+            "surrogate pair must keep the string whole, got: {:?}",
+            results.iter().map(|s| &s.value).collect::<Vec<_>>()
+        );
+        assert_eq!(results[0].value, "Test\u{1F600}ing");
+        assert_eq!(results[0].offset, 0);
+    }
+
+    #[test]
+    fn utf16le_lone_surrogate_stays_single_run() {
+        // A lone surrogate decodes to U+FFFD but must still form ONE run,
+        // not terminate extraction mid-string.
+        let mut data = Vec::new();
+        for u in [0x0041u16, 0x0042, 0xDD1E, 0x0043, 0x0044] {
+            data.extend_from_slice(&u.to_le_bytes());
+        }
+
+        let config = ExtractConfig {
+            min_length: 4,
+            ascii: false,
+            utf16le: true,
+            utf16be: false,
+        };
+        let results = extract_strings(&data, &config);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value, "AB\u{FFFD}CD");
+    }
+
+    #[test]
+    fn dual_alignment_phantom_duplicates_deduped() {
+        // Buffer of 0x55 bytes decodes to unit 0x5555 (CJK range => printable)
+        // at EVERY byte alignment, so both alignment passes find long
+        // overlapping runs. extract_strings() must emit a single entry per
+        // encoding.
+        let mut data = vec![0x55u8; 16];
+        data.extend_from_slice(&[0x00, 0x00]);
+
+        let config = ExtractConfig {
+            min_length: 4,
+            ascii: false,
+            utf16le: true,
+            utf16be: false,
+        };
+        let results = extract_strings(&data, &config);
+        assert_eq!(
+            results.len(),
+            1,
+            "dual-alignment pass must not produce overlapping duplicates: {:?}",
+            results
+        );
+        assert_eq!(results[0].offset, 0);
+
+        // Repeated genuine strings at distinct offsets survive, and the
+        // output never contains overlapping same-encoding entries.
+        let mut repeated = Vec::new();
+        for _ in 0..2 {
+            for c in "abcd".chars() {
+                repeated.extend_from_slice(&(c as u16).to_le_bytes());
+            }
+            repeated.extend_from_slice(&[0x00, 0x00]);
+        }
+        let results2 = extract_strings(&repeated, &config);
+        for i in 0..results2.len() {
+            for b in &results2[i + 1..] {
+                let a = &results2[i];
+                if a.encoding == b.encoding {
+                    assert!(
+                        b.offset >= a.offset + a.raw_bytes.len(),
+                        "overlapping same-encoding duplicates must be deduped: {:?} vs {:?}",
+                        a,
+                        b
+                    );
+                }
+            }
+        }
+        assert_eq!(results2[0].value, "abcd");
+        assert_eq!(results2[0].offset, 0);
+        assert!(results2.iter().any(|s| s.value == "abcd"));
+    }
 }
-
-

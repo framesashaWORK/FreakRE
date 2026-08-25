@@ -1,0 +1,8 @@
+[package]
+name = "wasm-parser"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight WebAssembly binary format parser for FreakRE"
+
+[dependencies]
+serde = { workspace = true }

@@ -5,4 +5,4 @@ edition = "2021"
 description = "Zero-copy PE32/PE32+ parser for malware analysis"
 
 [dependencies]
-thiserror = "2"
+thiserror = { workspace = true }

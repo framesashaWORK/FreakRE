@@ -5,6 +5,7 @@
 //! that contain them.
 
 use plugins::{Plugin, PluginContext, PluginMetadata, MenuItem};
+use crate::util;
 
 const CRYPTO_CONSTANTS: &[(&[u8], &str, &str)] = &[
     (&[0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5,
@@ -65,8 +66,19 @@ impl Plugin for CryptoFinderPlugin {
                 for off in 0..=code.len() - pattern.len() {
                     if &code[off..off + pattern.len()] == *pattern {
                         let addr = func.address + off as u64;
-                        let _ = ctx.db.set_label(func.address, format!("{} ({})", label, name));
-                        let _ = ctx.db.set_comment(addr, format!("Crypto: {} (+0x{:X})", name, off));
+                        // Never clobber: only auto-label free slots (empty or sub_ name).
+                        util::set_label_if_free(
+                            &mut ctx.db,
+                            func.address,
+                            format!("{} ({})", label, name),
+                        );
+                        // Append-style comment refresh; preserves user text.
+                        util::upsert_tagged_comment(
+                            &mut ctx.db,
+                            addr,
+                            "Crypto:",
+                            &format!("Crypto: {} (+0x{:X})", name, off),
+                        );
                         ctx.println(&format!("  ✓ {} at 0x{:X} in func 0x{:X}", name, addr, func.address));
                         total += 1;
                         break;

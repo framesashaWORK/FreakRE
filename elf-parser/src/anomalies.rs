@@ -15,7 +15,7 @@ pub fn detect_anomalies_elf64(
 ) {
     check_static_linking(program_headers, warnings);
     check_stripped(section_headers, warnings);
-    check_entry_point_bounds(program_headers, section_headers, warnings);
+    check_executable_segment_exists(program_headers, section_headers, warnings);
     check_missing_protections(program_headers, warnings);
     check_suspicious_interpreter(program_headers, data, warnings);
     check_unusual_architecture(ident, warnings);
@@ -55,14 +55,15 @@ fn check_stripped(section_headers: &[SectionHeader<'_>], warnings: &mut Vec<ElfW
     }
 }
 
-/// Entry point should be within an executable LOAD segment.
-fn check_entry_point_bounds(
+/// Check if the binary has at least one executable LOAD segment.
+/// Without an executable segment, the entry point cannot be reached.
+/// Renamed from `check_entry_point_bounds` since we don't have direct access
+/// to the entry point value here — full bounds checking is done in lib.rs.
+fn check_executable_segment_exists(
     program_headers: &[ProgramHeader],
     _section_headers: &[SectionHeader<'_>],
     warnings: &mut Vec<ElfWarning>,
 ) {
-    // We don't have entry_point here directly, but we can check
-    // if there are any executable LOAD segments at all
     let has_exec_load = program_headers
         .iter()
         .any(|p| p.p_type == ProgramType::Load && p.is_executable());
@@ -70,7 +71,7 @@ fn check_entry_point_bounds(
     if !has_exec_load && !program_headers.is_empty() {
         warnings.push(ElfWarning {
             kind: ElfWarningKind::EntryPointOutOfBounds,
-            message: "No executable LOAD segment found - entry point may be invalid".into(),
+            message: "No executable LOAD segment found - entry point may be unreachable".into(),
         });
     }
 }
@@ -107,10 +108,10 @@ fn check_suspicious_interpreter(
         }
 
         let start = ph.offset as usize;
-        let end = start + ph.filesz as usize;
-        if end > data.len() {
-            continue;
-        }
+        let end = match start.checked_add(ph.filesz as usize) {
+            Some(e) if e <= data.len() => e,
+            _ => continue,
+        };
 
         let interp_path = String::from_utf8_lossy(&data[start..end]);
         let path = interp_path.trim_end_matches('\0');

@@ -1,21 +1,42 @@
 [package]
 name = "freakre-desktop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "FreakRE — Reverse Engineering Framework Desktop UI"
 
 [dependencies]
+# Core analysis
+serde = { version = "1.0", features = ["derive"] }
+chrono = "0.4"
+toml = "0.8"
+str_extract = { package = "str-extract", path = "../str-extract" }
 freakre-scanner = { path = "../scanner" }
 freakre-sys-plugins = { path = "../sys-plugins" }
-capstone-ffi = { path = "../capstone-ffi" }
+freakre-x86 = { path = "../freakre-x86" }
+freakre-config = { path = "../freakre-config" }
+freakre-script = { path = "../freakre-script" }
+freakre-ir = { path = "../freakre-ir" }
+pe-parser = { path = "../pe-parser" }
 project-db = { path = "../project-db" }
 plugins = { path = "../plugins" }
+
+# Disassembly & CFG
+capstone-ffi = { path = "../capstone-ffi" }
+cfg-builder = { path = "../cfg-builder" }
+
+# Analysis
+decompiler = { path = "../decompiler" }
+dataflow = { path = "../dataflow" }
+xrefs = { path = "../xrefs" }
+func-sigs = { path = "../func-sigs" }
+diffing = { path = "../diffing" }
+ml-detection = { path = "../ml-detection" }
+
+# Runtime
 tokio = { version = "1", features = ["full"] }
+
+# UI
 eframe = { version = "0.31", features = ["default_fonts"] }
 egui_extras = "0.31"
 rfd = "0.15"
-serde_json = "1"
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
 dirs = "6"
-

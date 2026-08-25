@@ -2,7 +2,7 @@
 
 use crate::ast::*;
 use crate::structuring::structure_control_flow;
-use bibleteks_ir::{IrFunction, IrInst, OpCode, Ty, Value};
+use freakre_ir::{IrFunction, IrInst, OpCode, Ty, Value};
 use std::collections::HashMap;
 
 /// Convert an IR function to an AST function
@@ -74,33 +74,71 @@ impl<'a> IrToAstConverter<'a> {
         match inst {
             IrInst::Binary { dst, op, lhs, rhs } => {
                 let target = self.convert_value_to_expr(dst);
-                let lhs_expr = self.convert_value_to_expr(lhs);
+                let mut lhs_expr = self.convert_value_to_expr(lhs);
                 let rhs_expr = self.convert_value_to_expr(rhs);
-                
-                let bin_op = self.convert_opcode_to_binop(*op);
-                
-                vec![Stmt::Assign {
-                    target,
-                    value: Expr::Binary {
+
+                if *op == OpCode::Sar {
+                    if let Ty::UInt(n) = lhs.ty() {
+                        lhs_expr = Expr::Cast {
+                            ty: Ty::Int(n),
+                            expr: Box::new(lhs_expr),
+                        };
+                    }
+                }
+
+                let value = match self.convert_opcode_to_binop(*op) {
+                    Some(bin_op) => Expr::Binary {
                         op: bin_op,
                         lhs: Box::new(lhs_expr),
                         rhs: Box::new(rhs_expr),
                     },
-                }]
+                    // Unlowerable opcodes (rotates, float arithmetic) are kept
+                    // as intrinsic-style calls so neither operand nor
+                    // operation is silently dropped (`dst = lhs` would lie).
+                    None => Expr::Call {
+                        func: op.to_string(),
+                        args: vec![lhs_expr, rhs_expr],
+                    },
+                };
+
+                vec![Stmt::Assign { target, value }]
             }
             
             IrInst::Unary { dst, op, src } => {
                 let target = self.convert_value_to_expr(dst);
                 let src_expr = self.convert_value_to_expr(src);
                 
-                let un_op = self.convert_opcode_to_unop(*op);
+                let value = match op {
+                    OpCode::Neg => Expr::Unary {
+                        op: UnOp::Neg,
+                        operand: Box::new(src_expr),
+                    },
+                    OpCode::Not => Expr::Unary {
+                        op: UnOp::Not,
+                        operand: Box::new(src_expr),
+                    },
+                    OpCode::FloatToFloat | OpCode::IntToFloat | OpCode::FloatToInt => {
+                        let ty = dst.ty();
+                        if ty.is_float() || ty.is_integer() {
+                            Expr::Cast {
+                                ty,
+                                expr: Box::new(src_expr),
+                            }
+                        } else {
+                            src_expr
+                        }
+                    }
+                    // Same intrinsic-call preservation for unary float ops.
+                    OpCode::FloatNeg | OpCode::FloatAbs | OpCode::FloatSqrt => Expr::Call {
+                        func: op.to_string(),
+                        args: vec![src_expr],
+                    },
+                    _ => src_expr,
+                };
                 
                 vec![Stmt::Assign {
                     target,
-                    value: Expr::Unary {
-                        op: un_op,
-                        operand: Box::new(src_expr),
-                    },
+                    value,
                 }]
             }
             
@@ -224,35 +262,31 @@ impl<'a> IrToAstConverter<'a> {
         }
     }
     
-    /// Convert IR OpCode to AST BinOp
-    fn convert_opcode_to_binop(&self, op: OpCode) -> BinOp {
+    /// Convert IR OpCode to AST BinOp (None → caller emits an intrinsic-call
+    /// form so the operation and both operands survive)
+    fn convert_opcode_to_binop(&self, op: OpCode) -> Option<BinOp> {
         match op {
-            OpCode::Add => BinOp::Add,
-            OpCode::Sub => BinOp::Sub,
-            OpCode::Mul => BinOp::Mul,
-            OpCode::Div => BinOp::Div,
-            OpCode::Mod => BinOp::Mod,
-            OpCode::And => BinOp::And,
-            OpCode::Or => BinOp::Or,
-            OpCode::Xor => BinOp::Xor,
-            OpCode::Shl => BinOp::Shl,
-            OpCode::Shr | OpCode::Sar => BinOp::Shr,
-            OpCode::Eq => BinOp::Eq,
-            OpCode::Ne => BinOp::Ne,
-            OpCode::LtU | OpCode::LtS => BinOp::Lt,
-            OpCode::LeU | OpCode::LeS => BinOp::Le,
-            OpCode::GtU | OpCode::GtS => BinOp::Gt,
-            OpCode::GeU | OpCode::GeS => BinOp::Ge,
-            _ => BinOp::Add, // Fallback
-        }
-    }
-    
-    /// Convert IR OpCode to AST UnOp
-    fn convert_opcode_to_unop(&self, op: OpCode) -> UnOp {
-        match op {
-            OpCode::Neg => UnOp::Neg,
-            OpCode::Not => UnOp::Not,
-            _ => UnOp::Neg, // Fallback
+            OpCode::Add => Some(BinOp::Add),
+            OpCode::Sub => Some(BinOp::Sub),
+            OpCode::Mul => Some(BinOp::Mul),
+            OpCode::Div => Some(BinOp::Div),
+            OpCode::Mod => Some(BinOp::Mod),
+            OpCode::And => Some(BinOp::And),
+            OpCode::Or => Some(BinOp::Or),
+            OpCode::Xor => Some(BinOp::Xor),
+            OpCode::Shl => Some(BinOp::Shl),
+            OpCode::Shr | OpCode::Sar => Some(BinOp::Shr),
+            OpCode::Eq => Some(BinOp::Eq),
+            OpCode::Ne => Some(BinOp::Ne),
+            OpCode::LtU => Some(BinOp::LtU),
+            OpCode::LeU => Some(BinOp::LeU),
+            OpCode::GtU => Some(BinOp::GtU),
+            OpCode::GeU => Some(BinOp::GeU),
+            OpCode::LtS => Some(BinOp::Lt),
+            OpCode::LeS => Some(BinOp::Le),
+            OpCode::GtS => Some(BinOp::Gt),
+            OpCode::GeS => Some(BinOp::Ge),
+            _ => None,
         }
     }
     
@@ -260,14 +294,26 @@ impl<'a> IrToAstConverter<'a> {
     fn collect_locals(&self) -> Vec<LocalVar> {
         let mut locals = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        
+
         for block in &self.func.blocks {
             for inst in &block.insts {
-                if let Some(dst) = inst.dst() {
-                    if let Value::Var { id, ty } = dst {
-                        if seen.insert(*id) {
+                if let Some(Value::Var { id, ty }) = inst.dst() {
+                    if seen.insert(format!("v{}", id)) {
+                        locals.push(LocalVar {
+                            name: format!("v{}", id),
+                            ty: ty.clone(),
+                            is_used: true,
+                        });
+                    }
+                }
+                for src in inst.sources() {
+                    if let Value::Register { name, ty } = src {
+                        if name.starts_with("flag_") || name == "rsp" || name == "esp" {
+                            continue;
+                        }
+                        if seen.insert(name.clone()) {
                             locals.push(LocalVar {
-                                name: format!("v{}", id),
+                                name: name.clone(),
                                 ty: ty.clone(),
                                 is_used: true,
                             });
@@ -275,8 +321,19 @@ impl<'a> IrToAstConverter<'a> {
                     }
                 }
             }
+            for inst in block.insts.iter() {
+                if let freakre_ir::IrInst::CBranch { cond: Value::Var { id, ty }, .. } = inst {
+                    if seen.insert(format!("v{}", id)) {
+                        locals.push(LocalVar {
+                            name: format!("v{}", id),
+                            ty: ty.clone(),
+                            is_used: true,
+                        });
+                    }
+                }
+            }
         }
-        
+
         locals
     }
 }
@@ -284,7 +341,7 @@ impl<'a> IrToAstConverter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bibleteks_ir::{OpCode, Ty};
+    use freakre_ir::{OpCode, Ty};
     
     #[test]
     fn test_simple_conversion() {

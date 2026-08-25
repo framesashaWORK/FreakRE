@@ -1,5 +1,5 @@
 [package]
-name = "freakre-decompiler"
+name = "decompiler"
 version = "0.1.0"
 edition = "2021"
 description = "Decompiler: IR to C pseudocode for binary analysis"
@@ -7,10 +7,12 @@ license = "MIT"
 
 [dependencies]
 freakre-ir = { path = "../freakre-ir" }
-freakre-dataflow = { path = "../dataflow" }
+dataflow = { path = "../dataflow" }
 freakre-type-propagation = { path = "../type-propagation" }
-thiserror = "1"
-serde = { version = "1", features = ["derive"] }
+freakre-x86 = { path = "../freakre-x86" }
+pe-parser = { path = "../pe-parser" }
+thiserror = { workspace = true }
+serde = { workspace = true }
 indexmap = "2"
 
 # [dev-dependencies]
@@ -19,3 +21,6 @@ indexmap = "2"
 # [[bench]]
 # name = "decompiler_bench"
 # harness = false
+
+[features]
+repair_debug = []

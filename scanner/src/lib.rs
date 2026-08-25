@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_assignments)]
+#![allow(unused_assignments)]
 //! # freakre-scanner
 //!
 //! Core scanning engine for FreakRE — orchestrates all analysis modules

@@ -300,25 +300,29 @@ impl Default for SigScanConfig {
 
 /// Scan a code region for known function signatures.
 pub fn scan_signatures(code: &[u8], base_offset: usize, config: &SigScanConfig) -> SignatureScanResult {
-    // Build hash index for O(1) lookup
-    let _sig_index: HashMap<u32, Vec<&FunctionSignature>> = {
-        let mut map: HashMap<u32, Vec<&FunctionSignature>> = HashMap::new();
-        for sig in SIGNATURES {
-            map.entry(sig.crc32).or_default().push(sig);
-        }
-        map
-    };
+    scan_signatures_with(code, base_offset, config, SIGNATURES)
+}
 
+fn scan_signatures_with(
+    code: &[u8],
+    base_offset: usize,
+    config: &SigScanConfig,
+    signatures: &[FunctionSignature],
+) -> SignatureScanResult {
     let mut matches = Vec::new();
     let mut libraries_found: Vec<String> = Vec::new();
 
-    // Slide over code and compute CRC32 at each position
-    let max_pattern_len = SIGNATURES.iter().map(|s| s.pattern_len).max().unwrap_or(0);
+    // Clamp step to >= 1 so the sliding loop always makes progress
+    let step = config.step.max(1);
+    debug_assert!(step >= 1, "SigScanConfig.step must be at least 1");
 
+    // Slide over code and compute CRC32 at each position.
+    // Bound by code.len() (not the global max pattern length) so shorter
+    // signatures are still tested against the trailing bytes.
     let mut offset = 0;
-    while offset + max_pattern_len <= code.len() && matches.len() < config.max_matches {
+    while offset < code.len() && matches.len() < config.max_matches {
         // Try each signature length
-        for sig in SIGNATURES {
+        for sig in signatures {
             if offset + sig.pattern_len > code.len() {
                 continue;
             }
@@ -343,11 +347,19 @@ pub fn scan_signatures(code: &[u8], base_offset: usize, config: &SigScanConfig) 
             }
         }
 
-        offset += config.step;
+        offset += step;
     }
 
     // Deduplicate matches at same offset (keep highest confidence)
-    matches.sort_by_key(|m| m.offset);
+    matches.sort_by(|a, b| {
+        a.offset
+            .cmp(&b.offset)
+            .then_with(|| {
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
     matches.dedup_by_key(|m| m.offset);
 
     // Compiler detection
@@ -376,15 +388,15 @@ fn detect_compiler(code: &[u8]) -> Option<CompilerInfo> {
         }
     }
 
-    // Pick compiler with most pattern matches
-    compiler_counts
-        .into_iter()
-        .max_by_key(|(_, count)| *count)
-        .map(|(compiler, _)| CompilerInfo {
-            compiler: compiler.to_string(),
-            version: None,
-            evidence,
-        })
+    // Pick compiler with most pattern matches; break ties deterministically
+    // by count descending, then name ascending
+    let mut candidates: Vec<(&str, usize)> = compiler_counts.into_iter().collect();
+    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    candidates.first().map(|(compiler, _)| CompilerInfo {
+        compiler: compiler.to_string(),
+        version: None,
+        evidence,
+    })
 }
 
 /// Find first occurrence of a byte pattern.
@@ -449,6 +461,65 @@ mod tests {
         let sig = compute_function_signature(&code, 16);
         // Just verify it doesn't panic and returns non-zero for non-trivial input
         assert_ne!(sig, 0);
+    }
+
+    #[test]
+    fn test_tail_window_signature_match() {
+        // A short signature (pattern_len = 4) placed in the tail of a buffer
+        // whose length excludes the global max pattern length (24) must still match.
+        let body = [0xDE, 0xAD, 0xBE, 0xEF];
+        let mut code = vec![0x90u8; 14];
+        code.extend_from_slice(&body);
+        code.extend_from_slice(&[0x90u8; 8]);
+        assert_eq!(code.len(), 26); // 26 < 24 + 24: old global-max bound stopped at offset 2
+
+        let short_sig = FunctionSignature {
+            crc32: crc32(&body),
+            pattern_len: 4,
+            library: "test",
+            function_name: "tail_func",
+            min_func_len: 4,
+        };
+        let long_dummy = FunctionSignature {
+            crc32: 0xFFFF_FFFF,
+            pattern_len: 24,
+            library: "test",
+            function_name: "long_dummy",
+            min_func_len: usize::MAX,
+        };
+
+        let config = SigScanConfig { step: 1, max_matches: 100, detect_compiler: false };
+        let result = scan_signatures_with(&code, 0x1000, &config, &[short_sig, long_dummy]);
+
+        assert_eq!(result.matches.len(), 1, "tail-window match was missed");
+        assert_eq!(result.matches[0].offset, 0x1000 + 14);
+        assert_eq!(result.matches[0].signature.function_name, "tail_func");
+    }
+
+    #[test]
+    fn test_step_zero_is_clamped() {
+        // step == 0 previously made the slide loop spin forever when no match
+        // ever fired; it must be clamped so the scan terminates.
+        let code = vec![0x90u8; 64];
+        let config = SigScanConfig { step: 0, max_matches: 100, detect_compiler: false };
+        let result = scan_signatures(&code, 0, &config);
+        assert!(result.matches.is_empty());
+    }
+
+    #[test]
+    fn test_detect_compiler_tie_determinism() {
+        // One MSVC x86 prologue and one GCC x86 prologue: equal votes (1 vs 1).
+        // Winner must be resolved deterministically by name (GCC < MSVC).
+        let mut code = vec![0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10];
+        code.extend_from_slice(&[0x55, 0x89, 0xE5, 0x57, 0x56]);
+
+        let first = detect_compiler(&code).expect("compiler should be detected");
+        assert_eq!(first.compiler, "GCC", "tie must resolve by name ascending");
+        assert_eq!(first.evidence.len(), 2);
+
+        for _ in 0..16 {
+            assert_eq!(detect_compiler(&code).unwrap().compiler, "GCC");
+        }
     }
 
     #[test]

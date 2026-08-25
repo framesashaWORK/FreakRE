@@ -139,28 +139,37 @@ impl TypeEngine {
         }
     }
 
-    /// Merge two types (for type inference)
+    /// Merge two types (for type inference).
+    ///
+    /// Deterministic rules:
+    /// - pointer + integer -> the pointer itself (commutative: argument
+    ///   order does not matter);
+    /// - integer + integer -> the wider width wins; mixed signedness
+    ///   always resolves to the *unsigned* variant of the resulting width.
     pub fn merge_types(&self, t1: &Type, t2: &Type) -> Result<Type> {
         if t1 == t2 {
             return Ok(t1.clone());
         }
 
-        // Pointer + integer = pointer (with offset)
-        if let Type::Pointer(inner) = t1 {
-            if t2.is_integer() {
-                return Ok(Type::Pointer(inner.clone()));
-            }
+        // Pointer + integer = pointer (with offset); commutative.
+        if t1.is_pointer() && t2.is_integer() {
+            return Ok(t1.clone());
+        }
+        if t2.is_pointer() && t1.is_integer() {
+            return Ok(t2.clone());
         }
 
-        // Integer promotion
+        // Integer promotion: larger width wins; ties and mixed sign
+        // resolve to unsigned of the winning width.
         if t1.is_integer() && t2.is_integer() {
-            let size1 = t1.bit_width().unwrap_or(0);
-            let size2 = t2.bit_width().unwrap_or(0);
-            if size1 >= size2 {
-                return Ok(t1.clone());
-            } else {
-                return Ok(t2.clone());
-            }
+            let w1 = t1.bit_width().unwrap_or(0);
+            let w2 = t2.bit_width().unwrap_or(0);
+            let s1 = t1.is_signed().unwrap_or(true);
+            let s2 = t2.is_signed().unwrap_or(true);
+            return Ok(Type::Int {
+                bits: w1.max(w2),
+                signed: s1 && s2,
+            });
         }
 
         Err(TypeError::Conflict(
@@ -187,15 +196,19 @@ impl Default for TypeEngine {
 }
 
 /// Simple C-style type parser
+///
+/// The lexer operates on `char`s: `pos` is a character offset and
+/// `read_identifier` rebuilds text from the char buffer, so slicing can
+/// never land mid-UTF-8-character on non-ASCII identifiers.
 struct TypeParser {
-    input: String,
+    input: Vec<char>,
     pos: usize,
 }
 
 impl TypeParser {
     fn new(input: &str) -> Self {
         Self {
-            input: input.trim().to_string(),
+            input: input.trim().chars().collect(),
             pos: 0,
         }
     }
@@ -224,38 +237,120 @@ impl TypeParser {
             result = Type::Pointer(Box::new(result));
         }
 
+        loop {
+            self.skip_whitespace();
+            if self.peek() == Some('*') {
+                self.advance();
+                result = Type::Pointer(Box::new(result));
+            } else {
+                break;
+            }
+        }
+
         Ok(result)
     }
 
     fn parse_base_type(&mut self) -> Result<Type> {
-        let token = self.read_identifier();
+        let first = self.read_identifier();
 
-        match token.as_str() {
+        if first.is_empty() {
+            let input: String = self.input.iter().collect();
+            return Err(TypeError::Parse(format!(
+                "expected a type name in {:?}",
+                input
+            )));
+        }
+        if first.chars().next().unwrap().is_ascii_digit() {
+            return Err(TypeError::Parse(format!(
+                "invalid type name '{}': identifiers cannot start with a digit",
+                first
+            )));
+        }
+
+        if matches!(first.as_str(), "struct" | "enum" | "union") {
+            self.skip_whitespace();
+            let name = self.read_identifier();
+            if name.is_empty() {
+                return Err(TypeError::Parse(format!(
+                    "expected a name after '{}' keyword",
+                    first
+                )));
+            }
+            return Ok(match first.as_str() {
+                "enum" => Type::enum_type(name),
+                _ => Type::struct_type(name),
+            });
+        }
+
+        let mut words = vec![first];
+        while matches!(
+            words.last().map(|s| s.as_str()),
+            Some("signed") | Some("unsigned") | Some("long") | Some("short")
+        ) || words.len() < 3 && matches!(words.last().map(|s| s.as_str()), Some("int"))
+               && words.len() > 1
+        {
+            let save = self.pos;
+            self.skip_whitespace();
+            let next_ok = self
+                .peek()
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+            if !next_ok {
+                self.pos = save;
+                break;
+            }
+            let candidate = self.read_identifier();
+            let combined = format!("{} {}", words.join(" "), candidate);
+            const VALID: &[&str] = &[
+                "unsigned char",
+                "unsigned short",
+                "unsigned short int",
+                "unsigned int",
+                "unsigned long",
+                "unsigned long int",
+                "unsigned long long",
+                "unsigned long long int",
+                "signed char",
+                "signed short",
+                "signed short int",
+                "signed int",
+                "signed long",
+                "signed long int",
+                "signed long long",
+                "signed long long int",
+                "long long",
+                "long long int",
+                "long int",
+                "long double",
+                "short int",
+            ];
+            if VALID.contains(&combined.as_str()) {
+                words.push(candidate);
+            } else {
+                self.pos = save;
+                break;
+            }
+        }
+
+        match words.join(" ").as_str() {
             "void" => Ok(Type::void()),
             "bool" | "_Bool" => Ok(Type::bool()),
             "char" => Ok(Type::char()),
-            "int" | "long" => Ok(Type::i32()),
-            "short" => Ok(Type::i16()),
+            "int" | "signed" | "signed int" | "long" | "long int" | "signed long"
+            | "signed long int" => Ok(Type::i32()),
+            "short" | "short int" | "signed short" | "signed short int" => Ok(Type::i16()),
             "float" => Ok(Type::f32()),
-            "double" => Ok(Type::f64()),
+            "double" | "long double" => Ok(Type::f64()),
             "int8_t" | "signed char" => Ok(Type::i8()),
             "uint8_t" | "unsigned char" => Ok(Type::u8()),
             "int16_t" => Ok(Type::i16()),
-            "uint16_t" | "unsigned short" => Ok(Type::u16()),
+            "uint16_t" | "unsigned short" | "unsigned short int" => Ok(Type::u16()),
             "int32_t" => Ok(Type::i32()),
-            "uint32_t" | "unsigned int" | "unsigned" => Ok(Type::u32()),
-            "int64_t" => Ok(Type::i64()),
-            "uint64_t" | "unsigned long long" => Ok(Type::u64()),
-            "struct" => {
-                self.skip_whitespace();
-                let name = self.read_identifier();
-                Ok(Type::struct_type(name))
-            }
-            "enum" => {
-                self.skip_whitespace();
-                let name = self.read_identifier();
-                Ok(Type::enum_type(name))
-            }
+            "uint32_t" | "unsigned int" | "unsigned" | "unsigned long"
+            | "unsigned long int" => Ok(Type::u32()),
+            "int64_t" | "long long" | "long long int" | "signed long long"
+            | "signed long long int" => Ok(Type::i64()),
+            "uint64_t" | "unsigned long long" | "unsigned long long int" => Ok(Type::u64()),
             name => {
                 // Assume it's a typedef or struct name
                 Ok(Type::struct_type(name))
@@ -264,7 +359,7 @@ impl TypeParser {
     }
 
     fn peek(&self) -> Option<char> {
-        self.input.chars().nth(self.pos)
+        self.input.get(self.pos).copied()
     }
 
     fn advance(&mut self) {
@@ -283,7 +378,7 @@ impl TypeParser {
         while self.peek().map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) {
             self.advance();
         }
-        self.input[start..self.pos].to_string()
+        self.input[start..self.pos].iter().collect()
     }
 }
 
@@ -351,6 +446,93 @@ mod tests {
         ], PrimitiveType::I32).unwrap();
 
         assert_eq!(e.variants.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_non_ascii_identifier_does_not_panic() {
+        let mut engine = TypeEngine::new();
+
+        // Regression: peek() counted chars while read_identifier sliced
+        // bytes, panicking with "byte index not a char boundary".
+        let ty = engine.parse_type("тип").unwrap();
+        assert_eq!(ty, Type::struct_type("тип"));
+
+        let ptr = engine.parse_type("тип*").unwrap();
+        assert_eq!(ptr, Type::pointer(Type::struct_type("тип")));
+
+        let qualified = engine.parse_type("struct тип").unwrap();
+        assert_eq!(qualified, Type::struct_type("тип"));
+    }
+
+    #[test]
+    fn test_parse_signed_is_int32() {
+        let mut engine = TypeEngine::new();
+
+        assert_eq!(engine.parse_type("signed").unwrap(), Type::i32());
+        assert_eq!(engine.parse_type("signed int").unwrap(), Type::i32());
+        assert_eq!(engine.parse_type("char").unwrap(), Type::char());
+    }
+
+    #[test]
+    fn test_parse_long_double_is_f64_sized_float() {
+        let mut engine = TypeEngine::new();
+
+        let ty = engine.parse_type("long double").unwrap();
+        assert_eq!(ty, Type::f64());
+        assert!(ty.is_float());
+        assert_eq!(engine.size_of(&ty).unwrap(), 8);
+    }
+
+    #[test]
+    fn test_merge_pointer_integer_commutative() {
+        let engine = TypeEngine::new();
+
+        let ptr = Type::pointer(Type::i32());
+        let int = Type::u64();
+
+        assert_eq!(engine.merge_types(&ptr, &int).unwrap(), ptr);
+        assert_eq!(engine.merge_types(&int, &ptr).unwrap(), ptr);
+    }
+
+    #[test]
+    fn test_merge_integer_deterministic_widening() {
+        let engine = TypeEngine::new();
+
+        // Mixed signedness resolves to unsigned, independent of order.
+        assert_eq!(
+            engine.merge_types(&Type::i32(), &Type::u32()).unwrap(),
+            Type::u32()
+        );
+        assert_eq!(
+            engine.merge_types(&Type::u32(), &Type::i32()).unwrap(),
+            Type::u32()
+        );
+
+        // Larger width wins; mixed sign still resolves to unsigned.
+        assert_eq!(
+            engine.merge_types(&Type::i16(), &Type::i32()).unwrap(),
+            Type::i32()
+        );
+        assert_eq!(
+            engine.merge_types(&Type::i8(), &Type::i64()).unwrap(),
+            Type::i64()
+        );
+        assert_eq!(
+            engine.merge_types(&Type::u8(), &Type::i64()).unwrap(),
+            Type::u64()
+        );
+    }
+
+    #[test]
+    fn test_parse_garbage_returns_parse_error() {
+        let mut engine = TypeEngine::new();
+
+        for garbage in ["", "   ", "*", "123", "123abc", "struct"] {
+            match engine.parse_type(garbage) {
+                Err(TypeError::Parse(_)) => {}
+                other => panic!("parse_type({:?}) should be Parse error, got {:?}", garbage, other),
+            }
+        }
     }
 }
 

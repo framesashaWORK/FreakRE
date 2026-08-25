@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_assignments)]
+#![allow(unused_assignments)]
 //! # backdoor-analyzer
 //!
 //! Dedicated backdoor detection engine for the bibleteks scanner.

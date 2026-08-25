@@ -5,6 +5,8 @@ use std::fmt;
 /// A single shellcode detection finding.
 #[derive(Debug, Clone)]
 pub struct ShellcodeFinding {
+    /// Stable rule identifier (e.g. "SHELLCODE_XOR_DECODER").
+    pub rule_id: String,
     /// Human-readable description of what was detected.
     pub description: String,
     /// Evidence details (offsets, pattern names, resolved APIs).
@@ -13,6 +15,25 @@ pub struct ShellcodeFinding {
     pub offset: usize,
     /// Confidence score [0.0 – 1.0].
     pub confidence: f64,
+}
+
+impl ShellcodeFinding {
+    /// Convenience constructor that initialises all fields.
+    pub fn new(
+        rule_id: &str,
+        description: impl Into<String>,
+        evidence: Vec<String>,
+        offset: usize,
+        confidence: f64,
+    ) -> Self {
+        Self {
+            rule_id: rule_id.to_string(),
+            description: description.into(),
+            evidence,
+            offset,
+            confidence,
+        }
+    }
 }
 
 impl fmt::Display for ShellcodeFinding {

@@ -1,0 +1,993 @@
+﻿.\target\debug\freakre-scanner.exe : Scanning 1 file(s) with 8 thread(s)...
+строка:1 знак:41
++ ... p\freakRE"; .\target\debug\freakre-scanner.exe "C:\Windows\System32\n ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Scanning 1 file(s) with 8 thread(s)...:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+тФБтФБтФБ FILE REPORT тФБтФБтФБ C:\Windows\System32\notepad.exe
+  Size:     200704 bytes | Type: PE32+ | SHA256: da5807bb0997cc6b
+  Score: 0.76 | Verdict: MALICIOUS | Time: 5177 ms
+  ЁЯУК Sections:
+     тЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦСтЦСтЦСтЦС .text    | 6.27 | normal/code | 
+     тЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦСтЦСтЦСтЦСтЦС .rdata   | 5.93 | normal/code | 
+     тЦИтЦИтЦИтЦИтЦИтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦС .data    | 1.81 | text/data | 
+     тЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦС .pdata   | 4.94 | normal/code | 
+     тЦИтЦИтЦИтЦИтЦИтЦИтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦС .didat   | 2.52 | text/data | 
+     тЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦС .rsrc    | 4.61 | normal/code | 
+     тЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦИтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦСтЦС .reloc   | 4.13 | normal/code | 
+  ЁЯЪк Backdoor: risk=0.10 | CLEAN | 1 finding(s) | MITRE: T1573, T1027
+  ЁЯТЙ Shellcode: SHELLCODE_LIKELY | 475 finding(s) | 0 API hash(es) resolved
+     Patterns: Shellcode GetPC pattern: jmp $+2 (short jump NOP sled), PEB access pattern: mov rax, gs:[0x60] (PEB access x64), High-entropy region (128 bytes at 0x640) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x700) consistent with shellcode/encrypted payload, High-entropy region (896 bytes at 0xAC0) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x10C0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x1300) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x1380) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x15C0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x1BC0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x1CC0) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x1E80) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x2040) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x2100) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x2200) consistent with shellcode/encrypted payload, High-entropy region (960 bytes at 0x2280) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x2980) consistent with shellcode/encrypted payload, High-entropy region (1152 bytes at 0x2AC0) consistent with shellcode/encrypted payload, High-entropy region (576 bytes at 0x2FC0) consistent with shellcode/encrypted payload, High-entropy region (320 bytes at 0x3240) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x3440) consistent with shellcode/encrypted payload, High-entropy region (576 bytes at 0x3500) consistent with shellcode/encrypted payload, High-entropy region (576 bytes at 0x37C0) consistent with shellcode/encrypted payload, High-entropy region (2624 bytes at 0x3AC0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x4580) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x4600) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x4700) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x4A00) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x4B40) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x4BC0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x5080) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x53C0) consistent with shellcode/encrypted payload, High-entropy region (576 bytes at 0x56C0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x5940) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x5C40) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x5D40) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x5F00) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x6140) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x6680) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x6800) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x6940) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x6F00) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x7180) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x72C0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x7480) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x7900) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x7AC0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x7C80) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x7E00) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x8140) consistent with shellcode/encrypted payload, High-entropy region (320 bytes at 0x8300) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x8480) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x8500) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x8680) consistent with shellcode/encrypted payload, High-entropy region (512 bytes at 0x8880) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x8E80) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x9080) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x9400) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x9480) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x9500) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x9680) consistent with shellcode/encrypted payload, High-entropy region (640 bytes at 0x9880) consistent with shellcode/encrypted payload, High-entropy region (448 bytes at 0x9D00) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x9F00) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0xA0C0) consistent with shellcode/encrypted payload, High-entropy region (512 bytes at 0xA1C0) consistent with shellcode/encrypted payload, High-entropy region (448 bytes at 0xA540) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0xA740) consistent with shellcode/encrypted payload, High-entropy region (640 bytes at 0xA940) consistent with shellcode/encrypted payload, High-entropy region (576 bytes at 0xB140) consistent with shellcode/encrypted payload, High-entropy region (320 bytes at 0xB800) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0xB980) consistent with shellcode/encrypted payload, High-entropy region (2496 bytes at 0xBB80) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0xC580) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0xC840) consistent with shellcode/encrypted payload, High-entropy region (832 bytes at 0xCA40) consistent with shellcode/encrypted payload, High-entropy region (384 bytes at 0xCFC0) consistent with shellcode/encrypted payload, High-entropy region (320 bytes at 0xD1C0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0xD380) consistent with shellcode/encrypted payload, High-entropy region (320 bytes at 0xD400) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0xD900) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0xDBC0) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0xDC40) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0xDE00) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0xE2C0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0xE580) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0xE700) consistent with shellcode/encrypted payload, High-entropy region (512 bytes at 0xE880) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0xEC80) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0xEFC0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0xF180) consistent with shellcode/encrypted payload, High-entropy region (320 bytes at 0xF700) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0xFC00) consistent with shellcode/encrypted payload, High-entropy region (320 bytes at 0x10180) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x10540) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x105C0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x106C0) consistent with shellcode/encrypted payload, High-entropy region (448 bytes at 0x10880) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x10AC0) consistent with shellcode/encrypted payload, High-entropy region (384 bytes at 0x10D00) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x10F00) consistent with shellcode/encrypted payload, High-entropy region (704 bytes at 0x11000) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x11940) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x11D40) consistent with shellcode/encrypted payload, High-entropy region (768 bytes at 0x11FC0) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x12680) consistent with shellcode/encrypted payload, High-entropy region (448 bytes at 0x13180) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x135C0) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x14000) consistent with shellcode/encrypted payload, High-entropy region (512 bytes at 0x14440) consistent with shellcode/encrypted payload, High-entropy region (704 bytes at 0x14880) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x15140) consistent with shellcode/encrypted payload, High-entropy region (704 bytes at 0x15400) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x15740) consistent with shellcode/encrypted payload, High-entropy region (576 bytes at 0x15A40) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x15D00) consistent with shellcode/encrypted payload, High-entropy region (320 bytes at 0x15FC0) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x16180) consistent with shellcode/encrypted payload, High-entropy region (320 bytes at 0x16440) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x165C0) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x16700) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x16BC0) consistent with shellcode/encrypted payload, High-entropy region (320 bytes at 0x172C0) consistent with shellcode/encrypted payload, High-entropy region (704 bytes at 0x177C0) consistent with shellcode/encrypted payload, High-entropy region (704 bytes at 0x17D00) consistent with shellcode/encrypted payload, High-entropy region (576 bytes at 0x184C0) consistent with shellcode/encrypted payload, High-entropy region (640 bytes at 0x189C0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x19000) consistent with shellcode/encrypted payload, High-entropy region (512 bytes at 0x192C0) consistent with shellcode/encrypted payload, High-entropy region (448 bytes at 0x19CC0) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x1A140) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x1A8C0) consistent with shellcode/encrypted payload, High-entropy region (512 bytes at 0x1AD00) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x1B140) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x1B280) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x1B300) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x1B800) consistent with shellcode/encrypted payload, High-entropy region (448 bytes at 0x1B980) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x1BC00) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x1BD40) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x1BE80) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x1BF40) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x1C500) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x1C740) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x1C7C0) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x1C9C0) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x1D280) consistent with shellcode/encrypted payload, High-entropy region (960 bytes at 0x1D440) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x1DD00) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x1DDC0) consistent with shellcode/encrypted payload, High-entropy region (320 bytes at 0x1E040) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x1E280) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x1E500) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x1E580) consistent with shellcode/encrypted payload, High-entropy region (384 bytes at 0x1E680) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x1E940) consistent with shellcode/encrypted payload, High-entropy region (384 bytes at 0x1EA40) consistent with shellcode/encrypted payload, High-entropy region (512 bytes at 0x1EC00) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x20180) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x20AC0) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x21240) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x21500) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x21640) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x21F40) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x22540) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x22700) consistent with shellcode/encrypted payload, High-entropy region (128 bytes at 0x23280) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x233C0) consistent with shellcode/encrypted payload, High-entropy region (320 bytes at 0x239C0) consistent with shellcode/encrypted payload, High-entropy region (256 bytes at 0x24440) consistent with shellcode/encrypted payload, High-entropy region (64 bytes at 0x264C0) consistent with shellcode/encrypted payload, High-entropy region (7360 bytes at 0x26E40) consistent with shellcode/encrypted payload, High-entropy region (832 bytes at 0x28C40) consistent with shellcode/encrypted payload, High-entropy region (192 bytes at 0x29E00) consistent with shellcode/encrypted payload, INT3 padding block (8 bytes), INT3 padding block (16 bytes), INT3 padding block (8 bytes), INT3 padding block (22 bytes), INT3 padding block (20 bytes), INT3 padding block (20 bytes), INT3 padding block (21 bytes), INT3 padding block (11 bytes), INT3 padding block (17 bytes), INT3 padding block (20 bytes), INT3 padding block (17 bytes), INT3 padding block (20 bytes), INT3 padding block (20 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (8 bytes), INT3 padding block (10 bytes), INT3 padding block (10 bytes), INT3 padding block (18 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (20 bytes), INT3 padding block (25 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (11 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (15 bytes), INT3 padding block (9 bytes), INT3 padding block (20 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (10 bytes), INT3 padding block (10 bytes), INT3 padding block (18 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (10 bytes), INT3 padding block (22 bytes), INT3 padding block (11 bytes), INT3 padding block (21 bytes), INT3 padding block (22 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (12 bytes), INT3 padding block (8 bytes), INT3 padding block (15 bytes), INT3 padding block (10 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (12 bytes), INT3 padding block (14 bytes), INT3 padding block (17 bytes), INT3 padding block (11 bytes), INT3 padding block (21 bytes), INT3 padding block (21 bytes), INT3 padding block (19 bytes), INT3 padding block (13 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (10 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (12 bytes), INT3 padding block (8 bytes), INT3 padding block (17 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (15 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (10 bytes), INT3 padding block (21 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (10 bytes), INT3 padding block (8 bytes), INT3 padding block (11 bytes), INT3 padding block (13 bytes), INT3 padding block (21 bytes), INT3 padding block (13 bytes), INT3 padding block (10 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (21 bytes), INT3 padding block (8 bytes), INT3 padding block (20 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (8 bytes), INT3 padding block (10 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (17 bytes), INT3 padding block (13 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (16 bytes), INT3 padding block (10 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (20 bytes), INT3 padding block (15 bytes), INT3 padding block (10 bytes), INT3 padding block (8 bytes), INT3 padding block (21 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (17 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (14 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (21 bytes), INT3 padding block (20 bytes), INT3 padding block (13 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (23 bytes), INT3 padding block (19 bytes), INT3 padding block (19 bytes), INT3 padding block (19 bytes), INT3 padding block (10 bytes), INT3 padding block (19 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (10 bytes), INT3 padding block (10 bytes), INT3 padding block (10 bytes), INT3 padding block (10 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (17 bytes), INT3 padding block (13 bytes), INT3 padding block (13 bytes), INT3 padding block (8 bytes), INT3 padding block (11 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (20 bytes), INT3 padding block (14 bytes), INT3 padding block (14 bytes), INT3 padding block (13 bytes), INT3 padding block (13 bytes), INT3 padding block (21 bytes), INT3 padding block (21 bytes), INT3 padding block (19 bytes), INT3 padding block (13 bytes), INT3 padding block (10 bytes), INT3 padding block (13 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (20 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (20 bytes), INT3 padding block (19 bytes), INT3 padding block (16 bytes), INT3 padding block (16 bytes), INT3 padding block (15 bytes), INT3 padding block (20 bytes), INT3 padding block (11 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (17 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (10 bytes), INT3 padding block (9 bytes), INT3 padding block (20 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (8 bytes), INT3 padding block (21 bytes), INT3 padding block (8 bytes), INT3 padding block (8 bytes), INT3 padding block (13 bytes), INT3 padding block (9 bytes), INT3 padding block (21 bytes), INT3 padding block (14 bytes), INT3 padding block (8 bytes), INT3 padding block (9 bytes), INT3 padding block (9 bytes), INT3 padding block (21 bytes), INT3 padding block (12 bytes), INT3 padding block (22 bytes), INT3 padding block (22 bytes), INT3 padding block (13 bytes), INT3 padding block (19 bytes), INT3 padding block (15 bytes), Alphanumeric-encoded shellcode region (49 bytes), Alphanumeric-encoded shellcode region (51 bytes), Alphanumeric-encoded shellcode region (38 bytes), Alphanumeric-encoded shellcode region (46 bytes), Alphanumeric-encoded shellcode region (38 bytes), Alphanumeric-encoded shellcode region (32 bytes)
+  ЁЯФН Findings (482):
+     ЁЯЯа [import-analyzer] EVASION_ANTIDEBUG :: Multiple anti-debug APIs detected (3/6 functions)
+        Triggered by: isdebuggerpresent, gettickcount, queryperformancecounter (confidence: 0.85)
+     тЪк [pe-parser] PE_DELAY_IMPORTS :: 6 delay-imported DLL(s) detected
+        ADVAPI32.dll, COMDLG32.dll, PROPSYS.dll, SHELL32.dll, WINSPOOL.DRV, urlmon.dll
+     ЁЯФ╡ [pe-parser] PE_NO_RICH_HEADER :: No Rich header found тАФ unusual for MSVC-compiled binary (possible packer stripped it)
+     ЁЯЯб [backdoor-analyzer] EncryptedConfig :: High-entropy encrypted config block detected near network API imports
+        MITRE: T1573, T1027 | Evidence: 60 high-entropy regions found
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: Shellcode GetPC pattern: jmp $+2 (short jump NOP sled)
+        Offset: 0x2F73, Confidence: 60%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: PEB access pattern: mov rax, gs:[0x60] (PEB access x64)
+        Offset: 0xA2D3, Confidence: 80%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x640) consistent with shellcode/encrypted payload
+        Offset: 0x640, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x700) consistent with shellcode/encrypted payload
+        Offset: 0x700, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (896 bytes at 0xAC0) consistent with shellcode/encrypted payload
+        Offset: 0xAC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x10C0) consistent with shellcode/encrypted payload
+        Offset: 0x10C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x1300) consistent with shellcode/encrypted payload
+        Offset: 0x1300, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x1380) consistent with shellcode/encrypted payload
+        Offset: 0x1380, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x15C0) consistent with shellcode/encrypted payload
+        Offset: 0x15C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x1BC0) consistent with shellcode/encrypted payload
+        Offset: 0x1BC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x1CC0) consistent with shellcode/encrypted payload
+        Offset: 0x1CC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x1E80) consistent with shellcode/encrypted payload
+        Offset: 0x1E80, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x2040) consistent with shellcode/encrypted payload
+        Offset: 0x2040, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x2100) consistent with shellcode/encrypted payload
+        Offset: 0x2100, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x2200) consistent with shellcode/encrypted payload
+        Offset: 0x2200, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (960 bytes at 0x2280) consistent with shellcode/encrypted payload
+        Offset: 0x2280, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x2980) consistent with shellcode/encrypted payload
+        Offset: 0x2980, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (1152 bytes at 0x2AC0) consistent with shellcode/encrypted payload
+        Offset: 0x2AC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (576 bytes at 0x2FC0) consistent with shellcode/encrypted payload
+        Offset: 0x2FC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (320 bytes at 0x3240) consistent with shellcode/encrypted payload
+        Offset: 0x3240, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x3440) consistent with shellcode/encrypted payload
+        Offset: 0x3440, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (576 bytes at 0x3500) consistent with shellcode/encrypted payload
+        Offset: 0x3500, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (576 bytes at 0x37C0) consistent with shellcode/encrypted payload
+        Offset: 0x37C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (2624 bytes at 0x3AC0) consistent with shellcode/encrypted payload
+        Offset: 0x3AC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x4580) consistent with shellcode/encrypted payload
+        Offset: 0x4580, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x4600) consistent with shellcode/encrypted payload
+        Offset: 0x4600, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x4700) consistent with shellcode/encrypted payload
+        Offset: 0x4700, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x4A00) consistent with shellcode/encrypted payload
+        Offset: 0x4A00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x4B40) consistent with shellcode/encrypted payload
+        Offset: 0x4B40, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x4BC0) consistent with shellcode/encrypted payload
+        Offset: 0x4BC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x5080) consistent with shellcode/encrypted payload
+        Offset: 0x5080, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x53C0) consistent with shellcode/encrypted payload
+        Offset: 0x53C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (576 bytes at 0x56C0) consistent with shellcode/encrypted payload
+        Offset: 0x56C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x5940) consistent with shellcode/encrypted payload
+        Offset: 0x5940, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x5C40) consistent with shellcode/encrypted payload
+        Offset: 0x5C40, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x5D40) consistent with shellcode/encrypted payload
+        Offset: 0x5D40, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x5F00) consistent with shellcode/encrypted payload
+        Offset: 0x5F00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x6140) consistent with shellcode/encrypted payload
+        Offset: 0x6140, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x6680) consistent with shellcode/encrypted payload
+        Offset: 0x6680, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x6800) consistent with shellcode/encrypted payload
+        Offset: 0x6800, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x6940) consistent with shellcode/encrypted payload
+        Offset: 0x6940, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x6F00) consistent with shellcode/encrypted payload
+        Offset: 0x6F00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x7180) consistent with shellcode/encrypted payload
+        Offset: 0x7180, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x72C0) consistent with shellcode/encrypted payload
+        Offset: 0x72C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x7480) consistent with shellcode/encrypted payload
+        Offset: 0x7480, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x7900) consistent with shellcode/encrypted payload
+        Offset: 0x7900, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x7AC0) consistent with shellcode/encrypted payload
+        Offset: 0x7AC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x7C80) consistent with shellcode/encrypted payload
+        Offset: 0x7C80, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x7E00) consistent with shellcode/encrypted payload
+        Offset: 0x7E00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x8140) consistent with shellcode/encrypted payload
+        Offset: 0x8140, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (320 bytes at 0x8300) consistent with shellcode/encrypted payload
+        Offset: 0x8300, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x8480) consistent with shellcode/encrypted payload
+        Offset: 0x8480, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x8500) consistent with shellcode/encrypted payload
+        Offset: 0x8500, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x8680) consistent with shellcode/encrypted payload
+        Offset: 0x8680, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (512 bytes at 0x8880) consistent with shellcode/encrypted payload
+        Offset: 0x8880, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x8E80) consistent with shellcode/encrypted payload
+        Offset: 0x8E80, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x9080) consistent with shellcode/encrypted payload
+        Offset: 0x9080, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x9400) consistent with shellcode/encrypted payload
+        Offset: 0x9400, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x9480) consistent with shellcode/encrypted payload
+        Offset: 0x9480, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x9500) consistent with shellcode/encrypted payload
+        Offset: 0x9500, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x9680) consistent with shellcode/encrypted payload
+        Offset: 0x9680, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (640 bytes at 0x9880) consistent with shellcode/encrypted payload
+        Offset: 0x9880, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (448 bytes at 0x9D00) consistent with shellcode/encrypted payload
+        Offset: 0x9D00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x9F00) consistent with shellcode/encrypted payload
+        Offset: 0x9F00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0xA0C0) consistent with shellcode/encrypted payload
+        Offset: 0xA0C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (512 bytes at 0xA1C0) consistent with shellcode/encrypted payload
+        Offset: 0xA1C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (448 bytes at 0xA540) consistent with shellcode/encrypted payload
+        Offset: 0xA540, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0xA740) consistent with shellcode/encrypted payload
+        Offset: 0xA740, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (640 bytes at 0xA940) consistent with shellcode/encrypted payload
+        Offset: 0xA940, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (576 bytes at 0xB140) consistent with shellcode/encrypted payload
+        Offset: 0xB140, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (320 bytes at 0xB800) consistent with shellcode/encrypted payload
+        Offset: 0xB800, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0xB980) consistent with shellcode/encrypted payload
+        Offset: 0xB980, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (2496 bytes at 0xBB80) consistent with shellcode/encrypted payload
+        Offset: 0xBB80, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0xC580) consistent with shellcode/encrypted payload
+        Offset: 0xC580, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0xC840) consistent with shellcode/encrypted payload
+        Offset: 0xC840, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (832 bytes at 0xCA40) consistent with shellcode/encrypted payload
+        Offset: 0xCA40, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (384 bytes at 0xCFC0) consistent with shellcode/encrypted payload
+        Offset: 0xCFC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (320 bytes at 0xD1C0) consistent with shellcode/encrypted payload
+        Offset: 0xD1C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0xD380) consistent with shellcode/encrypted payload
+        Offset: 0xD380, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (320 bytes at 0xD400) consistent with shellcode/encrypted payload
+        Offset: 0xD400, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0xD900) consistent with shellcode/encrypted payload
+        Offset: 0xD900, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0xDBC0) consistent with shellcode/encrypted payload
+        Offset: 0xDBC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0xDC40) consistent with shellcode/encrypted payload
+        Offset: 0xDC40, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0xDE00) consistent with shellcode/encrypted payload
+        Offset: 0xDE00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0xE2C0) consistent with shellcode/encrypted payload
+        Offset: 0xE2C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0xE580) consistent with shellcode/encrypted payload
+        Offset: 0xE580, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0xE700) consistent with shellcode/encrypted payload
+        Offset: 0xE700, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (512 bytes at 0xE880) consistent with shellcode/encrypted payload
+        Offset: 0xE880, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0xEC80) consistent with shellcode/encrypted payload
+        Offset: 0xEC80, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0xEFC0) consistent with shellcode/encrypted payload
+        Offset: 0xEFC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0xF180) consistent with shellcode/encrypted payload
+        Offset: 0xF180, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (320 bytes at 0xF700) consistent with shellcode/encrypted payload
+        Offset: 0xF700, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0xFC00) consistent with shellcode/encrypted payload
+        Offset: 0xFC00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (320 bytes at 0x10180) consistent with shellcode/encrypted payload
+        Offset: 0x10180, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x10540) consistent with shellcode/encrypted payload
+        Offset: 0x10540, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x105C0) consistent with shellcode/encrypted payload
+        Offset: 0x105C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x106C0) consistent with shellcode/encrypted payload
+        Offset: 0x106C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (448 bytes at 0x10880) consistent with shellcode/encrypted payload
+        Offset: 0x10880, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x10AC0) consistent with shellcode/encrypted payload
+        Offset: 0x10AC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (384 bytes at 0x10D00) consistent with shellcode/encrypted payload
+        Offset: 0x10D00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x10F00) consistent with shellcode/encrypted payload
+        Offset: 0x10F00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (704 bytes at 0x11000) consistent with shellcode/encrypted payload
+        Offset: 0x11000, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x11940) consistent with shellcode/encrypted payload
+        Offset: 0x11940, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x11D40) consistent with shellcode/encrypted payload
+        Offset: 0x11D40, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (768 bytes at 0x11FC0) consistent with shellcode/encrypted payload
+        Offset: 0x11FC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x12680) consistent with shellcode/encrypted payload
+        Offset: 0x12680, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (448 bytes at 0x13180) consistent with shellcode/encrypted payload
+        Offset: 0x13180, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x135C0) consistent with shellcode/encrypted payload
+        Offset: 0x135C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x14000) consistent with shellcode/encrypted payload
+        Offset: 0x14000, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (512 bytes at 0x14440) consistent with shellcode/encrypted payload
+        Offset: 0x14440, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (704 bytes at 0x14880) consistent with shellcode/encrypted payload
+        Offset: 0x14880, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x15140) consistent with shellcode/encrypted payload
+        Offset: 0x15140, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (704 bytes at 0x15400) consistent with shellcode/encrypted payload
+        Offset: 0x15400, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x15740) consistent with shellcode/encrypted payload
+        Offset: 0x15740, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (576 bytes at 0x15A40) consistent with shellcode/encrypted payload
+        Offset: 0x15A40, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x15D00) consistent with shellcode/encrypted payload
+        Offset: 0x15D00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (320 bytes at 0x15FC0) consistent with shellcode/encrypted payload
+        Offset: 0x15FC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x16180) consistent with shellcode/encrypted payload
+        Offset: 0x16180, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (320 bytes at 0x16440) consistent with shellcode/encrypted payload
+        Offset: 0x16440, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x165C0) consistent with shellcode/encrypted payload
+        Offset: 0x165C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x16700) consistent with shellcode/encrypted payload
+        Offset: 0x16700, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x16BC0) consistent with shellcode/encrypted payload
+        Offset: 0x16BC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (320 bytes at 0x172C0) consistent with shellcode/encrypted payload
+        Offset: 0x172C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (704 bytes at 0x177C0) consistent with shellcode/encrypted payload
+        Offset: 0x177C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (704 bytes at 0x17D00) consistent with shellcode/encrypted payload
+        Offset: 0x17D00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (576 bytes at 0x184C0) consistent with shellcode/encrypted payload
+        Offset: 0x184C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (640 bytes at 0x189C0) consistent with shellcode/encrypted payload
+        Offset: 0x189C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x19000) consistent with shellcode/encrypted payload
+        Offset: 0x19000, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (512 bytes at 0x192C0) consistent with shellcode/encrypted payload
+        Offset: 0x192C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (448 bytes at 0x19CC0) consistent with shellcode/encrypted payload
+        Offset: 0x19CC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x1A140) consistent with shellcode/encrypted payload
+        Offset: 0x1A140, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x1A8C0) consistent with shellcode/encrypted payload
+        Offset: 0x1A8C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (512 bytes at 0x1AD00) consistent with shellcode/encrypted payload
+        Offset: 0x1AD00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x1B140) consistent with shellcode/encrypted payload
+        Offset: 0x1B140, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x1B280) consistent with shellcode/encrypted payload
+        Offset: 0x1B280, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x1B300) consistent with shellcode/encrypted payload
+        Offset: 0x1B300, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x1B800) consistent with shellcode/encrypted payload
+        Offset: 0x1B800, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (448 bytes at 0x1B980) consistent with shellcode/encrypted payload
+        Offset: 0x1B980, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x1BC00) consistent with shellcode/encrypted payload
+        Offset: 0x1BC00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x1BD40) consistent with shellcode/encrypted payload
+        Offset: 0x1BD40, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x1BE80) consistent with shellcode/encrypted payload
+        Offset: 0x1BE80, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x1BF40) consistent with shellcode/encrypted payload
+        Offset: 0x1BF40, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x1C500) consistent with shellcode/encrypted payload
+        Offset: 0x1C500, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x1C740) consistent with shellcode/encrypted payload
+        Offset: 0x1C740, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x1C7C0) consistent with shellcode/encrypted payload
+        Offset: 0x1C7C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x1C9C0) consistent with shellcode/encrypted payload
+        Offset: 0x1C9C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x1D280) consistent with shellcode/encrypted payload
+        Offset: 0x1D280, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (960 bytes at 0x1D440) consistent with shellcode/encrypted payload
+        Offset: 0x1D440, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x1DD00) consistent with shellcode/encrypted payload
+        Offset: 0x1DD00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x1DDC0) consistent with shellcode/encrypted payload
+        Offset: 0x1DDC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (320 bytes at 0x1E040) consistent with shellcode/encrypted payload
+        Offset: 0x1E040, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x1E280) consistent with shellcode/encrypted payload
+        Offset: 0x1E280, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x1E500) consistent with shellcode/encrypted payload
+        Offset: 0x1E500, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x1E580) consistent with shellcode/encrypted payload
+        Offset: 0x1E580, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (384 bytes at 0x1E680) consistent with shellcode/encrypted payload
+        Offset: 0x1E680, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x1E940) consistent with shellcode/encrypted payload
+        Offset: 0x1E940, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (384 bytes at 0x1EA40) consistent with shellcode/encrypted payload
+        Offset: 0x1EA40, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (512 bytes at 0x1EC00) consistent with shellcode/encrypted payload
+        Offset: 0x1EC00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x20180) consistent with shellcode/encrypted payload
+        Offset: 0x20180, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x20AC0) consistent with shellcode/encrypted payload
+        Offset: 0x20AC0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x21240) consistent with shellcode/encrypted payload
+        Offset: 0x21240, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x21500) consistent with shellcode/encrypted payload
+        Offset: 0x21500, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x21640) consistent with shellcode/encrypted payload
+        Offset: 0x21640, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x21F40) consistent with shellcode/encrypted payload
+        Offset: 0x21F40, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x22540) consistent with shellcode/encrypted payload
+        Offset: 0x22540, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x22700) consistent with shellcode/encrypted payload
+        Offset: 0x22700, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (128 bytes at 0x23280) consistent with shellcode/encrypted payload
+        Offset: 0x23280, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x233C0) consistent with shellcode/encrypted payload
+        Offset: 0x233C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (320 bytes at 0x239C0) consistent with shellcode/encrypted payload
+        Offset: 0x239C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (256 bytes at 0x24440) consistent with shellcode/encrypted payload
+        Offset: 0x24440, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (64 bytes at 0x264C0) consistent with shellcode/encrypted payload
+        Offset: 0x264C0, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (7360 bytes at 0x26E40) consistent with shellcode/encrypted payload
+        Offset: 0x26E40, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (832 bytes at 0x28C40) consistent with shellcode/encrypted payload
+        Offset: 0x28C40, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: High-entropy region (192 bytes at 0x29E00) consistent with shellcode/encrypted payload
+        Offset: 0x29E00, Confidence: 40%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x400, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (16 bytes)
+        Offset: 0x6F0, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x778, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (22 bytes)
+        Offset: 0x82A, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0x84C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0x86C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0x8AB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (11 bytes)
+        Offset: 0x915, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (17 bytes)
+        Offset: 0x9BF, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0x9DC, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (17 bytes)
+        Offset: 0xA3F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0xA5C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0xA7C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0xABB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0xB52, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0xBDE, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0xCB7, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0xD36, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1030, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x104E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x106E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (18 bytes)
+        Offset: 0x108E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x10AC, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x10D8, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0x125C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (25 bytes)
+        Offset: 0x1277, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x13B8, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x13DB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x173B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x188E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x194F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1A13, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x1A4A, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1A6C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1A8C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1AD4, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (11 bytes)
+        Offset: 0x1B05, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1BC4, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1D9F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1F27, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x23F3, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (15 bytes)
+        Offset: 0x25C1, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x2727, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0x281C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x28BB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x2A20, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x2D30, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x30A7, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x3234, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x33BB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x34EF, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x3583, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x376F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x37E4, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x3858, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x3952, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x3B2F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x3C6B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x3DE0, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x409E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x4497, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x4902, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x4A12, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x4B4B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x4C6F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x4D57, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x4EA8, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x537C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x545E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x55A6, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (18 bytes)
+        Offset: 0x55CE, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x55FB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x56E8, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x570E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (22 bytes)
+        Offset: 0x583A, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (11 bytes)
+        Offset: 0x58B5, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0x5A9B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (22 bytes)
+        Offset: 0x5B4A, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x5BDF, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x5C0F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (12 bytes)
+        Offset: 0x5CA4, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x5F60, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (15 bytes)
+        Offset: 0x6001, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x603E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x6076, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x65B3, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x68D8, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x6A8A, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x6B7F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x6D3E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (12 bytes)
+        Offset: 0x6D88, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (14 bytes)
+        Offset: 0x6F82, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (17 bytes)
+        Offset: 0x701F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (11 bytes)
+        Offset: 0x70A5, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0x70DB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0x711B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (19 bytes)
+        Offset: 0x714D, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (13 bytes)
+        Offset: 0x7163, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x71CF, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x721C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x72BC, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x7380, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x746A, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x7638, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x797B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x7B8B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x7CEA, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x9163, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (12 bytes)
+        Offset: 0x92AC, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x9474, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (17 bytes)
+        Offset: 0x974F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xA234, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0xA5F7, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (15 bytes)
+        Offset: 0xAAB1, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0xAAC7, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xACA4, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xAE90, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xB20C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0xB672, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0xB82B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0xB907, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0xB966, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xBAB8, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xBB10, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0xBB92, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xBBC4, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (11 bytes)
+        Offset: 0xC5A5, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (13 bytes)
+        Offset: 0xC723, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0xC75B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (13 bytes)
+        Offset: 0xC783, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0xC80E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xC858, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0xCAF3, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0xCDCB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xCE30, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0xCF9C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0xCFFB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0xD28A, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xD38C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0xD40E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0xD5AA, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0xD9BF, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xE250, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xE298, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xE370, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xED48, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0xEF07, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0xEFE2, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0xF24B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (17 bytes)
+        Offset: 0xF52F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (13 bytes)
+        Offset: 0xF553, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0xF674, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0xF6DB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x10532, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x10B67, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x10C9A, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (16 bytes)
+        Offset: 0x10CE0, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x10FDA, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1102C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x112D3, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1BB98, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1BC17, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1BC8F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1BF68, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1C048, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0x1C39C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (15 bytes)
+        Offset: 0x1C441, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x1C76E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1C88C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0x1D1EB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1D827, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x1D932, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1DAA3, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (17 bytes)
+        Offset: 0x1DBEF, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1DC13, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x1E11E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (14 bytes)
+        Offset: 0x1E222, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1E264, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1E2AF, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1E5B0, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x1EACE, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1EBF7, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1EC9C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1EE4B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1EECB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1EF57, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1EFD7, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1F0BB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1F13B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x1F296, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1F5B7, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1F668, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1F7A0, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1F82B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1F8AB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1F937, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0x1FADB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0x1FB0C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (13 bytes)
+        Offset: 0x1FB23, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1FB34, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1FB83, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x1FBD0, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x1FBFF, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x1FC4E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (23 bytes)
+        Offset: 0x1FC69, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (19 bytes)
+        Offset: 0x1FCCD, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (19 bytes)
+        Offset: 0x1FD2D, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (19 bytes)
+        Offset: 0x1FD8D, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x1FDC6, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (19 bytes)
+        Offset: 0x1FDED, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x1FE76, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x201E7, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x203AB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x20710, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x2088E, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x20B1A, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x20F26, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x210C2, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x211CA, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x212FB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x2137C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x2143C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (17 bytes)
+        Offset: 0x214DF, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (13 bytes)
+        Offset: 0x21553, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (13 bytes)
+        Offset: 0x21593, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x21618, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (11 bytes)
+        Offset: 0x21635, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x216B8, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x218AB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x21B38, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x21B5F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0x21DEC, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (14 bytes)
+        Offset: 0x21E72, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (14 bytes)
+        Offset: 0x21EF2, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (13 bytes)
+        Offset: 0x21F63, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (13 bytes)
+        Offset: 0x21FA3, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0x220AB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0x221BB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (19 bytes)
+        Offset: 0x2221D, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (13 bytes)
+        Offset: 0x22253, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x222A6, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (13 bytes)
+        Offset: 0x222D3, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x2265F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x22A8C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x22AA7, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0x22AEC, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x22B14, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x22CE7, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0x22D1C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (19 bytes)
+        Offset: 0x22D4D, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (16 bytes)
+        Offset: 0x22E00, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (16 bytes)
+        Offset: 0x22E20, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (15 bytes)
+        Offset: 0x22FC1, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0x22FE2, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (11 bytes)
+        Offset: 0x23085, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x2317B, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x23220, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x23453, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x234F4, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x23520, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x235A7, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x235C7, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x235F8, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x236AC, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x236C3, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (17 bytes)
+        Offset: 0x236EF, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x23703, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x23727, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x23738, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x23748, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x23758, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x238AB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (10 bytes)
+        Offset: 0x23966, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x239A7, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (20 bytes)
+        Offset: 0x239EC, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x23A3C, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x23BBF, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x23BD4, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0x23C23, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x23C74, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x23CDC, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (13 bytes)
+        Offset: 0x23D53, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x23DC3, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0x23DEB, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (14 bytes)
+        Offset: 0x23E12, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (8 bytes)
+        Offset: 0x24488, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x2450F, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (9 bytes)
+        Offset: 0x2459D, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (21 bytes)
+        Offset: 0x24631, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (12 bytes)
+        Offset: 0x246B4, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (22 bytes)
+        Offset: 0x246DA, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (22 bytes)
+        Offset: 0x2475A, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (13 bytes)
+        Offset: 0x247C3, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (19 bytes)
+        Offset: 0x2481D, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: INT3 padding block (15 bytes)
+        Offset: 0x24851, Confidence: 30%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: Alphanumeric-encoded shellcode region (49 bytes)
+        Offset: 0x26110, Confidence: 60%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: Alphanumeric-encoded shellcode region (51 bytes)
+        Offset: 0x26148, Confidence: 60%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: Alphanumeric-encoded shellcode region (38 bytes)
+        Offset: 0x261C8, Confidence: 60%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: Alphanumeric-encoded shellcode region (46 bytes)
+        Offset: 0x261F0, Confidence: 60%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: Alphanumeric-encoded shellcode region (38 bytes)
+        Offset: 0x2B824, Confidence: 60%
+     ЁЯЯа [shellcode-analyzer] SHELLCODE_PATTERN :: Alphanumeric-encoded shellcode region (32 bytes)
+        Offset: 0x2D810, Confidence: 60%
+     ЁЯЯб [cfg-builder] CFG_ANOMALY :: 742 unreachable basic block(s) detected тАФ possible dead code or anti-analysis
+        Offsets: [597, 888, 1066, 1100, 1132, 1195, 1301, 1500, 1577, 1599, 1628, 1660, 1723, 1874, 2014, 2231, 2358, 2493, 2641, 2654, 2663, 3120, 3150, 3182, 3214, 3244, 3559, 3609, 3703, 3829, 3867, 3925, 4184, 4248, 4763, 5119, 5455, 5651, 5844, 6084, 6553, 6630, 6809, 6886, 6951, 7645, 7837, 8179, 8378, 8551, 8552, 8564, 8641, 8989, 9129, 9244, 9403, 9573, 9760, 10374, 10381, 10468, 10544, 10762, 10836, 10873, 10914, 10989, 11005, 11368, 11431, 11828, 12079, 12093, 12100, 12219, 12527, 12675, 13149, 13167, 13284, 13400, 13650, 13788, 13885, 14127, 14420, 14715, 14816, 15230, 15442, 15518, 15635, 16128, 16452, 16535, 16676, 17185, 17384, 17471, 17666, 17938, 18076, 18094, 18251, 18543, 18775, 18937, 19112, 19327, 19449, 19745, 20125, 20191, 20348, 20574, 20867, 20902, 20987, 21224, 21262, 21498, 21562, 21605, 21880, 22124, 22171, 22242, 22346, 22413, 22692, 22709, 22799, 22947, 23005, 23079, 23185, 23280, 23378, 23392, 23553, 24135, 24529, 24848, 24985, 25419, 25792, 26198, 26227, 26495, 26942, 27016, 27522, 27679, 27813, 27867, 27931, 27981, 28003, 28111, 28285, 28299, 28348, 28385, 28544, 28778, 28984, 29017, 29240, 29697, 30075, 30498, 30603, 30954, 31473, 32233, 32648, 33057, 33383, 33404, 33414, 33666, 33756, 33774, 33866, 33942, 33959, 34224, 34251, 34548, 34692, 34704, 34770, 35174, 35244, 35354, 35400, 35416, 35501, 35628, 36187, 36524, 36848, 36885, 37711, 38217, 38249, 38412, 38628, 38872, 38901, 38952, 39038, 39078, 39107, 39126, 39549, 39627, 39678, 39895, 40157, 40173, 40201, 40251, 40261, 40357, 40500, 41013, 41463, 41719, 41839, 41852, 41861, 41870, 41879, 42013, 42673, 42695, 42830, 43033, 43172, 43404, 43664, 44556, 44821, 44876, 44937, 45129, 45520, 45682, 46123, 46243, 46252, 46261, 46270, 46286, 46385, 46633, 46659, 46776, 46864, 46994, 47137, 47196, 47361, 47512, 47677, 47769, 47828, 47993, 48144, 48309, 48433, 48584, 48749, 48873, 49024, 49189, 49281, 49340, 49505, 49573, 49886, 49932, 50011, 50051, 50169, 50547, 50906, 51066, 51077, 51084, 51091, 51229, 51267, 51287, 51288, 51296, 51442, 51469, 51470, 51478, 51659, 51760, 52124, 52333, 52354, 52373, 52387, 52415, 52874, 53109, 53262, 53421, 53651, 54301, 54633, 55243, 55499, 55652, 56681, 56751, 56904, 57169, 57200, 57856, 58073, 58088, 58093, 58098, 58136, 58158, 58224, 58607, 58788, 58848, 58995, 59292, 59609, 59720, 60167, 60386, 60995, 61359, 61718, 61779, 61897, 62068, 62171, 62393, 62533, 63585, 65029, 65137, 65145, 65320, 65546, 65842, 66086, 66286, 66620, 66629, 66638, 66768, 66841, 66924, 66982, 67117, 67305, 67314, 67381, 67426, 67721, 67738, 68570, 68652, 69331, 71290, 71622, 72336, 72340, 72806, 72821, 72824, 72835, 72839, 73290, 73752, 73769, 74068, 74090, 74570, 74909, 75013, 75424, 75907, 76105, 76304, 76307, 76419, 76708, 76827, 76939, 77547, 77629, 78426, 78433, 79119, 79727, 80691, 80696, 81058, 81544, 82056, 82390, 82443, 82447, 82778, 83171, 83252, 83272, 83308, 83465, 83766, 83905, 84647, 84755, 85163, 85184, 85196, 85674, 86713, 87297, 88037, 88338, 90350, 90370, 91088, 91550, 92294, 93114, 93531, 93786, 93801, 93804, 94071, 97261, 97565, 98794, 101693, 101697, 102177, 102193, 102213, 102421, 102709, 103443, 104344, 105001, 105069, 105922, 106596, 107194, 107867, 108244, 108330, 108842, 109031, 109072, 109177, 109238, 109242, 110015, 110031, 110045, 110051, 110085, 110247, 110348, 110552, 110687, 111702, 111850, 112145, 112237, 112296, 112461, 112536, 112663, 112783, 113381, 113512, 113736, 114588, 114753, 114918, 115089, 115566, 115764, 115852, 117496, 118045, 118070, 118251, 118447, 118509, 118581, 118736, 119028, 119190, 119847, 120114, 120483, 120555, 120562, 120597, 120815, 120851, 121297, 121615, 121761, 122129, 122142, 122402, 122468, 122543, 123295, 123312, 124217, 124285, 124622, 124919, 125084, 125505, 125515, 126139, 126496, 126614, 127415, 127592, 127904, 128617, 128803, 128853, 128899, 128976, 129023, 129097, 129102, 129129, 129517, 129565, 130013, 130527, 130735, 130910, 130918, 130968, 130987, 131201, 131659, 131848, 132238, 132882, 133425, 133689, 133918, 134330, 134594, 134828, 134899, 135006, 135228, 135391, 135507, 135571, 135704, 135864, 136252, 136314, 136363, 136628, 137016, 137320, 137708, 137842, 137970, 138083, 138147, 138411, 138683, 138781, 138820, 138829, 138835, 138893, 138918, 138948, 138957, 138963, 139701, 139830, 139871, 140940, 141076, 141092, 141249, 141267, 141285, 141303, 141321, 141339, 141357, 141375, 141393, 141411, 141429, 141447, 141465, 141477, 141495, 141507, 141525, 141543, 141581, 141596, 141645, 141856, 142040, 142200, 142236, 142469, 142997, 143117, 143181, 143261, 143579, 143604, 143648, 143697, 143744, 143751, 143783, 143815, 143829, 143857, 143905, 144012, 144044, 144058, 144067, 144082, 144102, 144111, 144131, 144184, 144200, 144555, 144633, 144722, 144742, 144802, 144876, 144956, 145343, 145364, 145377, 145524, 145562, 145628, 145666, 145722, 145821, 145938, 145984, 145990, 146002, 146014, 146026, 146038, 146050, 146062, 146074, 146086, 146098, 146110, 146122, 146134, 146146, 146158, 146170, 146182, 146194, 146206, 146218, 146230, 146242, 146254, 146266, 146278, 146290, 146302, 146314, 146326, 146338, 146350, 146362, 146374, 146478, 146555, 146573, 146730, 146748, 146766, 146784, 146802, 146820, 146838, 146856, 147013, 147170, 147188, 147206, 147224, 147242, 147260, 147278, 147435, 147453, 147727, 147869, 147969, 147981, 147993, 148005, 148017, 148050, 148085, 148148, 148314, 148419, 148509]
+     ЁЯЯа [cfg-builder] CFG_ANOMALY :: 23 trampoline block(s) (single JMP) тАФ possible opaque predicate or obfuscation
+        Offsets: [10951, 15323, 16141, 18424, 49800, 49843, 55650, 73288, 75422, 83753, 86685, 88310, 88336, 89291, 102681, 102707, 103738, 110540, 112046, 114732, 125378, 131659, 145372]
+     тЪк [func-sigs] COMPILER_DETECTED :: Compiler detected: MSVC
+        Evidence: MSVC x64 prologue (sub rsp,N)
+тФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБтФБ
+
+тХРтХРтХР SCAN SUMMARY тХРтХРтХР
+  Files: 1 total | 1 scanned | 0 clean | 0 suspicious | 1 malicious | 0 errors
+  Findings: 482 total | 0 critical
+  Duration: 5179 ms
+тХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХРтХР

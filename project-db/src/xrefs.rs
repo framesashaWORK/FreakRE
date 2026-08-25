@@ -189,31 +189,45 @@ impl XrefIndex {
         self.backward.keys().copied().collect()
     }
 
-    /// Find all call chains from source to target (BFS, limited depth)
+    /// Find call chains from source to target (BFS, limited depth).
+    ///
+    /// A global per-node visited set keeps the search from re-expanding a
+    /// node across different paths (which would blow up exponentially on
+    /// diamond-shaped call graphs), while the per-path check still guarantees
+    /// every returned chain is a simple path. The number of reported chains
+    /// is capped defensively.
     pub fn find_call_chains(&self, source: u64, target: u64, max_depth: usize) -> Vec<Vec<u64>> {
+        const MAX_CHAINS: usize = 256;
+
         let mut chains = Vec::new();
         let mut queue = std::collections::VecDeque::new();
         queue.push_back((source, vec![source]));
-        
+        let mut visited: HashSet<u64> = HashSet::new();
+        visited.insert(source);
+
         while let Some((current, path)) = queue.pop_front() {
+            if current == target && path.len() > 1 {
+                chains.push(path);
+                if chains.len() >= MAX_CHAINS {
+                    break;
+                }
+                continue;
+            }
+
             if path.len() > max_depth + 1 {
                 continue;
             }
-            
-            if current == target && path.len() > 1 {
-                chains.push(path.clone());
-                continue;
-            }
-            
+
             for callee in self.called_functions(current) {
-                if !path.contains(&callee) {
+                if !path.contains(&callee) && !visited.contains(&callee) {
+                    visited.insert(callee);
                     let mut new_path = path.clone();
                     new_path.push(callee);
                     queue.push_back((callee, new_path));
                 }
             }
         }
-        
+
         chains
     }
 
@@ -270,7 +284,6 @@ mod tests {
         index.add(Xref::new(0x1010, 0x2000, XrefType::Call).with_function(0x1000));
         index.add(Xref::new(0x1020, 0x3000, XrefType::Call).with_function(0x1000));
         
-        let callees = index.callees(0x1000);
         // Note: callees looks at xrefs_from the function address, not within it
         // We need to check called_functions instead
         let called = index.called_functions(0x1000);
@@ -294,14 +307,47 @@ mod tests {
     #[test]
     fn test_find_call_chains() {
         let mut index = XrefIndex::new();
-        
+
         // A -> B -> C -> D
         index.add(Xref::new(0xA, 0xB, XrefType::Call).with_function(0xA));
         index.add(Xref::new(0xB, 0xC, XrefType::Call).with_function(0xB));
         index.add(Xref::new(0xC, 0xD, XrefType::Call).with_function(0xC));
-        
+
         let chains = index.find_call_chains(0xA, 0xD, 5);
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0], vec![0xA, 0xB, 0xC, 0xD]);
+    }
+
+    #[test]
+    fn test_find_call_chains_diamond_terminates_and_finds_chain() {
+        let mut index = XrefIndex::new();
+
+        // Layered diamond: each layer function n_i calls two helpers, both of
+        // which call the next layer's function. A path-enumerating search
+        // yields 2^LAYERS chains; the visited-set search must terminate
+        // quickly and still report a valid chain.
+        const LAYERS: u64 = 12;
+        let n = |i: u64| 0x1000 + i * 0x100;
+        let m = |i: u64, branch: u64| 0x1000 + i * 0x100 + 0x10 + branch;
+
+        for i in 0..LAYERS {
+            index.add(Xref::new(n(i), m(i, 0), XrefType::Call).with_function(n(i)));
+            index.add(Xref::new(n(i), m(i, 1), XrefType::Call).with_function(n(i)));
+            index.add(Xref::new(m(i, 0), n(i + 1), XrefType::Call).with_function(m(i, 0)));
+            index.add(Xref::new(m(i, 1), n(i + 1), XrefType::Call).with_function(m(i, 1)));
+        }
+
+        let chains = index.find_call_chains(n(0), n(LAYERS), 128);
+
+        assert!(!chains.is_empty(), "at least one chain must be found");
+        assert!(chains.len() <= 256, "path cap respected");
+        let chain = &chains[0];
+        assert_eq!(chain.first(), Some(&n(0)));
+        assert_eq!(chain.last(), Some(&n(LAYERS)));
+        // Every returned chain is a simple path.
+        for chain in &chains {
+            let mut seen = std::collections::HashSet::new();
+            assert!(chain.iter().all(|a| seen.insert(*a)));
+        }
     }
 }

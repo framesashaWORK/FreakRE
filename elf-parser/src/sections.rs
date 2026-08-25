@@ -61,15 +61,26 @@ fn resolve_name(data: &[u8], strtab_offset: usize, strtab_size: usize, name_offs
     if strtab_offset == 0 || strtab_size == 0 {
         return format!("<unnamed@{}>", name_offset);
     }
-    let start = strtab_offset + name_offset;
-    if start >= data.len() {
+    let start = match strtab_offset.checked_add(name_offset) {
+        Some(s) => s,
+        None => return format!("<unnamed@{}>", name_offset),
+    };
+    if strtab_offset >= data.len() || start >= data.len() {
         return format!("<oob@{}>", name_offset);
     }
-    let end = data[start..]
+    let strtab_end = data.len().min(strtab_offset.saturating_add(strtab_size));
+    // A malformed sh_name can point past the string table (sh_name > sh_size),
+    // which would make `start > strtab_end` and panic on the reversed slice.
+    // Clamp before slicing; a name outside the table resolves to empty.
+    let start = start.min(strtab_end);
+    if start >= strtab_end {
+        return String::new();
+    }
+    let end = data[start..strtab_end]
         .iter()
         .position(|&b| b == 0)
         .map(|p| start + p)
-        .unwrap_or(data.len().min(start + 256));
+        .unwrap_or(strtab_end);
     String::from_utf8_lossy(&data[start..end]).to_string()
 }
 
@@ -86,10 +97,40 @@ pub fn parse_section_headers_64<'a, const BE: bool>(
         return Vec::new();
     }
 
-    let entry_size = if sh_entsize == 0 { 64usize } else { sh_entsize as usize };
-    let total_size = entry_size * sh_num as usize;
+    const EXPECTED_ENTSIZE: usize = 64;
+    let entry_size = if sh_entsize == 0 {
+        warnings.push(ElfWarning {
+            kind: ElfWarningKind::SuspiciousSection,
+            message: format!(
+                "e_shentsize is 0, assuming default {} bytes",
+                EXPECTED_ENTSIZE
+            ),
+        });
+        EXPECTED_ENTSIZE
+    } else if (sh_entsize as usize) != EXPECTED_ENTSIZE {
+        warnings.push(ElfWarning {
+            kind: ElfWarningKind::SuspiciousSection,
+            message: format!(
+                "Unusual e_shentsize={} (expected {} for ELF64): entries may be misread or overlap",
+                sh_entsize, EXPECTED_ENTSIZE
+            ),
+        });
+        sh_entsize as usize
+    } else {
+        EXPECTED_ENTSIZE
+    };
+    let total_size = match entry_size.checked_mul(sh_num as usize) {
+        Some(s) => s,
+        None => {
+            warnings.push(ElfWarning {
+                kind: ElfWarningKind::SuspiciousSection,
+                message: "Section header table size overflow".into(),
+            });
+            return Vec::new();
+        }
+    };
 
-    if sh_offset as usize + total_size > data.len() {
+    if (sh_offset as usize).checked_add(total_size).is_none_or(|end| end > data.len()) {
         warnings.push(ElfWarning {
             kind: ElfWarningKind::SuspiciousSection,
             message: format!(
@@ -100,18 +141,30 @@ pub fn parse_section_headers_64<'a, const BE: bool>(
         return Vec::new();
     }
 
-    // Resolve string table location
+    // FIXED: Validate e_shstrndx against sh_num to prevent out-of-bounds access.
+    // Malformed ELF files may set e_shstrndx >= e_shnum, which would cause
+    // incorrect string table resolution or panic.
     let (strtab_off, strtab_sz) = if (sh_strndx as usize) < sh_num as usize {
         let st_idx = sh_strndx as usize * entry_size;
         let st_base = sh_offset as usize + st_idx;
         if st_base + entry_size <= data.len() {
-            let off = read_u64::<BE>(data, st_base + 24) as usize;
-            let sz = read_u64::<BE>(data, st_base + 32) as usize;
+            let off = read_u64::<BE>(data, st_base + 24).unwrap_or(0) as usize;
+            let sz = read_u64::<BE>(data, st_base + 32).unwrap_or(0) as usize;
             (off, sz)
         } else {
+            warnings.push(ElfWarning {
+                kind: ElfWarningKind::SuspiciousSection,
+                message: format!("String table section header at index {} extends beyond file", sh_strndx),
+            });
             (0, 0)
         }
     } else {
+        if sh_strndx != 0 && sh_strndx != 0xFFFF {
+            warnings.push(ElfWarning {
+                kind: ElfWarningKind::SuspiciousSection,
+                message: format!("e_shstrndx={} is out of bounds (sh_num={})", sh_strndx, sh_num),
+            });
+        }
         (0, 0)
     };
 
@@ -123,18 +176,18 @@ pub fn parse_section_headers_64<'a, const BE: bool>(
             break;
         }
 
-        let sh_name = read_u32::<BE>(data, base) as usize;
-        let sh_type = read_u32::<BE>(data, base + 4);
-        let sh_flags_raw = read_u64::<BE>(data, base + 8);
-        let sh_addr = read_u64::<BE>(data, base + 16);
-        let sh_offset_val = read_u64::<BE>(data, base + 24);
-        let sh_size = read_u64::<BE>(data, base + 32);
-        let sh_addralign = read_u64::<BE>(data, base + 48);
+        let sh_name = read_u32::<BE>(data, base).unwrap_or(0) as usize;
+        let sh_type = read_u32::<BE>(data, base + 4).unwrap_or(0);
+        let sh_flags_raw = read_u64::<BE>(data, base + 8).unwrap_or(0);
+        let sh_addr = read_u64::<BE>(data, base + 16).unwrap_or(0);
+        let sh_offset_val = read_u64::<BE>(data, base + 24).unwrap_or(0);
+        let sh_size = read_u64::<BE>(data, base + 32).unwrap_or(0);
+        let sh_addralign = read_u64::<BE>(data, base + 48).unwrap_or(0);
 
         let flags = SectionFlags::from_bits_truncate(sh_flags_raw);
 
         // Extract section data safely
-        let sec_data = if sh_offset_val as usize + sh_size as usize <= data.len() {
+        let sec_data = if sh_offset_val.checked_add(sh_size).is_some_and(|end| end as usize <= data.len()) {
             &data[sh_offset_val as usize..sh_offset_val as usize + sh_size as usize]
         } else {
             &[]
@@ -190,10 +243,40 @@ pub fn parse_section_headers_32<'a, const BE: bool>(
         return Vec::new();
     }
 
-    let entry_size = if sh_entsize == 0 { 40usize } else { sh_entsize as usize };
-    let total_size = entry_size * sh_num as usize;
+    const EXPECTED_ENTSIZE: usize = 40;
+    let entry_size = if sh_entsize == 0 {
+        warnings.push(ElfWarning {
+            kind: ElfWarningKind::SuspiciousSection,
+            message: format!(
+                "e_shentsize is 0, assuming default {} bytes",
+                EXPECTED_ENTSIZE
+            ),
+        });
+        EXPECTED_ENTSIZE
+    } else if (sh_entsize as usize) != EXPECTED_ENTSIZE {
+        warnings.push(ElfWarning {
+            kind: ElfWarningKind::SuspiciousSection,
+            message: format!(
+                "Unusual e_shentsize={} (expected {} for ELF32): entries may be misread or overlap",
+                sh_entsize, EXPECTED_ENTSIZE
+            ),
+        });
+        sh_entsize as usize
+    } else {
+        EXPECTED_ENTSIZE
+    };
+    let total_size = match entry_size.checked_mul(sh_num as usize) {
+        Some(s) => s,
+        None => {
+            warnings.push(ElfWarning {
+                kind: ElfWarningKind::SuspiciousSection,
+                message: "Section header table size overflow".into(),
+            });
+            return Vec::new();
+        }
+    };
 
-    if sh_offset as usize + total_size > data.len() {
+    if (sh_offset as usize).checked_add(total_size).is_none_or(|end| end > data.len()) {
         warnings.push(ElfWarning {
             kind: ElfWarningKind::SuspiciousSection,
             message: format!(
@@ -204,18 +287,28 @@ pub fn parse_section_headers_32<'a, const BE: bool>(
         return Vec::new();
     }
 
-    // Resolve string table
+    // FIXED: Validate e_shstrndx against sh_num to prevent out-of-bounds access.
     let (strtab_off, strtab_sz) = if (sh_strndx as usize) < sh_num as usize {
         let st_idx = sh_strndx as usize * entry_size;
         let st_base = sh_offset as usize + st_idx;
         if st_base + entry_size <= data.len() {
-            let off = read_u32::<BE>(data, st_base + 16) as usize;
-            let sz = read_u32::<BE>(data, st_base + 20) as usize;
+            let off = read_u32::<BE>(data, st_base + 16).unwrap_or(0) as usize;
+            let sz = read_u32::<BE>(data, st_base + 20).unwrap_or(0) as usize;
             (off, sz)
         } else {
+            warnings.push(ElfWarning {
+                kind: ElfWarningKind::SuspiciousSection,
+                message: format!("String table section header at index {} extends beyond file", sh_strndx),
+            });
             (0, 0)
         }
     } else {
+        if sh_strndx != 0 && sh_strndx != 0xFFFF {
+            warnings.push(ElfWarning {
+                kind: ElfWarningKind::SuspiciousSection,
+                message: format!("e_shstrndx={} is out of bounds (sh_num={})", sh_strndx, sh_num),
+            });
+        }
         (0, 0)
     };
 
@@ -227,17 +320,17 @@ pub fn parse_section_headers_32<'a, const BE: bool>(
             break;
         }
 
-        let sh_name = read_u32::<BE>(data, base) as usize;
-        let sh_type = read_u32::<BE>(data, base + 4);
-        let sh_flags_raw = read_u32::<BE>(data, base + 8) as u64;
-        let sh_addr = read_u32::<BE>(data, base + 12) as u64;
-        let sh_offset_val = read_u32::<BE>(data, base + 16) as u64;
-        let sh_size = read_u32::<BE>(data, base + 20) as u64;
-        let sh_addralign = read_u32::<BE>(data, base + 32) as u64;
+        let sh_name = read_u32::<BE>(data, base).unwrap_or(0) as usize;
+        let sh_type = read_u32::<BE>(data, base + 4).unwrap_or(0);
+        let sh_flags_raw = read_u32::<BE>(data, base + 8).unwrap_or(0) as u64;
+        let sh_addr = read_u32::<BE>(data, base + 12).unwrap_or(0) as u64;
+        let sh_offset_val = read_u32::<BE>(data, base + 16).unwrap_or(0) as u64;
+        let sh_size = read_u32::<BE>(data, base + 20).unwrap_or(0) as u64;
+        let sh_addralign = read_u32::<BE>(data, base + 32).unwrap_or(0) as u64;
 
         let flags = SectionFlags::from_bits_truncate(sh_flags_raw);
 
-        let sec_data = if sh_offset_val as usize + sh_size as usize <= data.len() {
+        let sec_data = if sh_offset_val.checked_add(sh_size).is_some_and(|end| end as usize <= data.len()) {
             &data[sh_offset_val as usize..sh_offset_val as usize + sh_size as usize]
         } else {
             &[]
@@ -265,4 +358,42 @@ pub fn parse_section_headers_32<'a, const BE: bool>(
     }
 
     sections
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_name_sh_name_beyond_strtab() {
+        // String table at 128 with size 6; a large sh_name points past the
+        // table but still inside `data` — must not panic on a reversed slice.
+        let mut data = vec![0u8; 256];
+        data[128..134].copy_from_slice(b".text\0");
+        assert_eq!(resolve_name(&data, 128, 6, 0), ".text");
+        assert_eq!(resolve_name(&data, 128, 6, 2), "ext");
+        // sh_name == strtab_size: start lands exactly on the table end.
+        assert_eq!(resolve_name(&data, 128, 6, 5), "");
+        // sh_name > strtab_size: start would be past strtab_end.
+        assert_eq!(resolve_name(&data, 128, 6, 100), "");
+    }
+
+    #[test]
+    fn test_section_headers_malformed_sh_name_no_panic() {
+        // Minimal ELF64 section header table where section 1's sh_name
+        // exceeds the shstrtab size (sh_name > sh_size).
+        let mut data = vec![0u8; 512];
+        let s0 = 64usize;
+        data[s0 + 24..s0 + 32].copy_from_slice(&300u64.to_le_bytes()); // strtab offset
+        data[s0 + 32..s0 + 40].copy_from_slice(&6u64.to_le_bytes());   // strtab size
+        let s1 = s0 + 64;
+        data[s1..s1 + 4].copy_from_slice(&200u32.to_le_bytes());       // sh_name = 200 > 6
+        data[300..306].copy_from_slice(b".text\0");
+
+        let mut warnings = Vec::new();
+        let sections = parse_section_headers_64::<false>(&data, 64, 64, 2, 0, &mut warnings);
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].name, ".text");
+        assert!(sections[1].name.is_empty());
+    }
 }

@@ -7,8 +7,8 @@ license = "MIT"
 
 [dependencies]
 freakre-ir = { path = "../freakre-ir" }
-thiserror = "1"
-serde = { version = "1", features = ["derive"] }
+thiserror = { workspace = true }
+serde = { workspace = true }
 petgraph = "0.6"
 
 # [dev-dependencies]

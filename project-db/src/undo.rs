@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
+use sled::transaction::{ConflictableTransactionError, TransactionError};
 use crate::functions::FunctionEntry;
+use crate::Xref;
 
 /// An action that can be undone/redone
+#[allow(clippy::large_enum_variant)] // boxing FunctionEntry would complicate serde round-trips
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum Action {
     CreateFunction {
@@ -40,6 +43,9 @@ pub enum Action {
         old_type: Option<crate::Type>,
         new_type: Option<crate::Type>,
     },
+    AddXref {
+        xref: crate::Xref,
+    },
     /// Batch of multiple actions
     Batch {
         actions: Vec<Action>,
@@ -48,6 +54,10 @@ pub enum Action {
 }
 
 impl Action {
+    fn truncate_chars(s: &str, max: usize) -> String {
+        s.chars().take(max).collect()
+    }
+
     pub fn description(&self) -> String {
         match self {
             Action::CreateFunction { address, func } => {
@@ -65,8 +75,8 @@ impl Action {
             }
             Action::SetComment { address, new, .. } => {
                 let preview = new.as_deref()
-                    .map(|s| if s.len() > 30 { &s[..30] } else { s })
-                    .unwrap_or("(removed)");
+                    .map(|s| Self::truncate_chars(s, 30))
+                    .unwrap_or_else(|| "(removed)".to_string());
                 format!("Set comment '{}' at 0x{:X}", preview, address)
             }
             Action::AddBookmark { address, bookmark } => {
@@ -80,6 +90,12 @@ impl Action {
                     .map(|t| format!("{:?}", t))
                     .unwrap_or_else(|| "(none)".to_string());
                 format!("Set type '{}' at 0x{:X}", type_str, address)
+            }
+            Action::AddXref { xref } => {
+                format!(
+                    "Add xref 0x{:X} -> 0x{:X} ({})",
+                    xref.from, xref.to, xref.xref_type
+                )
             }
             Action::Batch { description, .. } => description.clone(),
         }
@@ -120,6 +136,20 @@ impl UndoStack {
 
     /// Push an undone action onto the redo stack
     pub fn push_redo(&mut self, action: Action) {
+        self.redo.push(action);
+    }
+
+    /// Restore an action to the top of the undo stack after a failed revert,
+    /// without disturbing the redo stack (unlike [`UndoStack::push`]).
+    pub fn restore_undo(&mut self, action: Action) {
+        self.undo.push(action);
+        if self.undo.len() > self.max_size {
+            self.undo.remove(0);
+        }
+    }
+
+    /// Restore an action to the top of the redo stack after a failed re-apply.
+    pub fn restore_redo(&mut self, action: Action) {
         self.redo.push(action);
     }
 
@@ -190,28 +220,42 @@ pub trait ActionExecutor {
 }
 
 impl crate::ProjectDatabase {
-    /// Undo the last action
+    /// Undo the last action.
+    ///
+    /// The action is only moved to the redo stack after a *successful*
+    /// revert; on failure it is restored so history is never destroyed.
     pub fn undo(&mut self) -> crate::Result<Option<String>> {
-        if let Some(action) = self.undo_stack.pop_undo() {
-            let description = action.description();
-            self.revert_action(&action)?;
-            self.undo_stack.push_redo(action);
-            Ok(Some(description))
-        } else {
-            Ok(None)
+        let action = match self.undo_stack.pop_undo() {
+            Some(action) => action,
+            None => return Ok(None),
+        };
+        let description = action.description();
+        if let Err(e) = self.revert_action(&action) {
+            // Revert failed: put the action back where it was.
+            self.undo_stack.restore_undo(action);
+            return Err(e);
         }
+        self.undo_stack.push_redo(action);
+        Ok(Some(description))
     }
 
-    /// Redo the last undone action
+    /// Redo the last undone action.
+    ///
+    /// The action is only moved back onto the undo stack after a *successful*
+    /// apply; on failure it is restored so history is never destroyed.
     pub fn redo(&mut self) -> crate::Result<Option<String>> {
-        if let Some(action) = self.undo_stack.pop_redo() {
-            let description = action.description();
-            self.apply_action(&action)?;
-            self.undo_stack.push_undo_from_redo(action);
-            Ok(Some(description))
-        } else {
-            Ok(None)
+        let action = match self.undo_stack.pop_redo() {
+            Some(action) => action,
+            None => return Ok(None),
+        };
+        let description = action.description();
+        if let Err(e) = self.apply_action(&action) {
+            // Apply failed: put the action back where it was.
+            self.undo_stack.restore_redo(action);
+            return Err(e);
         }
+        self.undo_stack.push_undo_from_redo(action);
+        Ok(Some(description))
     }
 
     /// Apply an action to the database
@@ -223,8 +267,12 @@ impl crate::ProjectDatabase {
             Action::DeleteFunction { address, .. } => {
                 self.delete_function_internal(*address)?;
             }
-            Action::UpdateFunction { new, .. } => {
-                self.update_function_internal(new.clone())?;
+            Action::UpdateFunction { address, new, .. } => {
+                // Normalize so the payload is stored under the same key the
+                // action was recorded for.
+                let mut normalized = new.clone();
+                normalized.address = *address;
+                self.update_function_internal(normalized)?;
             }
             Action::SetLabel { address, new, .. } => {
                 if let Some(label) = new {
@@ -246,12 +294,25 @@ impl crate::ProjectDatabase {
             Action::RemoveBookmark { address, .. } => {
                 self.remove_bookmark_internal(*address)?;
             }
-            Action::SetType { .. } => {
-                // TODO: implement type storage
+            Action::SetType { address, new_type, .. } => {
+                self.set_type_internal(*address, new_type.clone())?;
+            }
+            Action::AddXref { xref } => {
+                self.add_xref_internal(xref.clone())?;
             }
             Action::Batch { actions, .. } => {
+                // FIXED: Atomic batch — if any sub-action fails, revert all
+                // previously applied sub-actions to maintain consistency.
+                let mut applied = Vec::new();
                 for sub_action in actions {
-                    self.apply_action(sub_action)?;
+                    if let Err(e) = self.apply_action(sub_action) {
+                        // Revert all previously applied sub-actions in reverse order
+                        for prev in applied.iter().rev() {
+                            let _ = self.revert_action(prev);
+                        }
+                        return Err(e);
+                    }
+                    applied.push(sub_action.clone());
                 }
             }
         }
@@ -269,7 +330,11 @@ impl crate::ProjectDatabase {
             }
             Action::UpdateFunction { old, address, .. } => {
                 if let Some(old_func) = old {
-                    self.update_function_internal(old_func.clone())?;
+                    // Normalize so the payload is stored under the same key
+                    // the action was recorded for.
+                    let mut normalized = old_func.clone();
+                    normalized.address = *address;
+                    self.update_function_internal(normalized)?;
                 } else {
                     self.delete_function_internal(*address)?;
                 }
@@ -294,8 +359,11 @@ impl crate::ProjectDatabase {
             Action::RemoveBookmark { bookmark, .. } => {
                 self.add_bookmark_internal(bookmark.clone())?;
             }
-            Action::SetType { .. } => {
-                // TODO: implement type storage revert
+            Action::SetType { address, old_type, .. } => {
+                self.set_type_internal(*address, old_type.clone())?;
+            }
+            Action::AddXref { xref } => {
+                self.remove_xref_internal(xref)?;
             }
             Action::Batch { actions, .. } => {
                 // Revert in reverse order
@@ -371,6 +439,110 @@ impl crate::ProjectDatabase {
     fn remove_bookmark_internal(&mut self, address: u64) -> crate::Result<()> {
         let key = address.to_le_bytes();
         self.bookmarks_tree.remove(key)?;
+        self.update_modified();
+        Ok(())
+    }
+
+    fn set_type_internal(&mut self, address: u64, ty: Option<crate::Type>) -> crate::Result<()> {
+        let key = address.to_le_bytes();
+        match ty {
+            Some(t) => {
+                let value = bincode::serialize(&t)?;
+                self.types_tree.insert(key, value)?;
+            }
+            None => {
+                self.types_tree.remove(key)?;
+            }
+        }
+        self.update_modified();
+        Ok(())
+    }
+
+    fn add_xref_internal(&mut self, xref: crate::Xref) -> crate::Result<()> {
+        let key_from = format!("f:{:016X}", xref.from);
+        let key_to = format!("t:{:016X}", xref.to);
+
+        // Both index entries (forward + backward) must change together.
+        let result: std::result::Result<(), TransactionError<crate::DbError>> =
+            self.xrefs_tree.transaction(|tree| {
+                let mut xrefs: Vec<Xref> = match tree.get(key_from.as_bytes())? {
+                    Some(bytes) => crate::bounded_deserialize(bytes.as_ref())
+                        .map_err(ConflictableTransactionError::Abort)?,
+                    None => Vec::new(),
+                };
+                if !xrefs.contains(&xref) {
+                    xrefs.push(xref.clone());
+                }
+                let value = bincode::serialize(&xrefs)
+                    .map_err(|e| ConflictableTransactionError::Abort(crate::DbError::from(e)))?;
+                tree.insert(key_from.as_bytes(), value.as_slice())?;
+
+                let mut xrefs_to: Vec<Xref> = match tree.get(key_to.as_bytes())? {
+                    Some(bytes) => crate::bounded_deserialize(bytes.as_ref())
+                        .map_err(ConflictableTransactionError::Abort)?,
+                    None => Vec::new(),
+                };
+                if !xrefs_to.contains(&xref) {
+                    xrefs_to.push(xref.clone());
+                }
+                let value_to = bincode::serialize(&xrefs_to)
+                    .map_err(|e| ConflictableTransactionError::Abort(crate::DbError::from(e)))?;
+                tree.insert(key_to.as_bytes(), value_to.as_slice())?;
+
+                Ok(())
+            });
+        match result {
+            Ok(()) => {}
+            Err(TransactionError::Storage(e)) => return Err(e.into()),
+            Err(TransactionError::Abort(e)) => return Err(e),
+        }
+        self.update_modified();
+        Ok(())
+    }
+
+    fn remove_xref_internal(&mut self, xref: &crate::Xref) -> crate::Result<()> {
+        let key_from = format!("f:{:016X}", xref.from);
+        let key_to = format!("t:{:016X}", xref.to);
+        let owned = xref.clone();
+
+        // Both index entries (forward + backward) must change together.
+        let result: std::result::Result<(), TransactionError<crate::DbError>> =
+            self.xrefs_tree.transaction(move |tree| {
+                if let Some(bytes) = tree.get(key_from.as_bytes())? {
+                    let mut xrefs: Vec<Xref> = crate::bounded_deserialize(bytes.as_ref())
+                        .map_err(ConflictableTransactionError::Abort)?;
+                    xrefs.retain(|x| *x != owned);
+                    if xrefs.is_empty() {
+                        tree.remove(key_from.as_bytes())?;
+                    } else {
+                        let value = bincode::serialize(&xrefs).map_err(|e| {
+                            ConflictableTransactionError::Abort(crate::DbError::from(e))
+                        })?;
+                        tree.insert(key_from.as_bytes(), value.as_slice())?;
+                    }
+                }
+
+                if let Some(bytes) = tree.get(key_to.as_bytes())? {
+                    let mut xrefs_to: Vec<Xref> = crate::bounded_deserialize(bytes.as_ref())
+                        .map_err(ConflictableTransactionError::Abort)?;
+                    xrefs_to.retain(|x| *x != owned);
+                    if xrefs_to.is_empty() {
+                        tree.remove(key_to.as_bytes())?;
+                    } else {
+                        let value = bincode::serialize(&xrefs_to).map_err(|e| {
+                            ConflictableTransactionError::Abort(crate::DbError::from(e))
+                        })?;
+                        tree.insert(key_to.as_bytes(), value.as_slice())?;
+                    }
+                }
+
+                Ok(())
+            });
+        match result {
+            Ok(()) => {}
+            Err(TransactionError::Storage(e)) => return Err(e.into()),
+            Err(TransactionError::Abort(e)) => return Err(e),
+        }
         self.update_modified();
         Ok(())
     }

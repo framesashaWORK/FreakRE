@@ -1,6 +1,6 @@
 # FreakRE
 
-Modular reverse engineering framework written in Rust. Multi-format binary analysis with built-in decompiler, plugin system, and dual UI (native desktop + web).
+Modular reverse engineering framework written in Rust. Multi-format binary analysis with built-in decompiler, plugin system, and native desktop UI.
 
 ## Prerequisites
 
@@ -26,7 +26,7 @@ sudo apt install libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes
 sudo dnf install gtk3-devel libxkbcommon-devel openssl-devel
 ```
 
-Not needed for CLI or Web UI.
+Not needed for CLI.
 
 ### Optional: Capstone Disassembly Engine
 
@@ -46,7 +46,6 @@ Without Capstone, the `capstone-ffi` crate gracefully falls back to the internal
 
 ```
 freakre-desktop  (egui native app,   pkg: freakre-desktop)
-freakre-web      (axum web server,    pkg: freakre-web)
 freakre          (CLI binary,         pkg: freakre-scanner)
 │
 ├── freakre-scanner     ← Orchestrator with weighted signal correlation
@@ -115,15 +114,6 @@ cargo run -p freakre-desktop --release
 ```
 
 Native egui application with sidebar navigation, hex viewer, disassembler, CFG graph, theme switching, and settings persistence.
-
-### Web UI
-
-```bash
-cargo run -p freakre-web --release
-# Open http://127.0.0.1:3000
-```
-
-Axum-based web server with drag-and-drop upload and HTML report rendering.
 
 ## Modules
 

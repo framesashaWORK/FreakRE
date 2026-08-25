@@ -15,6 +15,10 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod patterns;
+pub mod recursive;
+pub mod analyzer;
+
 #[derive(Error, Debug)]
 pub enum FinderError {
     #[error("No code section provided")]
@@ -195,7 +199,10 @@ impl Default for FinderConfig {
             signature_matching: false,
             min_function_size: 4,
             max_function_size: 0x100000,
-            min_confidence: 0.3,
+            // 0.5 rejects weak heuristic candidates (lone 0x55 "push rbp" at 0.3,
+            // bare `sub esp/rsp` at 0.4) so they neither appear in results nor
+            // seed recursive descent from bogus mid-stream addresses.
+            min_confidence: 0.5,
             max_recursion_depth: 64,
         }
     }
@@ -240,11 +247,11 @@ impl Pattern {
         if data.len() < self.bytes.len() {
             return false;
         }
-        for (_i, ((b, pb), m)) in data
+        for ((b, pb), m) in data
             .iter()
             .zip(self.bytes.iter())
             .zip(self.mask.iter())
-            .enumerate()
+            
         {
             if (b & m) != (pb & m) {
                 return false;
@@ -260,6 +267,7 @@ pub struct FunctionFinder {
     prologues: Vec<Pattern>,
     epilogues: Vec<Pattern>,
     code_base: u64,
+    max_recursion_depth: usize,
 }
 
 impl FunctionFinder {
@@ -270,11 +278,17 @@ impl FunctionFinder {
             prologues,
             epilogues,
             code_base: 0,
+            max_recursion_depth: FinderConfig::default().max_recursion_depth,
         }
     }
 
     pub fn with_code_base(mut self, base: u64) -> Self {
         self.code_base = base;
+        self
+    }
+
+    pub fn with_max_recursion_depth(mut self, depth: usize) -> Self {
+        self.max_recursion_depth = depth;
         self
     }
 
@@ -318,24 +332,11 @@ impl FunctionFinder {
                 mask: vec![0xFF, 0xFF, 0xFF],
                 description: "sub rsp, imm32",
             },
-            // push rdi (System V first arg save)
-            Pattern {
-                bytes: vec![0x57],
-                mask: vec![0xFF],
-                description: "push rdi",
-            },
-            // push rbx
-            Pattern {
-                bytes: vec![0x53],
-                mask: vec![0xFF],
-                description: "push rbx",
-            },
-            // enter XX, 0 (rare but valid)
-            Pattern {
-                bytes: vec![0xC8],
-                mask: vec![0xFF],
-                description: "enter",
-            },
+            // NOTE: single-byte prologue "patterns" (push rdi 0x57, push rbx 0x53,
+            // enter 0xC8, lone push ebp/rbp 0x55) were removed deliberately: they
+            // match thousands of mid-instruction and data locations, flooding the
+            // candidate list with false functions. Only multi-byte sequences that
+            // actually identify a function entry are kept.
             // Hotpatch prologue: mov edi, edi (2-byte NOP)
             Pattern {
                 bytes: vec![0x8B, 0xFF],
@@ -567,7 +568,7 @@ impl FunctionFinder {
                 if pattern.matches(&code[offset..]) {
                     // Found a prologue — try to find the end
                     let end = self.find_function_end(code, offset)
-                        .unwrap_or(offset + 64); // fallback: assume 64 bytes
+                        .unwrap_or((offset + 64).min(code.len())); // fallback: assume 64 bytes
                     
                     functions.push(DetectedFunction {
                         start: self.code_base + offset as u64,
@@ -601,18 +602,24 @@ impl FunctionFinder {
         };
 
         if entry_offset < code.len() {
-            worklist.push_back(entry_offset);
+            worklist.push_back((entry_offset, 0usize));
         }
 
-        while let Some(offset) = worklist.pop_front() {
-            if visited.contains(&offset) || offset >= code.len() {
+        while let Some((offset, depth)) = worklist.pop_front() {
+            if offset >= code.len() {
+                continue;
+            }
+            if depth > self.max_recursion_depth {
+                continue;
+            }
+            if visited.contains(&offset) {
                 continue;
             }
             visited.insert(offset);
 
             // Analyze this function
             let end = self.find_function_end(code, offset)
-                .unwrap_or(offset + 64);
+                .unwrap_or((offset + 64).min(code.len()));
 
             functions.push(DetectedFunction {
                 start: self.code_base + offset as u64,
@@ -635,7 +642,7 @@ impl FunctionFinder {
                 };
 
                 if target_offset < code.len() && !visited.contains(&target_offset) {
-                    worklist.push_back(target_offset);
+                    worklist.push_back((target_offset, depth + 1));
                 }
             }
         }
@@ -677,19 +684,17 @@ impl FunctionFinder {
         match self.arch {
             Architecture::X86 | Architecture::X86_64 => {
                 for offset in start..end.saturating_sub(5) {
-                    // E8 xx xx xx xx (call rel32)
-                    if code[offset] == 0xE8 {
-                        if offset + 5 <= code.len() {
-                            let rel = i32::from_le_bytes([
-                                code[offset + 1],
-                                code[offset + 2],
-                                code[offset + 3],
-                                code[offset + 4],
-                            ]);
-                            let target = (self.code_base + offset as u64 + 5)
-                                .wrapping_add(rel as i64 as u64);
-                            targets.push(target);
-                        }
+                    // E8 xx xx xx xx (call rel32) — bounds first, then byte
+                    if offset + 5 <= code.len() && code[offset] == 0xE8 {
+                        let rel = i32::from_le_bytes([
+                            code[offset + 1],
+                            code[offset + 2],
+                            code[offset + 3],
+                            code[offset + 4],
+                        ]);
+                        let target = (self.code_base + offset as u64 + 5)
+                            .wrapping_add(rel as i64 as u64);
+                        targets.push(target);
                     }
                 }
             }
@@ -736,11 +741,10 @@ impl FunctionFinder {
         // FLIRT-like signature matching
 
         // Check for "thunk" pattern: jmp [target]
-        if offset + 6 <= code.len() {
-            if code[offset] == 0xFF && (code[offset + 1] & 0x38) == 0x20 {
+        if offset + 6 <= code.len()
+            && code[offset] == 0xFF && (code[offset + 1] & 0x38) == 0x20 {
                 return true; // jmp [reg/abs]
             }
-        }
 
         false
     }
@@ -807,7 +811,7 @@ mod tests {
         ];
         
         let functions = finder.find_recursive(&code, 0).unwrap();
-        assert!(functions.len() >= 1);
+        assert!(!functions.is_empty());
     }
 
     #[test]
@@ -837,6 +841,26 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].start, 0);
         assert_eq!(merged[0].end, 150);
+    }
+
+    #[test]
+    fn test_recursive_respects_max_depth() {
+        // Chain of 5 functions, each calling the next: [E8 01 00 00 00][C3] * 5
+        let mut code = Vec::new();
+        for _ in 0..5 {
+            code.extend_from_slice(&[0xE8, 0x01, 0x00, 0x00, 0x00]);
+            code.push(0xC3);
+        }
+
+        let deep = FunctionFinder::new(Architecture::X86)
+            .with_max_recursion_depth(64);
+        assert_eq!(deep.find_recursive(&code, 0).unwrap().len(), 5);
+
+        let shallow = FunctionFinder::new(Architecture::X86)
+            .with_code_base(0)
+            .with_max_recursion_depth(2);
+        let found = shallow.find_recursive(&code, 0).unwrap();
+        assert_eq!(found.len(), 3);
     }
 
     #[test]

@@ -110,23 +110,29 @@ pub fn parse_ident(data: &[u8], _warnings: &mut Vec<ElfWarning>) -> Result<ElfId
 
 // ─── Safe integer reading helpers ────────────────────────────────────
 
+/// Read a u16 from `data` at `offset`.
+/// Returns `None` if the read would go out of bounds (instead of silently returning 0).
 #[inline]
-pub fn read_u16<const BE: bool>(data: &[u8], offset: usize) -> u16 {
+#[must_use]
+pub fn read_u16<const BE: bool>(data: &[u8], offset: usize) -> Option<u16> {
     if offset + 2 > data.len() {
-        return 0;
+        return None;
     }
     let bytes: [u8; 2] = [data[offset], data[offset + 1]];
-    if BE {
+    Some(if BE {
         u16::from_be_bytes(bytes)
     } else {
         u16::from_le_bytes(bytes)
-    }
+    })
 }
 
+/// Read a u32 from `data` at `offset`.
+/// Returns `None` if the read would go out of bounds.
 #[inline]
-pub fn read_u32<const BE: bool>(data: &[u8], offset: usize) -> u32 {
+#[must_use]
+pub fn read_u32<const BE: bool>(data: &[u8], offset: usize) -> Option<u32> {
     if offset + 4 > data.len() {
-        return 0;
+        return None;
     }
     let bytes: [u8; 4] = [
         data[offset],
@@ -134,17 +140,20 @@ pub fn read_u32<const BE: bool>(data: &[u8], offset: usize) -> u32 {
         data[offset + 2],
         data[offset + 3],
     ];
-    if BE {
+    Some(if BE {
         u32::from_be_bytes(bytes)
     } else {
         u32::from_le_bytes(bytes)
-    }
+    })
 }
 
+/// Read a u64 from `data` at `offset`.
+/// Returns `None` if the read would go out of bounds.
 #[inline]
-pub fn read_u64<const BE: bool>(data: &[u8], offset: usize) -> u64 {
+#[must_use]
+pub fn read_u64<const BE: bool>(data: &[u8], offset: usize) -> Option<u64> {
     if offset + 8 > data.len() {
-        return 0;
+        return None;
     }
     let bytes: [u8; 8] = [
         data[offset],
@@ -156,9 +165,9 @@ pub fn read_u64<const BE: bool>(data: &[u8], offset: usize) -> u64 {
         data[offset + 6],
         data[offset + 7],
     ];
-    if BE {
+    Some(if BE {
         u64::from_be_bytes(bytes)
     } else {
         u64::from_le_bytes(bytes)
-    }
+    })
 }

@@ -21,12 +21,17 @@ fn size_of_inner(db: &TypeDatabase, ty: &Type, depth: usize) -> Result<usize> {
         Type::Void => Ok(0),
         Type::Bool => Ok(1),
         Type::Char => Ok(1),
-        Type::Int { bits, .. } => Ok((*bits as usize + 7) / 8),
-        Type::Float { bits } => Ok((*bits as usize + 7) / 8),
+        Type::Int { bits, .. } => Ok((*bits as usize).div_ceil(8)),
+        Type::Float { bits } => Ok((*bits as usize).div_ceil(8)),
         Type::Pointer(_) => Ok(8), // Assume 64-bit pointers
         Type::Array(inner, len) => {
             let elem_size = size_of_inner(db, inner, depth + 1)?;
-            Ok(elem_size * len)
+            elem_size.checked_mul(*len).ok_or_else(|| {
+                TypeError::Invalid(format!(
+                    "array size overflow: {} elements x {} bytes",
+                    len, elem_size
+                ))
+            })
         }
         Type::Struct(name) => {
             if let Some(s) = db.get_struct(name) {
@@ -98,8 +103,8 @@ fn align_of_inner(db: &TypeDatabase, ty: &Type, depth: usize) -> Result<usize> {
         Type::Void => Ok(1),
         Type::Bool => Ok(1),
         Type::Char => Ok(1),
-        Type::Int { bits, .. } => Ok((*bits as usize + 7) / 8),
-        Type::Float { bits } => Ok((*bits as usize + 7) / 8),
+        Type::Int { bits, .. } => Ok((*bits as usize).div_ceil(8)),
+        Type::Float { bits } => Ok((*bits as usize).div_ceil(8)),
         Type::Pointer(_) => Ok(8),
         Type::Array(inner, _) => align_of_inner(db, inner, depth + 1),
         Type::Struct(name) => {
@@ -225,5 +230,21 @@ mod tests {
         let db = TypeDatabase::new();
         let arr = Type::array(Type::i32(), 10);
         assert_eq!(size_of(&db, &arr).unwrap(), 40);
+    }
+
+    #[test]
+    fn test_array_size_overflow_returns_error() {
+        let db = TypeDatabase::new();
+
+        // 2-byte elements * usize::MAX overflows on any platform.
+        let arr = Type::array(Type::u16(), usize::MAX);
+        match size_of(&db, &arr) {
+            Err(TypeError::Invalid(msg)) => assert!(msg.contains("overflow")),
+            other => panic!("expected Invalid overflow error, got {:?}", other),
+        }
+
+        // Nested overflow must also be caught.
+        let nested = Type::array(Type::array(Type::u8(), usize::MAX), usize::MAX);
+        assert!(size_of(&db, &nested).is_err());
     }
 }

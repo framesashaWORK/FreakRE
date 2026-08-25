@@ -13,15 +13,11 @@
 //!
 //! ## Example
 //!
-//! ```rust
-//! use bibleteks_type_propagation::TypePropagator;
-//! use bibleteks_ir::{IrFunction, Ty};
+//! ```text
+//! use freakre_type_propagation::TypePropagator;
 //!
-//! let func = /* ... */;
 //! let mut propagator = TypePropagator::new();
-//! propagator.analyze(&func);
-//!
-//! // Get inferred type for a value
+//! propagator.analyze(&ir_function);
 //! if let Some(ty) = propagator.get_type(&value) {
 //!     println!("Inferred type: {}", ty);
 //! }

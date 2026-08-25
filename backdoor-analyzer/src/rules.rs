@@ -2,6 +2,7 @@
 //! Each rule targets a specific backdoor TTP (Tactics, Techniques, and Procedures).
 
 use std::fmt;
+use std::sync::OnceLock;
 
 /// Unique identifier for each backdoor detection rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -105,10 +106,14 @@ pub struct ImportSignature {
 #[derive(Debug, Clone)]
 pub struct StringSignature {
     pub rule_id: BackdoorRuleId,
-    /// Substrings to search for (case-insensitive).
+    /// Required substrings to search for (case-insensitive).
+    /// At least `min_matches` of these must match.
     pub patterns: &'static [&'static str],
-    /// Minimum number of patterns that must match.
+    /// Minimum number of required patterns that must match.
     pub min_matches: usize,
+    /// Enrichment substrings: when non-empty, at least one of these must ALSO
+    /// match for the signature to fire.
+    pub optional_patterns: &'static [&'static str],
 }
 
 // ─── Import Signatures ────────────────────────────────────────────────
@@ -118,7 +123,7 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::ReverseShell,
         required_apis: &["WSAStartup", "connect"],
-        optional_apis: &["CreateProcessA", "CreateProcessW", "cmd.exe", "powershell",
+        optional_apis: &["CreateProcessA", "CreateProcessW",
                          "ShellExecuteA", "ShellExecuteW", "WinExec"],
         min_optional: 1,
     },
@@ -133,15 +138,25 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::BindShell,
         required_apis: &["bind", "listen", "accept"],
-        optional_apis: &["CreateProcessA", "CreateProcessW", "cmd.exe", "WinExec"],
+        optional_apis: &["CreateProcessA", "CreateProcessW", "WinExec"],
         min_optional: 1,
     },
-    // Named Pipe Backdoor
+    // Named Pipe Backdoor.
+    // ReadFile/WriteFile are universal (any file or pipe I/O), so they carry
+    // no signal; require pipe-specific and execution-related APIs instead.
     ImportSignature {
         rule_id: BackdoorRuleId::NamedPipeBackdoor,
         required_apis: &["CreateNamedPipeA"],
-        optional_apis: &["ConnectNamedPipe", "ReadFile", "WriteFile",
-                         "CreateProcessA", "CreateProcessW"],
+        optional_apis: &["ConnectNamedPipe", "ImpersonateNamedPipeClient",
+                         "TransactNamedPipe", "CreateProcessA", "CreateProcessW"],
+        min_optional: 2,
+    },
+    // Named Pipe Backdoor (wide-char API variant).
+    ImportSignature {
+        rule_id: BackdoorRuleId::NamedPipeBackdoor,
+        required_apis: &["CreateNamedPipeW"],
+        optional_apis: &["ConnectNamedPipe", "ImpersonateNamedPipeClient",
+                         "TransactNamedPipe", "CreateProcessA", "CreateProcessW"],
         min_optional: 2,
     },
     // Service Backdoor
@@ -151,10 +166,25 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
         optional_apis: &["StartServiceA", "ChangeServiceConfigA"],
         min_optional: 0,
     },
+    // Service Backdoor (wide-char API variant).
+    ImportSignature {
+        rule_id: BackdoorRuleId::ServiceBackdoor,
+        required_apis: &["CreateServiceW"],
+        optional_apis: &["StartServiceW", "ChangeServiceConfigW"],
+        min_optional: 0,
+    },
     // Auth Bypass: credential hooking
     ImportSignature {
         rule_id: BackdoorRuleId::AuthBypass,
         required_apis: &["LogonUserA"],
+        optional_apis: &["CredEnumerateA", "CredReadA", "LsaLogonUser",
+                         "SspiPrepareForCredRead"],
+        min_optional: 1,
+    },
+    // Auth Bypass: credential hooking (wide-char API variant).
+    ImportSignature {
+        rule_id: BackdoorRuleId::AuthBypass,
+        required_apis: &["LogonUserW"],
         optional_apis: &["CredEnumerateA", "CredReadA", "LsaLogonUser",
                          "SspiPrepareForCredRead"],
         min_optional: 1,
@@ -173,69 +203,169 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
         optional_apis: &["NetLocalGroupAddMembers", "NetGroupAddMembers"],
         min_optional: 0,
     },
-    // C2 Beacon: sleep + recv + crypto
+    // C2 Beacon: sleep + recv + OUTBOUND connect + crypto/self-modification.
+    // Sleep+recv alone describe every networked application; a beacon must
+    // also dial out and prepare received payloads for execution.
     ImportSignature {
         rule_id: BackdoorRuleId::C2Beacon,
-        required_apis: &["Sleep", "recv"],
+        required_apis: &["Sleep", "recv", "connect"],
         optional_apis: &["CryptDecrypt", "BCryptDecrypt", "VirtualProtect",
                          "VirtualAlloc", "NtUnmapViewOfSection"],
         min_optional: 1,
-    },
-    // DLL Hijacking: known vulnerable DLL loads
-    ImportSignature {
-        rule_id: BackdoorRuleId::DllHijacking,
-        required_apis: &["LoadLibraryA"],
-        optional_apis: &["SetDllDirectoryA", "AddDllDirectory"],
-        min_optional: 0,
     },
 ];
 
 // ─── String Signatures ────────────────────────────────────────────────
 
 pub const STRING_SIGNATURES: &[StringSignature] = &[
-    // Web Shell Indicators
+    // Web Shell Indicators.
+    // `eval(` and `exec(` are ubiquitous in embedded JS/PHP runtimes of
+    // legitimate software (Electron bundles etc.), so only webshell-specific
+    // tokens count as evidence and at least TWO distinct ones are required.
     StringSignature {
         rule_id: BackdoorRuleId::WebShellIndicator,
-        patterns: &["eval(", "base64_decode", "system(", "exec(",
-                     "passthru(", "shell_exec(", "popen(", "proc_open("],
+        patterns: &["base64_decode", "shell_exec(", "passthru(", "proc_open("],
         min_matches: 2,
+        optional_patterns: &[],
     },
-    // Registry Persistence paths
+    // Registry Persistence: Run/RunOnce autorun keys are mandatory; suspicious
+    // directories only enrich (a path alone is not persistence evidence).
     StringSignature {
         rule_id: BackdoorRuleId::RegistryPersistence,
         patterns: &[
             "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
             "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
-            "\\AppData\\", "\\Temp\\", "\\ProgramData\\",
         ],
-        min_matches: 2,
+        min_matches: 1,
+        optional_patterns: &["\\AppData\\", "\\Temp\\", "\\ProgramData\\"],
     },
     // Service Backdoor paths
     StringSignature {
         rule_id: BackdoorRuleId::ServiceBackdoor,
         patterns: &["\\AppData\\Local\\Temp\\", "\\AppData\\Roaming\\",
                      "\\ProgramData\\", "svchost", "rundll32"],
-        min_matches: 1,
+        min_matches: 3,
+        optional_patterns: &[],
     },
-    // Firmware/UEFI indicators
+    // Firmware/UEFI indicators.
+    // Tokens must be UEFI-specific: generic security vocabulary like
+    // "SECURITY_PROTOCOL" appears in every large Windows binary.
     StringSignature {
         rule_id: BackdoorRuleId::FirmwareIndicator,
         patterns: &["DXE_CORE", "SMM_HANDLER", "EFI_BOOT_SERVICES",
-                     "SECURITY_PROTOCOL", "FV_MAIN", "PEI_CORE"],
+                     "FV_MAIN", "PEI_CORE", "EFI_SYSTEM_TABLE"],
         min_matches: 2,
+        optional_patterns: &[],
     },
     // C2 Beacon strings
     StringSignature {
         rule_id: BackdoorRuleId::C2Beacon,
         patterns: &["beacon", "callback", "checkin", "heartbeat",
                      "stage", "postback", "sleeptime"],
-        min_matches: 2,
+        min_matches: 3,
+        optional_patterns: &[],
     },
-    // Reverse shell common strings
+    // Reverse shell strings. Generic interpreter names (cmd.exe, powershell,
+    // whoami) live in virtually every large binary; only distinctive
+    // shell-invocation patterns count as evidence.
     StringSignature {
         rule_id: BackdoorRuleId::ReverseShell,
-        patterns: &["cmd.exe", "/bin/sh", "/bin/bash", "powershell.exe",
-                     "whoami", "ipconfig", "ifconfig"],
+        patterns: &["/bin/sh", "/bin/bash", "bash -i", "nc -e ",
+                     "powershell -enc", "cmd.exe /c", "cmd.exe /k"],
         min_matches: 2,
+        optional_patterns: &[],
+    },
+    // DLL hijacking via side-loading paths. Requires BOTH a DLL reference and
+    // a user-writable directory — LoadLibrary imports alone are meaningless.
+    StringSignature {
+        rule_id: BackdoorRuleId::DllHijacking,
+        patterns: &[".dll"],
+        min_matches: 1,
+        optional_patterns: &["\\AppData\\", "\\Temp\\", "\\ProgramData\\"],
     },
 ];
+
+// ─── Pre-lowered signature tables (process-wide, computed once) ───────
+//
+// The analyzer lowercases every API/pattern for case-insensitive matching.
+// Rules are `&'static` data, so the lowered forms never change: they are
+// computed lazily exactly once per process via `OnceLock` and leaked,
+// removing all per-analysis lowering allocations from the hot path.
+//
+// Original-cased arrays are kept alongside so evidence strings still cite
+// the canonical rule text (e.g. "CreateServiceW", not "createservicew").
+
+#[derive(Debug)]
+pub struct ImportSignatureLowered {
+    pub rule_id: BackdoorRuleId,
+    /// Original-cased required APIs — used verbatim in evidence output.
+    pub required_orig: &'static [&'static str],
+    /// Lowercased required APIs — used for matching only.
+    pub required_lower: &'static [&'static str],
+    pub optional_orig: &'static [&'static str],
+    pub optional_lower: &'static [&'static str],
+    pub min_optional: usize,
+}
+
+#[derive(Debug)]
+pub struct StringSignatureLowered {
+    pub rule_id: BackdoorRuleId,
+    /// Original-cased patterns — used verbatim in evidence output.
+    pub patterns_orig: &'static [&'static str],
+    /// Lowercased patterns — used for matching only.
+    pub patterns_lower: &'static [&'static str],
+    pub min_matches: usize,
+    pub optional_patterns_orig: &'static [&'static str],
+    pub optional_patterns_lower: &'static [&'static str],
+}
+
+fn leak_lowered(apis: &'static [&'static str]) -> &'static [&'static str] {
+    let lowered: Vec<String> = apis.iter().map(|api| api.to_lowercase()).collect();
+    let refs: Vec<&'static str> = lowered
+        .into_iter()
+        .map(|s| Box::leak(s.into_boxed_str()) as &'static str)
+        .collect();
+    Vec::leak(refs)
+}
+
+/// All import signatures with API names pre-lowered once per process.
+///
+/// Order mirrors [`IMPORT_SIGNATURES`] element-for-element; the parallel
+/// `_orig`/`_lower` slices share indices and lengths.
+pub fn import_signatures_lowered() -> &'static [ImportSignatureLowered] {
+    static LOWERED: OnceLock<Vec<ImportSignatureLowered>> = OnceLock::new();
+    LOWERED.get_or_init(|| {
+        IMPORT_SIGNATURES
+            .iter()
+            .map(|sig| ImportSignatureLowered {
+                rule_id: sig.rule_id,
+                required_orig: sig.required_apis,
+                required_lower: leak_lowered(sig.required_apis),
+                optional_orig: sig.optional_apis,
+                optional_lower: leak_lowered(sig.optional_apis),
+                min_optional: sig.min_optional,
+            })
+            .collect()
+    })
+}
+
+/// All string signatures with patterns pre-lowered once per process.
+///
+/// Order mirrors [`STRING_SIGNATURES`] element-for-element; the parallel
+/// `_orig`/`_lower` slices share indices and lengths.
+pub fn string_signatures_lowered() -> &'static [StringSignatureLowered] {
+    static LOWERED: OnceLock<Vec<StringSignatureLowered>> = OnceLock::new();
+    LOWERED.get_or_init(|| {
+        STRING_SIGNATURES
+            .iter()
+            .map(|sig| StringSignatureLowered {
+                rule_id: sig.rule_id,
+                patterns_orig: sig.patterns,
+                patterns_lower: leak_lowered(sig.patterns),
+                min_matches: sig.min_matches,
+                optional_patterns_orig: sig.optional_patterns,
+                optional_patterns_lower: leak_lowered(sig.optional_patterns),
+            })
+            .collect()
+    })
+}

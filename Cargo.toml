@@ -3,6 +3,10 @@ members = [
     "pe-parser",
     "elf-parser",
     "macho-parser",
+    "coff-parser",
+    "dex-parser",
+    "wasm-parser",
+    "flat-binary",
     "entropy-rs",
     "str-extract",
     "import-analyzer",
@@ -14,8 +18,6 @@ members = [
     "func-sigs",
     "scanner",
     "desktop-ui",
-    "web-ui",
-    "capstone-ffi",
     "freakre-ir",
     "dataflow",
     "type-propagation",
@@ -23,10 +25,22 @@ members = [
     "project-db",
     "func-finder",
     "type-system",
-    "scripting",
     "plugins",
     "diffing",
     "sys-plugins",
+    "freakre-hash",
+    "freakre-config",
+    "freakre-patterns",
+    "freakre-x86",
+    "freakre-script",
+    "scripting",
+    "symbols",
+    "capstone-ffi",
+    "ml-detection",
 ]
 exclude = ["fuzz"]
 resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"

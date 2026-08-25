@@ -25,7 +25,7 @@ pub fn print_report(report: &FileReport) {
         "Type:".dimmed(),
         report.file_type,
         "SHA256:".dimmed(),
-        &report.sha256[..16]
+        &report.sha256[..report.sha256.len().min(16)]
     );
     println!(
         "  {} {:.2} | {} {} | {} {} ms",

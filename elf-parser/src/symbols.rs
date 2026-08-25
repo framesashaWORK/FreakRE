@@ -196,7 +196,7 @@ pub fn parse_all_symbols_64<'a, const BE: bool>(
             let binding = SymbolBinding::from_raw(st_info >> 4);
             let sym_type = SymbolType::from_raw(st_info & 0xf);
 
-            let name = if let Some(ref st) = strtab {
+            let name = if let Some(st) = strtab {
                 resolve_symbol_name(data, st, st_name)
             } else {
                 None
@@ -309,7 +309,7 @@ pub fn parse_all_symbols_32<'a, const BE: bool>(
             let binding = SymbolBinding::from_raw(st_info >> 4);
             let sym_type = SymbolType::from_raw(st_info & 0xf);
 
-            let name = if let Some(ref st) = strtab {
+            let name = if let Some(st) = strtab {
                 resolve_symbol_name(data, st, st_name)
             } else {
                 None

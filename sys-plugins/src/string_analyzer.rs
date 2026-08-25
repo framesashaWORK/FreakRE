@@ -4,6 +4,7 @@
 //! file paths, registry keys, crypto hashes, emails), and creates xrefs.
 
 use plugins::{Plugin, PluginContext, PluginMetadata, MenuItem};
+use crate::util;
 
 pub struct StringAnalyzerPlugin;
 impl Default for StringAnalyzerPlugin { fn default() -> Self { Self } }
@@ -87,9 +88,13 @@ impl Plugin for StringAnalyzerPlugin {
 
                 for (pattern, category) in INTERESTING_PATTERNS {
                     if lower.contains(&pattern.to_lowercase()) {
-                        let _ = ctx.db.set_comment(
+                        // Append-style: refresh only our own "[<category>]" line,
+                        // keep user comments and other plugins' annotations.
+                        util::upsert_tagged_comment(
+                            &mut ctx.db,
                             func.address,
-                            format!("[{}] String: \"{}\"", category, truncate_str(s, 80)),
+                            &format!("[{}]", category),
+                            &format!("[{}] String: \"{}\"", category, truncate_str(s, 80)),
                         );
                         match *category {
                             "URL" | "WebSocket URL" => url_count += 1,
@@ -105,7 +110,7 @@ impl Plugin for StringAnalyzerPlugin {
 
                 // Check for IP addresses
                 if !classified && looks_like_ip(s) {
-                    let _ = ctx.db.set_comment(func.address, format!("[IP] {}", s));
+                    util::upsert_tagged_comment(&mut ctx.db, func.address, "[IP]", &format!("[IP] {}", s));
                     other_interesting += 1;
                 }
             }
@@ -123,7 +128,7 @@ fn extract_ascii_strings(data: &[u8], min_len: usize) -> Vec<String> {
     let mut current = String::new();
 
     for &byte in data {
-        if byte >= 0x20 && byte <= 0x7E {
+        if (0x20..=0x7E).contains(&byte) {
             current.push(byte as char);
         } else {
             if current.len() >= min_len {

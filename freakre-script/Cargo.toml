@@ -1,0 +1,7 @@
+[package]
+name = "freakre-script"
+version = "0.1.0"
+edition = "2021"
+description = "Sandboxed Lua-like DSL for RE automation. Capability-based security, deterministic."
+
+[dependencies]

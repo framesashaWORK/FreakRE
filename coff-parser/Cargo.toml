@@ -1,0 +1,8 @@
+[package]
+name = "coff-parser"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight COFF (Common Object File Format) parser for FreakRE"
+
+[dependencies]
+serde = { workspace = true }

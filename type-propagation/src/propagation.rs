@@ -4,7 +4,7 @@
 
 use crate::constraints::{ConstraintSystem, TypeVar};
 use crate::inference::{InferenceError, TypeInference};
-use bibleteks_ir::{IrFunction, IrInst, OpCode, Ty, Value};
+use freakre_ir::{IrFunction, IrInst, OpCode, Ty, Value};
 use std::collections::HashMap;
 
 /// Type propagator for IR functions
@@ -28,16 +28,22 @@ impl TypePropagator {
     
     /// Analyze a function and infer types
     pub fn analyze(&mut self, func: &IrFunction) -> Result<(), InferenceError> {
+        // Fresh constraint system per call: without the reset, constraints
+        // and variable ids from previously analyzed functions would leak
+        // into this analysis and corrupt the results.
+        self.cs = ConstraintSystem::new();
+        self.inference = None;
+
         // Generate constraints from all instructions
         for block in &func.blocks {
             for inst in &block.insts {
                 self.generate_constraints_from_inst(inst);
             }
         }
-        
+
         // Solve constraints
         self.inference = Some(TypeInference::solve(&self.cs)?);
-        
+
         Ok(())
     }
     
@@ -100,7 +106,9 @@ impl TypePropagator {
                 // Loaded value has the pointed-to type
                 self.cs.add_equal(dst_var, inner_var);
                 
-                // Size constraint
+                // Size constraint (width hint). An 8-byte access may still
+                // turn out to be a pointer load; `merge_types` lets a later
+                // PtrTo constraint override the integer hint ("pointer wins").
                 match size {
                     1 => self.cs.add_int_width(dst_var, 8),
                     2 => self.cs.add_int_width(dst_var, 16),
@@ -121,7 +129,7 @@ impl TypePropagator {
                 // Stored value has the pointed-to type
                 self.cs.add_equal(value_var, inner_var);
                 
-                // Size constraint
+                // Size constraint (width hint); see Load above.
                 match size {
                     1 => self.cs.add_int_width(value_var, 8),
                     2 => self.cs.add_int_width(value_var, 16),
@@ -145,11 +153,9 @@ impl TypePropagator {
                 }
             }
             
-            IrInst::Return { value } => {
-                if let Some(val) = value {
-                    let _val_var = self.cs.var_for_value(val);
-                    // Return type will be inferred from usage
-                }
+            IrInst::Return { value: Some(val) } => {
+                let _val_var = self.cs.var_for_value(val);
+                // Return type will be inferred from usage
             }
             
             IrInst::CBranch { cond, .. } => {
@@ -171,16 +177,35 @@ impl TypePropagator {
         }
     }
     
-    /// Get the inferred type for a value
+    /// Get the inferred type for a value.
+    ///
+    /// Lookup uses the canonical value identity (type annotations on SSA
+    /// variables / registers are ignored), matching how constraints were
+    /// registered.
     pub fn get_type(&self, value: &Value) -> Option<Ty> {
+        let key = ConstraintSystem::canonical_value(value);
         self.inference.as_ref().and_then(|inf| {
-            self.cs.value_to_var.get(value).and_then(|&var| {
+            self.cs.value_to_var.get(&key).and_then(|&var| {
                 inf.get_type(var).cloned()
             })
         })
     }
+
+    /// Whether the last analysis converged to a fixed point.
+    ///
+    /// `false` means the solver hit its iteration cap and inferred types
+    /// may be partial.
+    pub fn converged(&self) -> bool {
+        self.inference
+            .as_ref()
+            .map(|inf| inf.converged)
+            .unwrap_or(false)
+    }
     
-    /// Get all inferred types
+    /// Get all inferred types.
+    ///
+    /// Keys are canonicalized values (type annotations stripped), matching
+    /// the identity used by [`TypePropagator::get_type`].
     pub fn all_types(&self) -> HashMap<Value, Ty> {
         let mut result = HashMap::new();
         
@@ -269,7 +294,6 @@ impl std::fmt::Display for TypeReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bibleteks_ir::BlockId;
     
     #[test]
     fn test_simple_propagation() {
@@ -311,5 +335,103 @@ mod tests {
         // addr should be inferred as pointer
         let types = prop.all_types();
         assert!(!types.is_empty());
+    }
+
+    #[test]
+    fn test_analyze_resets_constraint_system() {
+        let mut func = IrFunction::new("test", 0x1000);
+        let v0 = func.alloc_var(Ty::Unknown);
+        let v1 = func.alloc_var(Ty::Unknown);
+
+        func.push_inst(func.entry_block, IrInst::Binary {
+            dst: v1.clone(),
+            op: OpCode::Add,
+            lhs: v0.clone(),
+            rhs: v0.clone(),
+        });
+
+        let mut prop = TypePropagator::new();
+        prop.analyze(&func).unwrap();
+        assert!(prop.report().total_variables > 0);
+
+        // Analyzing a different function must start from a fresh system,
+        // not accumulate constraints from the previous one.
+        let other = IrFunction::new("empty", 0x2000);
+        prop.analyze(&other).unwrap();
+
+        let report = prop.report();
+        assert_eq!(report.total_variables, 0);
+        assert_eq!(report.inferred_types, 0);
+        assert_eq!(report.unresolved_types, 0);
+        assert!(prop.all_types().is_empty());
+    }
+
+    #[test]
+    fn test_pointer_through_memory_analysis_completes() {
+        // mov rax, [rbp+x]   ; rax <- stack slot holding a pointer
+        // mov rbx, [rax]     ; rbx <- *rax
+        //
+        // The first load emits IntWidth(rax, 64); the second load demands
+        // PtrTo(rax, _). Inference must reconcile the two ("pointer wins")
+        // instead of aborting the whole function with TypeConflict.
+        let mut func = IrFunction::new("ptr_chain", 0x1000);
+        let rbp = Value::reg("rbp", Ty::Unknown);
+        let rax = Value::reg("rax", Ty::Unknown);
+        let rbx = Value::reg("rbx", Ty::Unknown);
+
+        func.push_inst(func.entry_block, IrInst::Load {
+            dst: rax.clone(),
+            addr: rbp.clone(),
+            size: 8,
+        });
+        func.push_inst(func.entry_block, IrInst::Load {
+            dst: rbx.clone(),
+            addr: rax.clone(),
+            size: 8,
+        });
+
+        let mut prop = TypePropagator::new();
+        prop.analyze(&func)
+            .expect("Int<->Ptr merge must not abort analysis");
+
+        let rax_ty = prop.get_type(&rax).expect("rax must have an inferred type");
+        assert!(
+            matches!(rax_ty, Ty::Ptr(_)),
+            "expected pointer for rax, got {}",
+            rax_ty
+        );
+        assert_eq!(prop.get_type(&rbx), Some(Ty::Int(64)));
+        assert!(prop.is_fully_typed());
+        assert!(prop.converged());
+    }
+
+    #[test]
+    fn test_value_identity_ignores_type_annotations() {
+        // The same SSA variable appears once as i64 and once as u64;
+        // constraints must land on a single TypeVar for it.
+        let mut func = IrFunction::new("annotated", 0x1000);
+        let base_i = Value::var(0, Ty::i64());
+        let base_u = Value::var(0, Ty::u64());
+        let tmp = Value::var(1, Ty::Unknown);
+
+        func.push_inst(func.entry_block, IrInst::Store {
+            addr: base_u.clone(),
+            value: tmp.clone(),
+            size: 4,
+        });
+
+        let mut prop = TypePropagator::new();
+        prop.analyze(&func).unwrap();
+
+        // Either annotation resolves to the same inferred type.
+        let via_i = prop.get_type(&base_i);
+        let via_u = prop.get_type(&base_u);
+        assert_eq!(via_i, via_u, "one variable, one inferred type");
+
+        // The store address is refined to ptr<i32> (4-byte store).
+        match via_u.as_ref() {
+            Some(Ty::Ptr(inner)) => assert_eq!(**inner, Ty::Int(32)),
+            other => panic!("expected ptr<i32>, got {:?}", other),
+        }
     }
 }

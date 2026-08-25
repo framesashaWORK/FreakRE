@@ -1,4 +1,4 @@
-//! Feature extraction from binary files for ML classification.
+//! Feature extraction from binary files for heuristic classification.
 //!
 //! Extracts a fixed-size feature vector from PE/ELF/raw binaries that can
 //! be fed to the ensemble classifier. Features are inspired by Ember/PEframe
@@ -89,7 +89,7 @@ pub(crate) fn feature_names() -> &'static [&'static str] {
         "checksum_valid", "has_overlay", "overlay_size_ratio", "num_data_dirs",
         "has_tls", "has_resources", "has_security_dir", "has_relocations",
         "code_section_entropy", "data_section_entropy", "entry_in_text", "num_segments_elf",
-        // 80-95: Behavioral / ML features
+        // 80-95: Behavioral features
         "anti_debug_count", "anti_vm_count", "crypto_ops_count", "process_inject_count",
         "keylog_count", "persistence_count", "network_count", "file_ops_count",
         "shellcode_score", "obfuscation_score", "xref_correlation", "cfg_anomaly_count",
@@ -111,8 +111,8 @@ pub fn extract_features(data: &[u8], info: &BinaryInfo) -> FeatureVector {
     }
     let total = data.len() as f32;
     if total > 0.0 {
-        for i in 0..16 {
-            fv.features[i] = hist[i] as f32 / total;
+        for (i, &h) in hist.iter().enumerate() {
+            fv.features[i] = h as f32 / total;
         }
     }
 
@@ -123,9 +123,9 @@ pub fn extract_features(data: &[u8], info: &BinaryInfo) -> FeatureVector {
     let mut null = 0u32;
     let mut high = 0u32;
     for &b in data {
-        if b >= 0x20 && b < 0x7F { printable += 1; }
-        if b >= b'A' && b <= b'Z' { uppercase += 1; }
-        if b >= b'0' && b <= b'9' { digit += 1; }
+        if (0x20..0x7F).contains(&b) { printable += 1; }
+        if b.is_ascii_uppercase() { uppercase += 1; }
+        if b.is_ascii_digit() { digit += 1; }
         if b == 0 { null += 1; }
         if b > 0x7F { high += 1; }
     }
@@ -142,7 +142,7 @@ pub fn extract_features(data: &[u8], info: &BinaryInfo) -> FeatureVector {
 
     // ─── Entropy statistics from sections ────────────────────────
     if !info.section_entropies.is_empty() {
-        let entropies: Vec<f32> = info.section_entropies.iter().copied().collect();
+        let entropies: Vec<f32> = info.section_entropies.to_vec();
         let mean = entropies.iter().sum::<f32>() / entropies.len() as f32;
         let variance = entropies.iter()
             .map(|e| (e - mean).powi(2))
@@ -156,9 +156,8 @@ pub fn extract_features(data: &[u8], info: &BinaryInfo) -> FeatureVector {
 
     // ─── Section statistics ─────────────────────────────────────
     fv.features[25] = info.num_sections as f32;
-    if info.num_sections > 0 {
-        let avg_size = (data.len() / info.num_sections) as f32;
-        fv.features[26] = (avg_size + 1.0).log2();
+    if let Some(avg_size) = data.len().checked_div(info.num_sections) {
+        fv.features[26] = (avg_size as f32 + 1.0).log2();
     }
     fv.features[27] = info.rwx_section_count as f32;
 
@@ -168,7 +167,10 @@ pub fn extract_features(data: &[u8], info: &BinaryInfo) -> FeatureVector {
         fv.features[28] = info.code_sections as f32 / n;
         fv.features[29] = info.data_sections as f32 / n;
         fv.features[30] = info.resource_sections as f32 / n;
-        fv.features[31] = (info.num_sections - info.code_sections - info.data_sections - info.resource_sections) as f32 / n;
+        fv.features[31] = info.num_sections
+            .saturating_sub(info.code_sections)
+            .saturating_sub(info.data_sections)
+            .saturating_sub(info.resource_sections) as f32 / n;
     }
 
     // ─── String patterns ────────────────────────────────────────
@@ -370,8 +372,7 @@ pub struct BehavioralStats {
 impl StringPatterns {
     /// Extract string patterns from a list of strings.
     pub fn from_strings(strings: &[&str]) -> Self {
-        let mut sp = StringPatterns::default();
-        sp.total_count = strings.len();
+        let mut sp = StringPatterns { total_count: strings.len(), ..Default::default() };
 
         let mut suspicious = 0usize;
         let mut total_len = 0usize;
@@ -403,10 +404,12 @@ impl StringPatterns {
             if is_base64_like(s) { sp.base64_count += 1; suspicious += 1; }
         }
 
+        if let Some(avg) = total_len.checked_div(sp.total_count) {
+            sp.avg_length = avg;
+        }
         if sp.total_count > 0 {
-            sp.avg_length = total_len / sp.total_count;
             sp.unique_ratio = unique.len() as f32 / sp.total_count as f32;
-            sp.suspicious_ratio = suspicious as f32 / sp.total_count as f32;
+            sp.suspicious_ratio = (suspicious as f32 / sp.total_count as f32).min(1.0);
         }
 
         sp
@@ -414,9 +417,18 @@ impl StringPatterns {
 }
 
 fn is_ip_like(s: &str) -> bool {
-    let parts: Vec<&str> = s.split('.').collect();
+    // Accept an optional trailing ":port"; only the address part is parsed.
+    let host = match s.split_once(':') {
+        Some((host, _port)) => host,
+        None => s,
+    };
+    let parts: Vec<&str> = host.split('.').collect();
     if parts.len() != 4 { return false; }
-    parts.iter().all(|p| p.parse::<u8>().is_ok())
+    parts.iter().all(|p| {
+        // u8::from_str accepts a leading '+' as a sign; real dotted quads
+        // never have one.
+        !p.is_empty() && !p.starts_with('+') && p.parse::<u8>().is_ok()
+    })
 }
 
 fn is_base64_like(s: &str) -> bool {
@@ -486,8 +498,22 @@ mod tests {
     }
 
     #[test]
+    fn test_is_ip_like_edges() {
+        // Leading '+' parses as a sign in u8::from_str — reject it.
+        assert!(!is_ip_like("+1.+2.+3.+4"));
+        assert!(!is_ip_like("+192.168.1.1"));
+        assert!(!is_ip_like("192.168.+1.1"));
+        // Optional trailing ":port" is accepted.
+        assert!(is_ip_like("10.0.0.1:8080"));
+        assert!(is_ip_like("10.0.0.1:"));
+        // Garbage address with a port still fails.
+        assert!(!is_ip_like("999.1.1.1:80"));
+        assert!(!is_ip_like("1.2.3.4.5:80"));
+    }
+
+    #[test]
     fn test_is_base64_like() {
-        assert!(is_base64_like("SGVsbG8gV29ybGQhIFRoaXMgaXMgYSB0ZXN0"));
+        assert!(is_base64_like("SGVsbG8gV29ybGQhIFRoaXMgaXMgYSB0ZXN0IQ=="));
         assert!(!is_base64_like("short"));
         assert!(!is_base64_like("hello world this has spaces"));
     }

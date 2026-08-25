@@ -3,6 +3,10 @@
 //!
 //! Supports both 32-bit (MH_MAGIC = 0xFEEDFACE) and 64-bit (MH_MAGIC_64 = 0xFEEDFACF)
 //! formats, as well as Fat/Universal binaries (FAT_MAGIC = 0xCAFEBABE).
+//!
+//! Use [`parse_any`] for automatic detection of thin vs Fat/Universal binaries:
+//! it returns [`MachoObject::Thin`] with a parsed [`MachoFile`], or
+//! [`MachoObject::Fat`] with the architecture table from [`parse_fat_header`].
 
 use std::fmt;
 use thiserror::Error;
@@ -74,6 +78,13 @@ const S_ATTR_SOME_INSTRUCTIONS: u32 = 0x0000_0400;
 const VM_PROT_READ: u32 = 0x01;
 const VM_PROT_WRITE: u32 = 0x02;
 const VM_PROT_EXECUTE: u32 = 0x04;
+
+// ─── Limits ──────────────────────────────────────────────────────────
+
+/// Cap on emitted overlapping-segment warnings: the pair scan is O(n²) and
+/// hostile inputs with thousands of segments would otherwise allocate
+/// unboundedly.
+const MAX_OVERLAP_WARNINGS: usize = 32;
 
 // ─── Errors ──────────────────────────────────────────────────────────
 
@@ -306,7 +317,10 @@ impl Section {
     /// Get the raw data slice for this section from the full file buffer.
     pub fn raw_data<'a>(&self, file_data: &'a [u8]) -> &'a [u8] {
         let start = self.offset as usize;
-        let end = start + self.size as usize;
+        let end = match start.checked_add(self.size as usize) {
+            Some(e) => e,
+            None => return &[],
+        };
         if end <= file_data.len() {
             &file_data[start..end]
         } else if start < file_data.len() {
@@ -384,7 +398,7 @@ impl<'a> MachoFile<'a> {
         let file_type = FileType::from_raw(file_type_raw);
 
         // Parse load commands
-        let mut load_commands = Vec::with_capacity(ncmds as usize);
+        let mut load_commands = Vec::with_capacity(ncmds.min(10_000) as usize);
         let mut warnings = Vec::new();
         let mut offset = header_size;
 
@@ -454,14 +468,13 @@ impl<'a> MachoFile<'a> {
         // Check for RWX segments
         for lc in &load_commands {
             match lc {
-                LoadCommand::Segment(seg) | LoadCommand::Segment64(seg) => {
-                    if seg.is_rwx() {
+                LoadCommand::Segment(seg) | LoadCommand::Segment64(seg)
+                    if seg.is_rwx() => {
                         warnings.push(MachoWarning {
                             kind: WarningKind::RwxSection,
                             message: format!("RWX segment: {} (addr=0x{:X})", seg.name, seg.vmaddr),
                         });
                     }
-                }
                 _ => {}
             }
         }
@@ -474,14 +487,19 @@ impl<'a> MachoFile<'a> {
             }
         }).collect();
 
-        for i in 0..segments.len() {
+        let mut overlap_warnings = 0usize;
+        'overlap_scan: for i in 0..segments.len() {
             for j in (i + 1)..segments.len() {
                 let a = segments[i];
                 let b = segments[j];
                 if a.filesize > 0 && b.filesize > 0
-                    && a.fileoff < b.fileoff + b.filesize
-                    && b.fileoff < a.fileoff + a.filesize
+                    && a.fileoff < b.fileoff.saturating_add(b.filesize)
+                    && b.fileoff < a.fileoff.saturating_add(a.filesize)
                 {
+                    if overlap_warnings >= MAX_OVERLAP_WARNINGS {
+                        break 'overlap_scan;
+                    }
+                    overlap_warnings += 1;
                     warnings.push(MachoWarning {
                         kind: WarningKind::OverlappingSegments,
                         message: format!("Overlapping segments: {} <-> {}", a.name, b.name),
@@ -902,6 +920,16 @@ fn read_u32_at(data: &[u8], offset: usize, is_swapped: bool) -> u32 {
     }
 }
 
+fn read_u64_at(data: &[u8], offset: usize, is_swapped: bool) -> u64 {
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&data[offset..offset + 8]);
+    if is_swapped {
+        u64::from_be_bytes(bytes)
+    } else {
+        u64::from_le_bytes(bytes)
+    }
+}
+
 fn read_cstring(data: &[u8], offset: usize, max_len: usize) -> String {
     if offset >= data.len() {
         return String::new();
@@ -937,14 +965,17 @@ pub fn parse_fat_header(data: &[u8]) -> Result<Vec<FatArch>, MachoError> {
 
     let magic = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
     let is_fat64 = match magic {
-        FAT_MAGIC => false,
-        FAT_CIGAM => false,
-        FAT_MAGIC_64 => true,
-        FAT_CIGAM_64 => true,
+        FAT_MAGIC | FAT_CIGAM => false,
+        FAT_MAGIC_64 | FAT_CIGAM_64 => true,
         other => return Err(MachoError::BadMagic(other)),
     };
 
-    let nfat_arch = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+    // FIXED: FAT_CIGAM / FAT_CIGAM_64 mark byte-swapped (little-endian)
+    // header fields, mirroring the thin MH_CIGAM handling in MachoFile::parse.
+    // `is_swapped` here means "fields are big-endian", as in read_u32_at.
+    let is_swapped = matches!(magic, FAT_MAGIC | FAT_MAGIC_64);
+
+    let nfat_arch = read_u32_at(data, 4, is_swapped);
     if nfat_arch > 64 {
         return Err(MachoError::TooManyArchitectures(nfat_arch));
     }
@@ -956,24 +987,12 @@ pub fn parse_fat_header(data: &[u8]) -> Result<Vec<FatArch>, MachoError> {
         for i in 0..nfat_arch as usize {
             let base = 8 + i * 32;
             if base + 32 > data.len() { break; }
-            let cpu_type_raw = u32::from_be_bytes([data[base], data[base + 1], data[base + 2], data[base + 3]]);
-            let cpu_subtype = u32::from_be_bytes([data[base + 4], data[base + 5], data[base + 6], data[base + 7]]);
-            let offset = u64::from_be_bytes([
-                data[base + 8], data[base + 9], data[base + 10], data[base + 11],
-                data[base + 12], data[base + 13], data[base + 14], data[base + 15],
-            ]);
-            let size = u64::from_be_bytes([
-                data[base + 16], data[base + 17], data[base + 18], data[base + 19],
-                data[base + 20], data[base + 21], data[base + 22], data[base + 23],
-            ]);
-            let align = u32::from_be_bytes([data[base + 24], data[base + 25], data[base + 26], data[base + 27]]);
-
             archs.push(FatArch {
-                cpu_type: CpuType::from_raw(cpu_type_raw),
-                cpu_subtype,
-                offset,
-                size,
-                align,
+                cpu_type: CpuType::from_raw(read_u32_at(data, base, is_swapped)),
+                cpu_subtype: read_u32_at(data, base + 4, is_swapped),
+                offset: read_u64_at(data, base + 8, is_swapped),
+                size: read_u64_at(data, base + 16, is_swapped),
+                align: read_u32_at(data, base + 24, is_swapped),
             });
         }
     } else {
@@ -981,23 +1000,41 @@ pub fn parse_fat_header(data: &[u8]) -> Result<Vec<FatArch>, MachoError> {
         for i in 0..nfat_arch as usize {
             let base = 8 + i * 20;
             if base + 20 > data.len() { break; }
-            let cpu_type_raw = u32::from_be_bytes([data[base], data[base + 1], data[base + 2], data[base + 3]]);
-            let cpu_subtype = u32::from_be_bytes([data[base + 4], data[base + 5], data[base + 6], data[base + 7]]);
-            let offset = u32::from_be_bytes([data[base + 8], data[base + 9], data[base + 10], data[base + 11]]) as u64;
-            let size = u32::from_be_bytes([data[base + 12], data[base + 13], data[base + 14], data[base + 15]]) as u64;
-            let align = u32::from_be_bytes([data[base + 16], data[base + 17], data[base + 18], data[base + 19]]);
-
             archs.push(FatArch {
-                cpu_type: CpuType::from_raw(cpu_type_raw),
-                cpu_subtype,
-                offset,
-                size,
-                align,
+                cpu_type: CpuType::from_raw(read_u32_at(data, base, is_swapped)),
+                cpu_subtype: read_u32_at(data, base + 4, is_swapped),
+                offset: read_u32_at(data, base + 8, is_swapped) as u64,
+                size: read_u32_at(data, base + 12, is_swapped) as u64,
+                align: read_u32_at(data, base + 16, is_swapped),
             });
         }
     }
 
     Ok(archs)
+}
+
+/// A parsed Mach-O container: either a thin single-architecture binary
+/// or a Fat/Universal binary with its architecture table.
+#[derive(Debug)]
+pub enum MachoObject<'a> {
+    Thin(MachoFile<'a>),
+    Fat(Vec<FatArch>),
+}
+
+/// Parse any Mach-O container, automatically detecting Fat/Universal binaries.
+///
+/// Checks the file magic against the FAT magics and dispatches to
+/// [`parse_fat_header`] when it is a universal binary; otherwise parses a
+/// thin binary via [`MachoFile::parse`]. This is the recommended single entry
+/// point so callers do not need manual dispatch on the magic value.
+pub fn parse_any(data: &[u8]) -> Result<MachoObject<'_>, MachoError> {
+    if data.len() >= 4 {
+        let magic_be = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        if matches!(magic_be, FAT_MAGIC | FAT_CIGAM | FAT_MAGIC_64 | FAT_CIGAM_64) {
+            return parse_fat_header(data).map(MachoObject::Fat);
+        }
+    }
+    MachoFile::parse(data).map(MachoObject::Thin)
 }
 
 #[cfg(test)]
@@ -1101,6 +1138,82 @@ mod tests {
 
         let macho = MachoFile::parse(&data).unwrap();
         assert!(macho.warnings.iter().any(|w| w.kind == WarningKind::RwxSection));
+    }
+
+    #[test]
+    fn test_fat_cigam_header_little_endian_fields() {
+        let mut data = vec![0u8; 64];
+        // FAT_CIGAM on disk: fields are little-endian
+        data[0] = 0xBE; data[1] = 0xBA; data[2] = 0xFE; data[3] = 0xCA;
+        // nfat_arch = 1 (little-endian)
+        data[4] = 1;
+        // fat_arch entry, all little-endian:
+        data[8] = 0x07; data[9] = 0x00; data[10] = 0x00; data[11] = 0x01;  // CPU_TYPE_X86_64
+        data[12] = 3;                                                       // cpu_subtype = 3
+        data[16] = 0x00; data[17] = 0x10;                                   // offset = 0x1000
+        data[20] = 0x00; data[21] = 0x20;                                   // size = 0x2000
+        data[24] = 12;                                                      // align = 12
+
+        let archs = parse_fat_header(&data).unwrap();
+        assert_eq!(archs.len(), 1);
+        assert_eq!(archs[0].cpu_type, CpuType::X86_64);
+        assert_eq!(archs[0].cpu_subtype, 3);
+        assert_eq!(archs[0].offset, 0x1000);
+        assert_eq!(archs[0].size, 0x2000);
+        assert_eq!(archs[0].align, 12);
+    }
+
+    #[test]
+    fn test_fat_cigam_64_header_little_endian_fields() {
+        let mut data = vec![0u8; 64];
+        // FAT_CIGAM_64 on disk: fields are little-endian
+        data[0] = 0xBF; data[1] = 0xBA; data[2] = 0xBA; data[3] = 0xFE;
+        // nfat_arch = 1 (little-endian)
+        data[4] = 1;
+        // fat_arch_64 entry (32 bytes), all little-endian:
+        data[8] = 0x0C; data[9] = 0x00; data[10] = 0x00; data[11] = 0x01;   // CPU_TYPE_ARM64
+        data[16] = 0x00; data[17] = 0x10;                                   // offset = 0x1000
+        data[24] = 0x00; data[25] = 0x20;                                   // size = 0x2000
+        data[32] = 12;                                                      // align = 12
+
+        let archs = parse_fat_header(&data).unwrap();
+        assert_eq!(archs.len(), 1);
+        assert_eq!(archs[0].cpu_type, CpuType::Arm64);
+        assert_eq!(archs[0].offset, 0x1000);
+        assert_eq!(archs[0].size, 0x2000);
+        assert_eq!(archs[0].align, 12);
+    }
+
+    #[test]
+    fn test_overlapping_segment_warnings_capped() {
+        const N: usize = 9; // 36 overlapping pairs > MAX_OVERLAP_WARNINGS
+        let mut data = vec![0u8; 4096];
+        // MH_MAGIC_64, CPU_TYPE_X86_64, MH_EXECUTE
+        data[0] = 0xCF; data[1] = 0xFA; data[2] = 0xED; data[3] = 0xFE;
+        data[4] = 0x07; data[5] = 0x00; data[6] = 0x00; data[7] = 0x01;
+        data[12] = 0x02;
+        data[16..20].copy_from_slice(&(N as u32).to_le_bytes()); // ncmds
+        data[24..28].copy_from_slice(&MH_PIE.to_le_bytes());     // flags
+
+        for i in 0..N {
+            let lc = 32 + i * 72;
+            data[lc..lc + 4].copy_from_slice(&LC_SEGMENT_64.to_le_bytes());
+            data[lc + 4..lc + 8].copy_from_slice(&72u32.to_le_bytes()); // cmdsize
+            let name = format!("__SEG{}", i);
+            data[lc + 8..lc + 8 + name.len()].copy_from_slice(name.as_bytes());
+            // All segments share fileoff=0 with filesize=0x100 → all overlap.
+            data[lc + 48..lc + 56].copy_from_slice(&0x100u64.to_le_bytes());
+            data[lc + 56..lc + 60].copy_from_slice(&5u32.to_le_bytes()); // maxprot R+X
+            data[lc + 60..lc + 64].copy_from_slice(&5u32.to_le_bytes()); // initprot R+X
+            data[lc + 64..lc + 68].copy_from_slice(&0u32.to_le_bytes()); // nsects
+        }
+
+        let macho = MachoFile::parse(&data).unwrap();
+        let overlaps = macho.warnings.iter()
+            .filter(|w| w.kind == WarningKind::OverlappingSegments)
+            .count();
+        assert!(overlaps > 0);
+        assert!(overlaps <= MAX_OVERLAP_WARNINGS);
     }
 }
 

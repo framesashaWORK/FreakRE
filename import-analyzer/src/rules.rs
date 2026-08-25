@@ -14,13 +14,18 @@ pub enum SuspicionLevel {
 }
 
 impl SuspicionLevel {
-    /// Вес для расчёта suspicion score
+    /// Signal strength of a single rule hit [0.0 – 1.0].
+    ///
+    /// These are deliberately below 1.0 even for Critical: import patterns
+    /// are contextual evidence (legitimate installers, debuggers and update
+    /// frameworks use the same APIs), so a lone hit must not saturate the
+    /// module score.
     pub fn weight(&self) -> f64 {
         match self {
-            Self::Low => 0.1,
-            Self::Medium => 0.3,
-            Self::High => 0.6,
-            Self::Critical => 1.0,
+            Self::Low => 0.10,
+            Self::Medium => 0.25,
+            Self::High => 0.45,
+            Self::Critical => 0.70,
         }
     }
 }
@@ -44,17 +49,7 @@ pub struct RuleMatch {
 pub fn evaluate_rules(modules: &[ImportedModule]) -> Vec<RuleMatch> {
     let mut matches = Vec::new();
 
-    // Собираем плоский список всех функций с именами DLL для быстрого поиска
-    let _all_imports: Vec<(&str, &str)> = modules
-        .iter()
-        .flat_map(|m| {
-            m.functions
-                .iter()
-                .filter_map(|f| f.name.as_ref().map(|n| (m.name.as_str(), n.as_str())))
-        })
-        .collect();
-
-    // Все имена функций lowercase для case-insensitive matching
+    // Преобразуем в Vec для совместимости с существующими функциями проверки
     let func_names_lower: Vec<(String, String)> = modules
         .iter()
         .flat_map(|m| {
@@ -72,7 +67,7 @@ pub fn evaluate_rules(modules: &[ImportedModule]) -> Vec<RuleMatch> {
     check_network_c2(&func_names_lower, &mut matches);
     check_crypto_ransomware(&func_names_lower, &mut matches);
     check_keylogging(&func_names_lower, &mut matches);
-    check_dll_suspicious(&modules, &mut matches);
+    check_dll_suspicious(modules, &mut matches);
     check_ordinal_only_imports(modules, &mut matches);
 
     matches
@@ -128,7 +123,7 @@ fn check_process_injection(imports: &[(String, String)], matches: &mut Vec<RuleM
         matches.push(RuleMatch {
             rule_id: "INJ_SINGLE_REMOTE_THREAD",
             description: "CreateRemoteThread without VirtualAllocEx (possible alternative injection)".into(),
-            level: SuspicionLevel::Medium,
+            level: SuspicionLevel::Low,
             confidence: 0.40,
             triggered_by: vec!["CreateRemoteThread".into()],
         });
@@ -144,7 +139,7 @@ fn check_persistence(imports: &[(String, String)], matches: &mut Vec<RuleMatch>)
         matches.push(RuleMatch {
             rule_id: "PERSIST_REGISTRY",
             description: "Registry modification API (possible persistence via Run/RunOnce keys)".into(),
-            level: SuspicionLevel::Medium,
+            level: SuspicionLevel::Low,
             confidence: 0.35,
             triggered_by: vec!["RegSetValueEx/RegCreateKeyEx".into()],
         });
@@ -155,7 +150,7 @@ fn check_persistence(imports: &[(String, String)], matches: &mut Vec<RuleMatch>)
         matches.push(RuleMatch {
             rule_id: "PERSIST_SERVICE",
             description: "Service creation API (possible persistence as Windows service)".into(),
-            level: SuspicionLevel::High,
+            level: SuspicionLevel::Low,
             confidence: 0.60,
             triggered_by: vec!["CreateService".into()],
         });
@@ -166,7 +161,7 @@ fn check_persistence(imports: &[(String, String)], matches: &mut Vec<RuleMatch>)
         matches.push(RuleMatch {
             rule_id: "PERSIST_SCHEDULED_TASK",
             description: "Scheduled Task creation (persistence mechanism)".into(),
-            level: SuspicionLevel::High,
+            level: SuspicionLevel::Low,
             confidence: 0.65,
             triggered_by: vec!["SchtasksCreate/ITaskService".into()],
         });
@@ -177,27 +172,43 @@ fn check_persistence(imports: &[(String, String)], matches: &mut Vec<RuleMatch>)
 fn check_evasion_techniques(imports: &[(String, String)], matches: &mut Vec<RuleMatch>) {
     let has = |func: &str| imports.iter().any(|(_, f)| f == func);
 
-    // Anti-debugging
-    let anti_debug_funcs = [
+    // Anti-debugging.
+    // Split into *genuine* anti-debug primitives (rare in legitimate software)
+    // and *benign/common* timing APIs that are present in vast numbers of normal
+    // applications (GetTickCount / QueryPerformanceCounter are used for profiling,
+    // animation, etc.). A lone IsDebuggerPresent is also common (telemetry gating,
+    // game DRM checks, etc.). We only flag when >= 2 genuine primitives co-occur.
+    let genuine_anti_debug = [
         "isdebuggerpresent",
         "checkremotedebuggerpresent",
         "ntqueryinformationprocess",
         "outputdebugstringa",
-        "gettickcount",
-        "queryperformancecounter",
+        "ntsetinformationthread",
+        "blockinput",
     ];
-    let anti_debug_count = anti_debug_funcs.iter().filter(|f| has(f)).count();
-    if anti_debug_count >= 2 {
+    let common_timing = ["gettickcount", "queryperformancecounter"];
+
+    let genuine_count = genuine_anti_debug.iter().filter(|f| has(f)).count();
+    let common_count = common_timing.iter().filter(|f| has(f)).count();
+
+    // Require at least two *genuine* anti-debug primitives. A single
+    // IsDebuggerPresent (used for telemetry gating, game DRM, etc.) combined with
+    // ubiquitous timing APIs (GetTickCount/QueryPerformanceCounter) is not a
+    // meaningful anti-analysis signal and would otherwise false-positive on most
+    // legitimate software.
+    if genuine_count >= 2 {
+        let triggered: Vec<String> = genuine_anti_debug
+            .iter()
+            .chain(common_timing.iter())
+            .filter(|f| has(f))
+            .map(|s| s.to_string())
+            .collect();
         matches.push(RuleMatch {
             rule_id: "EVASION_ANTIDEBUG",
-            description: format!("Multiple anti-debug APIs detected ({}/{} functions)", anti_debug_count, anti_debug_funcs.len()),
-            level: SuspicionLevel::High,
-            confidence: 0.70 + (anti_debug_count as f64 * 0.05).min(0.25),
-            triggered_by: anti_debug_funcs
-                .iter()
-                .filter(|f| has(f))
-                .map(|s| s.to_string())
-                .collect(),
+            description: format!("Multiple anti-debug APIs detected ({} genuine, {} timing)", genuine_count, common_count),
+            level: SuspicionLevel::Medium,
+            confidence: 0.70 + (genuine_count as f64 * 0.05).min(0.25),
+            triggered_by: triggered,
         });
     }
 
@@ -217,7 +228,7 @@ fn check_evasion_techniques(imports: &[(String, String)], matches: &mut Vec<Rule
         matches.push(RuleMatch {
             rule_id: "EVASION_VIRTUALPROTECT",
             description: "VirtualProtect/VirtualProtectEx present (possible runtime code modification/unpacking)".into(),
-            level: SuspicionLevel::Low,
+            level: SuspicionLevel::Medium,
             confidence: 0.20,
             triggered_by: vec!["VirtualProtect(VirtualProtectEx)".into()],
         });
@@ -245,7 +256,7 @@ fn check_network_c2(imports: &[(String, String)], matches: &mut Vec<RuleMatch>) 
         matches.push(RuleMatch {
             rule_id: "NET_HTTP_C2",
             description: format!("Multiple HTTP/Internet APIs detected ({}) — possible C2 communication", http_count),
-            level: SuspicionLevel::High,
+            level: SuspicionLevel::Medium,
             confidence: 0.60 + (http_count as f64 * 0.05).min(0.30),
             triggered_by: http_funcs
                 .iter()
@@ -260,7 +271,7 @@ fn check_network_c2(imports: &[(String, String)], matches: &mut Vec<RuleMatch>) 
         matches.push(RuleMatch {
             rule_id: "NET_RAW_SOCKET",
             description: "Raw socket usage via Winsock (possible custom C2 protocol)".into(),
-            level: SuspicionLevel::High,
+            level: SuspicionLevel::Medium,
             confidence: 0.65,
             triggered_by: vec!["WSAStartup".into(), "socket/connect/send".into()],
         });
@@ -290,7 +301,7 @@ fn check_crypto_ransomware(imports: &[(String, String)], matches: &mut Vec<RuleM
         matches.push(RuleMatch {
             rule_id: "CRYPTO_RANSOMWARE_PATTERN",
             description: "Cryptographic APIs + file enumeration — possible ransomware behavior".into(),
-            level: SuspicionLevel::Critical,
+            level: SuspicionLevel::High,
             confidence: 0.85,
             triggered_by: crypto_funcs
                 .iter()
@@ -303,7 +314,7 @@ fn check_crypto_ransomware(imports: &[(String, String)], matches: &mut Vec<RuleM
         matches.push(RuleMatch {
             rule_id: "CRYPTO_HEAVY_USAGE",
             description: format!("Heavy cryptographic API usage ({} functions)", crypto_count),
-            level: SuspicionLevel::Medium,
+            level: SuspicionLevel::Low,
             confidence: 0.45,
             triggered_by: crypto_funcs
                 .iter()
@@ -359,12 +370,26 @@ fn check_dll_suspicious(modules: &[ImportedModule], matches: &mut Vec<RuleMatch>
         let dll_lower = module.name.to_lowercase();
         for &(dll, desc) in &suspicious_dlls {
             if dll_lower == dll {
+                // Evidence carries a source marker so delay-load imports are
+                // distinguishable from regular IDT imports.
+                let evidence = if module.is_delay_load {
+                    format!("{} [delay-load]", module.name)
+                } else {
+                    module.name.clone()
+                };
                 matches.push(RuleMatch {
                     rule_id: "DLL_SUSPICIOUS",
-                    description: format!("Suspicious DLL import: {} ({})", module.name, desc),
-                    level: SuspicionLevel::Medium,
+                    description: if module.is_delay_load {
+                        format!(
+                            "Suspicious DLL import: {} via delay-load table ({})",
+                            module.name, desc
+                        )
+                    } else {
+                        format!("Suspicious DLL import: {} ({})", module.name, desc)
+                    },
+                    level: SuspicionLevel::Low,
                     confidence: 0.40,
-                    triggered_by: vec![module.name.clone()],
+                    triggered_by: vec![evidence],
                 });
             }
         }
@@ -378,7 +403,15 @@ fn check_ordinal_only_imports(modules: &[ImportedModule], matches: &mut Vec<Rule
         if total == 0 {
             continue;
         }
-        let ordinal_count = module.functions.iter().filter(|f| f.name.is_none()).count();
+        // Only entries with an actual ordinal AND no name count as
+        // ordinal-only imports. Entries with neither name nor ordinal
+        // (unreadable hint/name table) are a parsing artifact, not
+        // obfuscation, and must not inflate this signal.
+        let ordinal_count = module
+            .functions
+            .iter()
+            .filter(|f| f.ordinal.is_some() && f.name.is_none())
+            .count();
         let ratio = ordinal_count as f64 / total as f64;
 
         if ordinal_count >= 3 && ratio > 0.5 {
@@ -388,7 +421,7 @@ fn check_ordinal_only_imports(modules: &[ImportedModule], matches: &mut Vec<Rule
                     "DLL '{}' imports {}/{} functions by ordinal only ({:.0}%) — possible obfuscation",
                     module.name, ordinal_count, total, ratio * 100.0
                 ),
-                level: SuspicionLevel::Medium,
+                level: SuspicionLevel::Low,
                 confidence: 0.50 * ratio,
                 triggered_by: vec![module.name.clone()],
             });
@@ -415,6 +448,7 @@ mod tests {
                     is_forwarder: false,
                 })
                 .collect(),
+            is_delay_load: false,
         }
     }
 
@@ -435,9 +469,11 @@ mod tests {
             make_module("user32.dll", &["MessageBoxW", "ShowWindow"]),
         ];
         let matches = evaluate_rules(&modules);
-        // Normal app should have minimal or no high/critical detections
+        // Normal app should not produce any high/critical detections
         let critical = matches.iter().filter(|m| m.level == SuspicionLevel::Critical).count();
+        let high = matches.iter().filter(|m| m.level == SuspicionLevel::High).count();
         assert_eq!(critical, 0);
+        assert_eq!(high, 0);
     }
 
     #[test]
@@ -469,10 +505,74 @@ mod tests {
                     is_forwarder: false,
                 })
                 .collect(),
+            is_delay_load: false,
         };
         let matches = evaluate_rules(&[module]);
         assert!(matches
             .iter()
             .any(|m| m.rule_id == "IMPORT_ORDINAL_OBFUSCATION"));
+    }
+
+    #[test]
+    fn test_unreadable_imports_not_counted_as_ordinal_only() {
+        // Entries with name=None AND ordinal=None are unreadable hint/name
+        // table entries (parsing artifact), NOT ordinal imports. A module
+        // consisting only of these must not trigger IMPORT_ORDINAL_OBFUSCATION.
+        let module = ImportedModule {
+            name: "weird.dll".into(),
+            name_rva: 0,
+            functions: (0..10)
+                .map(|_| ImportedFunction {
+                    name: None,
+                    ordinal: None,
+                    hint: 7,
+                    ilt_rva: 0,
+                    is_forwarder: false,
+                })
+                .collect(),
+            is_delay_load: false,
+        };
+        let matches = evaluate_rules(&[module]);
+        assert!(
+            !matches.iter().any(|m| m.rule_id == "IMPORT_ORDINAL_OBFUSCATION"),
+            "unreadable entries must not be miscounted as ordinal-only obfuscation"
+        );
+    }
+
+    #[test]
+    fn test_mixed_unreadable_and_named_no_ordinal_flag() {
+        // Mostly-unreadable module with a couple of named imports: the
+        // unreadable majority must not count toward the ordinal ratio.
+        let mut functions: Vec<ImportedFunction> = (0..8)
+            .map(|_| ImportedFunction {
+                name: None,
+                ordinal: None,
+                hint: 1,
+                ilt_rva: 0,
+                is_forwarder: false,
+            })
+            .collect();
+        functions.push(ImportedFunction {
+            name: Some("CreateFileW".into()),
+            ordinal: None,
+            hint: 2,
+            ilt_rva: 0,
+            is_forwarder: false,
+        });
+        functions.push(ImportedFunction {
+            name: Some("CloseHandle".into()),
+            ordinal: None,
+            hint: 3,
+            ilt_rva: 0,
+            is_forwarder: false,
+        });
+        let module = ImportedModule {
+            name: "mixed.dll".into(),
+            name_rva: 0,
+            functions,
+            is_delay_load: false,
+        };
+        let matches = evaluate_rules(&[module]);
+        assert!(!matches.iter().any(|m| m.rule_id == "IMPORT_ORDINAL_OBFUSCATION"));
     }
 }

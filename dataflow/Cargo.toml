@@ -1,5 +1,5 @@
 [package]
-name = "freakre-dataflow"
+name = "dataflow"
 version = "0.1.0"
 edition = "2021"
 description = "Data flow analysis for binary IR — reaching definitions, live variables, use-def chains"
@@ -7,8 +7,8 @@ license = "MIT"
 
 [dependencies]
 freakre-ir = { path = "../freakre-ir" }
-thiserror = "1"
-serde = { version = "1", features = ["derive"] }
+thiserror = { workspace = true }
+serde = { workspace = true }
 indexmap = "2"
 
 # [dev-dependencies]

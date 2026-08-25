@@ -2,13 +2,13 @@
 //!
 //! Implements a weighted ensemble of decision trees (heuristic rules) that
 //! classify binaries as Clean/Suspicious/Malicious based on extracted features.
-//! The classifier is trained on common malware patterns and can be extended
-//! with custom rules.
+//! All weights are hand-tuned around common malware patterns; the ensemble
+//! can be extended with custom rules.
 
-use crate::features::{FeatureVector, NUM_FEATURES};
+use crate::features::FeatureVector;
 use serde::{Deserialize, Serialize};
 
-/// Classification result from the ML detector.
+/// Classification result from the heuristic ensemble detector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MalwareClass {
     /// Clean file, no suspicious indicators
@@ -40,7 +40,12 @@ impl std::fmt::Display for MalwareClass {
 pub struct ClassificationResult {
     /// Final classification verdict
     pub class: MalwareClass,
-    /// Confidence score [0.0, 1.0]
+    /// Confidence in the assigned verdict, in [0.0, 1.0].
+    ///
+    /// Computed as the highest class probability, i.e. how dominant the
+    /// winning class is after normalization. A `Clean` verdict therefore
+    /// reports high confidence when the file looks benign — not the raw
+    /// anomaly score, which would read inverted for that verdict.
     pub confidence: f32,
     /// Probability distribution over all classes
     pub probabilities: ClassProbabilities,
@@ -105,6 +110,11 @@ impl Default for EnsembleClassifier {
     }
 }
 
+/// Mass given to a set `is_packed` feature during normalization. Sized so a
+/// hard packing indicator maps to a decisive packed probability instead of
+/// being diluted against the `clean = 1 - score` prior.
+const PACKED_INDICATOR_WEIGHT: f32 = 2.0;
+
 impl EnsembleClassifier {
     /// Create a new ensemble classifier with default heuristic trees.
     pub fn new() -> Self {
@@ -161,7 +171,7 @@ impl EnsembleClassifier {
             } else {
                 0.0
             },
-            packed: features.features[65], // is_packed_entropy feature
+            packed: features.features[65] * PACKED_INDICATOR_WEIGHT, // is_packed_entropy feature
             pua: if normalized_score > 0.2 && normalized_score < 0.5 {
                 (normalized_score - 0.2) * 1.5
             } else {
@@ -176,12 +186,20 @@ impl EnsembleClassifier {
         // Find important features
         let important_features = find_important_features(features, &self.trees, &self.weights);
 
+        // Confidence in the verdict = dominance of the winning class.
+        let confidence = probs
+            .clean
+            .max(probs.suspicious)
+            .max(probs.malicious)
+            .max(probs.packed)
+            .max(probs.pua);
+
         // Generate explanation
-        let explanation = generate_explanation(class, normalized_score, &tree_scores, &important_features);
+        let explanation = generate_explanation(class, confidence, &tree_scores, &important_features);
 
         ClassificationResult {
             class,
-            confidence: normalized_score,
+            confidence,
             probabilities: probs,
             tree_scores,
             important_features,
@@ -336,6 +354,7 @@ enum RuleLogic {
     Any,   // Any feature exceeds threshold
     All,   // All features exceed threshold
     Sum,   // Sum of weighted features
+    Below, // Any feature is below threshold (for inverted indicators)
 }
 
 impl Rule {
@@ -361,6 +380,14 @@ impl Rule {
                     sum += features.features[*i] * w;
                 }
                 sum.min(1.0)
+            }
+            RuleLogic::Below => {
+                for (i, &thresh) in self.feature_indices.iter().zip(self.thresholds.iter()) {
+                    if features.features[*i] < thresh {
+                        return self.weights[0];
+                    }
+                }
+                0.0
             }
         }
     }
@@ -390,7 +417,7 @@ impl Rule {
             feature_indices: vec![16], // printable_ratio
             thresholds: vec![0.3],
             weights: vec![weight],
-            logic: RuleLogic::All, // Low printable is suspicious
+            logic: RuleLogic::Below, // Low printable is suspicious
         }
     }
 
@@ -525,7 +552,7 @@ impl Rule {
             feature_indices: vec![68], // checksum_valid (inverted)
             thresholds: vec![0.5],
             weights: vec![weight],
-            logic: RuleLogic::All,
+            logic: RuleLogic::Below,
         }
     }
 
@@ -534,7 +561,7 @@ impl Rule {
             feature_indices: vec![78], // entry_in_text (inverted)
             thresholds: vec![0.5],
             weights: vec![weight],
-            logic: RuleLogic::All,
+            logic: RuleLogic::Below,
         }
     }
 
@@ -543,7 +570,7 @@ impl Rule {
             feature_indices: vec![64], // has_debug_info (inverted)
             thresholds: vec![0.5],
             weights: vec![weight],
-            logic: RuleLogic::All,
+            logic: RuleLogic::Below,
         }
     }
 
@@ -633,7 +660,7 @@ impl Rule {
             feature_indices: vec![45], // unique_ratio
             thresholds: vec![0.5],
             weights: vec![weight],
-            logic: RuleLogic::All,
+            logic: RuleLogic::Below,
         }
     }
 }
@@ -651,15 +678,18 @@ fn determine_class(
         return MalwareClass::Malicious;
     }
 
-    if probs.packed > 0.6 {
-        return MalwareClass::Packed;
-    }
-
+    // Behavioral corroboration outranks a structural-only packing signal:
+    // once enough trees fire, the file is Suspicious regardless of the
+    // is_packed indicator.
     if score >= 0.45 || triggered_trees >= 3 {
         return MalwareClass::Suspicious;
     }
 
-    if score >= 0.25 && score < 0.45 {
+    if probs.packed > 0.6 {
+        return MalwareClass::Packed;
+    }
+
+    if (0.25..0.45).contains(&score) {
         return MalwareClass::PUA;
     }
 
@@ -675,8 +705,7 @@ fn find_important_features(
     let mut importances = Vec::new();
     let names = crate::features::feature_names();
 
-    for i in 0..NUM_FEATURES {
-        let value = features.features[i];
+    for (i, &value) in features.features.iter().enumerate() {
         if value.abs() < 0.01 {
             continue;
         }
@@ -712,11 +741,11 @@ fn find_important_features(
 /// Generate human-readable explanation.
 fn generate_explanation(
     class: MalwareClass,
-    score: f32,
+    confidence: f32,
     tree_scores: &[TreeScore],
     important_features: &[FeatureImportance],
 ) -> String {
-    let mut explanation = format!("Classification: {} (confidence: {:.0}%)\n\n", class, score * 100.0);
+    let mut explanation = format!("Classification: {} (confidence: {:.0}%)\n\n", class, confidence * 100.0);
 
     let triggered: Vec<_> = tree_scores.iter().filter(|t| t.triggered).collect();
     if !triggered.is_empty() {
@@ -760,6 +789,7 @@ mod tests {
         features.features[32] = 5.0; // many URLs
         features.features[37] = 3.0; // cmd patterns
         features.features[80] = 2.0; // anti-debug
+        features.features[51] = 1.0; // ws2_32 import (network C2)
         let result = classifier.classify(&features);
         assert!(result.class == MalwareClass::Malicious || result.class == MalwareClass::Suspicious);
     }
@@ -771,7 +801,39 @@ mod tests {
         features.features[21] = 7.8; // very high entropy
         features.features[65] = 1.0; // packed indicator
         features.features[20] = 0.7; // high byte ratio
+        features.features[23] = 7.5; // high max-section entropy
+        features.features[69] = 1.0; // overlay present
         let result = classifier.classify(&features);
         assert!(result.class == MalwareClass::Packed || result.class == MalwareClass::Suspicious);
+    }
+
+    #[test]
+    fn test_classify_packed_reachable_from_indicator_alone() {
+        // Regression: the raw is_packed flag used to be diluted against
+        // `clean = 1 - score` during normalization, keeping probs.packed
+        // below the 0.6 Packed threshold in every realistic case.
+        let classifier = EnsembleClassifier::new();
+        let mut features = FeatureVector::zeros();
+        features.features[65] = 1.0; // hard is_packed indicator, no other signals
+        let result = classifier.classify(&features);
+        assert_eq!(result.class, MalwareClass::Packed);
+        assert!(result.probabilities.packed > 0.6);
+    }
+
+    #[test]
+    fn test_confidence_is_max_class_probability() {
+        // A benign-looking input must report HIGH confidence for its Clean
+        // verdict (the old confidence = anomaly score read inverted).
+        let classifier = EnsembleClassifier::new();
+        let mut features = FeatureVector::zeros();
+        features.features[16] = 0.8; // high printable ratio
+        features.features[21] = 5.0; // normal entropy
+        let result = classifier.classify(&features);
+        assert_eq!(result.class, MalwareClass::Clean);
+
+        let p = &result.probabilities;
+        let max_prob = p.clean.max(p.suspicious).max(p.malicious).max(p.packed).max(p.pua);
+        assert!((result.confidence - max_prob).abs() < 1e-6);
+        assert!(result.confidence > 0.9);
     }
 }

@@ -6,19 +6,12 @@ description = "Capstone disassembly framework FFI bindings with multi-architectu
 license = "MIT"
 
 [dependencies]
-thiserror = "1"
-serde = { version = "1", features = ["derive"] }
+thiserror = { workspace = true }
+serde = { workspace = true }
 
 [build-dependencies]
-cc = "1"
 pkg-config = "0.3"
-
-[features]
-default = ["x86", "arm", "mips", "ppc"]
-x86 = []
-arm = []
-mips = []
-ppc = []
+bindgen = "0.69"
 
 # [dev-dependencies]
 # criterion = "0.5"

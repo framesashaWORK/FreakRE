@@ -29,16 +29,33 @@ impl BackdoorRuleId {
             | Self::BindShell
             | Self::ServiceBackdoor
             | Self::WebShellIndicator
-            | Self::C2Beacon
             | Self::AuthBypass
             | Self::FirmwareIndicator => BackdoorSeverity::Critical,
 
             Self::NamedPipeBackdoor
             | Self::RegistryPersistence
-            | Self::DllHijacking
-            | Self::HiddenAccount => BackdoorSeverity::High,
+            | Self::HiddenAccount
+            | Self::C2Beacon => BackdoorSeverity::High,
+
+            // Side-loading evidence (DLL name + writable dir) is contextual,
+            // not a standalone backdoor signal.
+            Self::DllHijacking => BackdoorSeverity::Medium,
 
             Self::EncryptedConfig => BackdoorSeverity::Medium,
+        }
+    }
+
+    /// Default confidence for a finding from this rule.
+    pub fn default_confidence(&self) -> f64 {
+        match self {
+        // Ubiquitous APIs/paths — weak evidence even with the tightened gates.
+        // EncryptedConfig is the weakest heuristic of all (entropy-only,
+        // no semantic content), so it must not masquerade as high confidence.
+        Self::DllHijacking | Self::EncryptedConfig => 0.4,
+            Self::RegistryPersistence => 0.6,
+            Self::C2Beacon | Self::NamedPipeBackdoor => 0.75,
+            Self::WebShellIndicator => 0.8,
+            _ => 0.9,
         }
     }
 }
@@ -50,6 +67,8 @@ pub struct BackdoorFinding {
     pub rule_id: BackdoorRuleId,
     /// Severity of this finding.
     pub severity: BackdoorSeverity,
+    /// Confidence of this finding [0.0 – 1.0].
+    pub confidence: f64,
     /// Human-readable explanation.
     pub description: String,
     /// Evidence: matched API names or string patterns.
@@ -118,24 +137,32 @@ impl BackdoorReport {
         }
 
         // Sort: critical first, then high, then medium
-        findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+        findings.sort_by_key(|f| std::cmp::Reverse(f.severity));
 
-        // Compute weighted risk score
-        let mut score = 0.0_f64;
+        // Probabilistic (noisy-OR) aggregation: each finding independently
+        // pushes toward risk=1, so piling up weak findings cannot saturate
+        // the score the way a linear sum does.
+        let mut no_risk = 1.0_f64;
         for f in &findings {
-            score += match f.severity {
-                BackdoorSeverity::Critical => 0.35,
-                BackdoorSeverity::High => 0.20,
-                BackdoorSeverity::Medium => 0.10,
-            };
+            let weight = f.confidence.clamp(0.0, 1.0)
+                * match f.severity {
+                    BackdoorSeverity::Critical => 0.35,
+                    BackdoorSeverity::High => 0.20,
+                    BackdoorSeverity::Medium => 0.10,
+                };
+            no_risk *= 1.0 - weight.min(0.99);
         }
-        let risk_score = score.min(1.0);
+        let risk_score = 1.0 - no_risk;
 
-        // Determine verdict
-        let has_critical = findings.iter().any(|f| f.severity == BackdoorSeverity::Critical);
-        let verdict = if has_critical || risk_score >= 0.5 {
+        // A verdict of BackdoorDetected requires either a high-confidence
+        // critical finding or an aggregated score that is hard to reach with
+        // weak evidence alone.
+        let strong_critical = findings
+            .iter()
+            .any(|f| f.severity == BackdoorSeverity::Critical && f.confidence >= 0.7);
+        let verdict = if strong_critical || risk_score >= 0.5 {
             BackdoorVerdict::BackdoorDetected
-        } else if risk_score >= 0.2 {
+        } else if risk_score >= 0.15 {
             BackdoorVerdict::Suspicious
         } else {
             BackdoorVerdict::Clean
@@ -180,6 +207,7 @@ mod tests {
         let findings = vec![BackdoorFinding {
             rule_id: BackdoorRuleId::ReverseShell,
             severity: BackdoorSeverity::Critical,
+            confidence: 0.9,
             description: "test".into(),
             evidence: vec!["connect".into()],
             mitre_ids: vec![],
@@ -194,6 +222,7 @@ mod tests {
         let findings = vec![BackdoorFinding {
             rule_id: BackdoorRuleId::EncryptedConfig,
             severity: BackdoorSeverity::Medium,
+            confidence: 0.9,
             description: "test".into(),
             evidence: vec![],
             mitre_ids: vec![],

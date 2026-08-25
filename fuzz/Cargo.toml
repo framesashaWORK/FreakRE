@@ -1,5 +1,5 @@
 [package]
-name = "bibleteks-fuzz"
+name = "freakre-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -19,6 +19,13 @@ import-analyzer = { path = "../import-analyzer" }
 str-extract = { path = "../str-extract" }
 entropy-rs = { path = "../entropy-rs" }
 yara-lite = { path = "../yara-lite" }
+freakre-x86 = { path = "../freakre-x86" }
+wasm-parser = { path = "../wasm-parser" }
+dex-parser = { path = "../dex-parser" }
+coff-parser = { path = "../coff-parser" }
+flat-binary = { path = "../flat-binary" }
+project-db = { path = "../project-db" }
+freakre-ir = { path = "../freakre-ir" }
 
 [[bin]]
 name = "fuzz_pe_parser"
@@ -59,5 +66,47 @@ doc = false
 [[bin]]
 name = "fuzz_yara"
 path = "fuzz_targets/fuzz_yara.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_x86_decoder"
+path = "fuzz_targets/fuzz_x86_decoder.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_wasm_parser"
+path = "fuzz_targets/fuzz_wasm_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_dex_parser"
+path = "fuzz_targets/fuzz_dex_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_coff_parser"
+path = "fuzz_targets/fuzz_coff_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_flat_binary"
+path = "fuzz_targets/fuzz_flat_binary.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_project_db"
+path = "fuzz_targets/fuzz_project_db.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ir_lifter"
+path = "fuzz_targets/fuzz_ir_lifter.rs"
 test = false
 doc = false

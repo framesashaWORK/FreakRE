@@ -123,10 +123,13 @@ impl<'a> Parser<'a> {
 
     fn peek_token_preview(&self) -> String {
         let r = self.remaining().trim_start();
-        let end = r
+        let raw_end = r
             .find(|c: char| c.is_whitespace() || c == '{' || c == '}' || c == ':')
-            .unwrap_or(r.len())
-            .min(20);
+            .unwrap_or(r.len());
+        let mut end = raw_end.min(20);
+        while end > 0 && !r.is_char_boundary(end) {
+            end -= 1;
+        }
         if end == 0 {
             "<eof>".into()
         } else {
@@ -308,7 +311,7 @@ impl<'a> Parser<'a> {
                     escaped = true;
                     self.advance(1);
                 } else if c == '/' {
-                    let value = self.input[start..self.pos].to_string();
+                    let value = self.input[start..self.pos].as_bytes().to_vec();
                     self.advance(1);
                     return Ok(TextPattern {
                         value,
@@ -414,22 +417,32 @@ impl<'a> Parser<'a> {
         let mut mods = Modifiers::default();
         loop {
             self.skip_ws();
+            // Read one whole identifier word so prefixes like `nocasewide`
+            // never match as `nocase` + `wide` (real YARA rejects them).
             let rest = self.remaining();
-            if rest.starts_with("nocase") {
-                mods.nocase = true;
-                self.advance(6);
-            } else if rest.starts_with("wide") {
-                mods.wide = true;
-                self.advance(4);
-            } else if rest.starts_with("ascii") {
-                mods.ascii = true;
-                self.advance(5);
-            } else if rest.starts_with("fullword") {
-                mods.fullword = true;
-                self.advance(8);
-            } else {
+            let word_len = rest
+                .char_indices()
+                .find(|(_, c)| !c.is_alphanumeric() && *c != '_')
+                .map(|(i, _)| i)
+                .unwrap_or(rest.len());
+            if word_len == 0 {
                 break;
             }
+            match &rest[..word_len] {
+                "nocase" => mods.nocase = true,
+                "wide" => mods.wide = true,
+                "ascii" => mods.ascii = true,
+                "fullword" => mods.fullword = true,
+                // Section keywords legitimately follow a modifier list.
+                "condition" | "strings" => break,
+                unknown => {
+                    return Err(ParseError::UnknownModifier(
+                        unknown.to_string(),
+                        self.pos,
+                    ));
+                }
+            }
+            self.advance(word_len);
         }
         // Default: ascii if neither ascii nor wide specified
         if !mods.wide && !mods.ascii {
@@ -543,28 +556,33 @@ impl<'a> Parser<'a> {
             return Ok(cond);
         }
 
-        // Boolean literals
-        if self.remaining().starts_with("true") {
-            self.advance(4);
+        // Boolean literals (must terminate at an identifier boundary so
+        // identifiers like `truexyy` are rejected instead of absorbed).
+        if self.try_keyword("true") {
             return Ok(Condition::Bool(true));
         }
-        if self.remaining().starts_with("false") {
-            self.advance(5);
+        if self.try_keyword("false") {
             return Ok(Condition::Bool(false));
         }
 
         // N of them / all of them / any of them
-        if self.remaining().starts_with("all") || self.remaining().starts_with("any") {
-            return self.parse_of_them();
+        let of_kind = if self.try_keyword("all") {
+            Some(OfKind::All)
+        } else if self.try_keyword("any") {
+            Some(OfKind::Any)
+        } else {
+            None
+        };
+        if let Some(kind) = of_kind {
+            return self.parse_of_suffix(kind);
         }
         if self.peek_char().map(|c| c.is_ascii_digit()).unwrap_or(false) {
             // Could be "N of them" or integer literal
             let saved = self.pos;
             let num = self.read_usize()?;
             self.skip_ws();
-            if self.remaining().starts_with("of") {
-                self.advance(2);
-                return self.parse_of_suffix(OfKind::Exactly(num));
+            if self.try_keyword("of") {
+                return self.parse_of_tail(OfKind::Exactly(num));
             }
             // Not "of", restore and treat as int literal in comparison
             self.pos = saved;
@@ -627,54 +645,56 @@ impl<'a> Parser<'a> {
             ));
         }
 
+        if self.remaining().starts_with("uint8(")
+            || self.remaining().starts_with("uint16(")
+            || self.remaining().starts_with("uint32(")
+        {
+            let lhs = self.parse_int_expr()?;
+            self.skip_ws();
+            if let Some(op) = self.try_parse_comp_op() {
+                let rhs = self.parse_int_expr()?;
+                return Ok(Condition::IntComp(op, Box::new(lhs), Box::new(rhs)));
+            }
+            return Err(ParseError::Syntax(
+                self.pos,
+                "uintN(...) must be used in comparison".into(),
+            ));
+        }
+
+        if self.remaining().starts_with("entrypoint") {
+            self.advance(10);
+            self.skip_ws();
+            if let Some(op) = self.try_parse_comp_op() {
+                let rhs = self.parse_int_expr()?;
+                return Ok(Condition::IntComp(
+                    op,
+                    Box::new(IntExpr::Entrypoint),
+                    Box::new(rhs),
+                ));
+            }
+            return Err(ParseError::Syntax(
+                self.pos,
+                "entrypoint must be used in comparison".into(),
+            ));
+        }
+
         Err(ParseError::Syntax(
             self.pos,
             format!("unexpected token: {}", self.peek_token_preview()),
         ))
     }
 
-    fn parse_of_them(&mut self) -> Result<Condition> {
-        let kind = if self.remaining().starts_with("all") {
-            self.advance(3);
-            OfKind::All
-        } else {
-            self.advance(3); // "any"
-            OfKind::Any
-        };
-        self.skip_ws();
-        self.expect_keyword("of")?;
-        self.skip_ws();
-        if self.remaining().starts_with("them") {
-            self.advance(4);
-            Ok(Condition::OfThem(kind))
-        } else if self.peek_char() == Some('(') {
-            self.advance(1);
-            let mut ids = Vec::new();
-            loop {
-                self.skip_ws();
-                if self.peek_char() == Some(')') {
-                    self.advance(1);
-                    break;
-                }
-                ids.push(self.read_string_identifier()?);
-                self.skip_ws();
-                if self.peek_char() == Some(',') {
-                    self.advance(1);
-                }
-            }
-            Ok(Condition::OfSet(kind, ids))
-        } else {
-            Err(ParseError::Syntax(
-                self.pos,
-                "expected 'them' or '(' after 'of'".into(),
-            ))
-        }
-    }
-
+    /// `all|any|N of ...` — consumes the `of` keyword, then the target.
     fn parse_of_suffix(&mut self, kind: OfKind) -> Result<Condition> {
         self.skip_ws();
-        if self.remaining().starts_with("them") {
-            self.advance(4);
+        self.expect_keyword("of")?;
+        self.parse_of_tail(kind)
+    }
+
+    /// Target of an `of` expression with `of` already consumed.
+    fn parse_of_tail(&mut self, kind: OfKind) -> Result<Condition> {
+        self.skip_ws();
+        if self.try_keyword("them") {
             Ok(Condition::OfThem(kind))
         } else if self.peek_char() == Some('(') {
             self.advance(1);
@@ -727,12 +747,23 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_int_expr(&mut self) -> Result<IntExpr> {
+        self.parse_int_expr_inner(0)
+    }
+
+    fn parse_int_expr_inner(&mut self, depth: usize) -> Result<IntExpr> {
+        const MAX_INT_DEPTH: usize = 128;
+        if depth > MAX_INT_DEPTH {
+            return Err(ParseError::Syntax(
+                self.pos,
+                "integer expression nesting too deep".into(),
+            ));
+        }
         self.skip_ws();
 
         // Parenthesized integer expression
         if self.peek_char() == Some('(') {
             self.advance(1);
-            let inner = self.parse_int_expr()?;
+            let inner = self.parse_int_expr_inner(depth + 1)?;
             self.expect_char(')')?;
             return Ok(inner);
         }
@@ -748,17 +779,17 @@ impl<'a> Parser<'a> {
             Ok(IntExpr::Entrypoint)
         } else if self.remaining().starts_with("uint8(") {
             self.advance(6);
-            let offset = self.parse_int_expr()?;
+            let offset = self.parse_int_expr_inner(depth + 1)?;
             self.expect_char(')')?;
             Ok(IntExpr::Uint8(Box::new(offset)))
         } else if self.remaining().starts_with("uint16(") {
             self.advance(7);
-            let offset = self.parse_int_expr()?;
+            let offset = self.parse_int_expr_inner(depth + 1)?;
             self.expect_char(')')?;
             Ok(IntExpr::Uint16(Box::new(offset)))
         } else if self.remaining().starts_with("uint32(") {
             self.advance(7);
-            let offset = self.parse_int_expr()?;
+            let offset = self.parse_int_expr_inner(depth + 1)?;
             self.expect_char(')')?;
             Ok(IntExpr::Uint32(Box::new(offset)))
         } else if self.peek_char().map(|c| c.is_ascii_digit()).unwrap_or(false) {
@@ -870,26 +901,49 @@ fn hex_digit(b: u8) -> Option<u8> {
     }
 }
 
-fn unescape_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+/// Decode YARA-style escapes into the literal byte sequence to match.
+/// `\xNN` yields the raw byte NN for any value (including >= 0x80); other
+/// escapes and plain characters are pushed as their UTF-8 encoding.
+fn unescape_string(s: &str) -> Vec<u8> {
+    fn push_char(out: &mut Vec<u8>, c: char) {
+        let mut buf = [0u8; 4];
+        out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+    }
+
+    let mut out = Vec::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.next() {
-                Some('n') => out.push('\n'),
-                Some('r') => out.push('\r'),
-                Some('t') => out.push('\t'),
-                Some('\\') => out.push('\\'),
-                Some('"') => out.push('"'),
-                Some('0') => out.push('\0'),
-                Some(other) => {
-                    out.push('\\');
-                    out.push(other);
-                }
-                None => out.push('\\'),
+                Some('n') => out.push(b'\n'),
+                Some('r') => out.push(b'\r'),
+                Some('t') => out.push(b'\t'),
+                Some('\\') => out.push(b'\\'),
+                Some('"') => out.push(b'"'),
+                Some('0') => out.push(0),
+                Some('x') => match (chars.next(), chars.next()) {
+                    (Some(h), Some(l)) if h.is_ascii_hexdigit() && l.is_ascii_hexdigit() => {
+                        let byte =
+                            hex_digit(h as u8).unwrap() << 4 | hex_digit(l as u8).unwrap();
+                        out.push(byte);
+                    }
+                    // Malformed \x escape: emit it literally.
+                    (h, l) => {
+                        out.push(b'\\');
+                        out.push(b'x');
+                        if let Some(h) = h {
+                            push_char(&mut out, h);
+                        }
+                        if let Some(l) = l {
+                            push_char(&mut out, l);
+                        }
+                    }
+                },
+                Some(other) => push_char(&mut out, other),
+                None => out.push(b'\\'),
             }
         } else {
-            out.push(c);
+            push_char(&mut out, c);
         }
     }
     out
@@ -931,6 +985,28 @@ mod tests {
     }
 
     #[test]
+    fn test_unescape_hex_escapes() {
+        let input = r#"
+        rule hx {
+            strings:
+                $a = "\x41\x42"
+                $b = "\xE9\xFF"
+            condition:
+                any of them
+        }
+        "#;
+        let rule = parse_rule(input).unwrap();
+        match &rule.strings[0].pattern {
+            Pattern::Text(tp) => assert_eq!(tp.value, b"AB"),
+            _ => panic!("expected text pattern"),
+        }
+        match &rule.strings[1].pattern {
+            Pattern::Text(tp) => assert_eq!(tp.value, vec![0xE9, 0xFF]),
+            _ => panic!("expected text pattern"),
+        }
+    }
+
+    #[test]
     fn test_parse_hex_wildcards() {
         let input = r#"
         rule test_hex {
@@ -942,18 +1018,18 @@ mod tests {
         "#;
         let rule = parse_rule(input).unwrap();
         if let Pattern::Hex(hex) = &rule.strings[0].pattern {
-            assert_eq!(hex.tokens.len(), 5);
+            assert_eq!(hex.tokens.len(), 6);
             assert_eq!(hex.tokens[0], HexToken::Literal(0x4D));
             assert_eq!(hex.tokens[2], HexToken::Wildcard);
             assert_eq!(
-                hex.tokens[3],
+                hex.tokens[4],
                 HexToken::NibbleWildcard {
                     mask: 0xF0,
                     value: 0x0A
                 }
             );
             assert_eq!(
-                hex.tokens[4],
+                hex.tokens[5],
                 HexToken::NibbleWildcard {
                     mask: 0x0F,
                     value: 0xB0
@@ -990,5 +1066,114 @@ mod tests {
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].name, "a");
         assert_eq!(rules[1].name, "b");
+    }
+
+    #[test]
+    fn test_int_expr_depth_limit() {
+        let deep = format!("{}0{}", "uint8(".repeat(200), ")".repeat(200));
+        let input = format!("rule r {{ condition: filesize < {} }}", deep);
+        assert!(parse_rule(&input).is_err());
+
+        let shallow = "rule r2 { condition: filesize < uint8(uint8(0)) }";
+        assert!(parse_rule(shallow).is_ok());
+    }
+
+    #[test]
+    fn test_preview_multibyte_no_panic() {
+        let input = format!("rule r {{ strings: {} }}", "б".repeat(30));
+        assert!(parse_rule(&input).is_err());
+    }
+
+    #[test]
+    fn test_modifier_tokens_require_word_boundaries() {
+        // `nocasewide` must NOT silently mean nocase + wide.
+        let input = r#"
+        rule glued_mods {
+            strings:
+                $s = "x" nocasewide
+            condition:
+                $s
+        }
+        "#;
+        assert!(matches!(
+            parse_rule(input),
+            Err(ParseError::UnknownModifier(m, _)) if m == "nocasewide"
+        ));
+
+        for bad in ["widex", "ascii2", "fullwords", "nocaseee"] {
+            let src = format!(
+                "rule m {{ strings: $s = \"x\" {} condition: $s }}",
+                bad
+            );
+            assert!(
+                matches!(parse_rule(&src), Err(ParseError::UnknownModifier(_, _))),
+                "'{}' should be rejected as an unknown modifier",
+                bad
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_known_modifiers_parse_exactly() {
+        let input = r#"
+        rule mods {
+            strings:
+                $s = "x" nocase wide ascii fullword
+            condition:
+                $s
+        }
+        "#;
+        let rule = parse_rule(input).unwrap();
+        let m = &rule.strings[0].modifiers;
+        assert!(m.nocase && m.wide && m.ascii && m.fullword);
+    }
+
+    #[test]
+    fn test_modifier_list_stops_at_section_keyword() {
+        let input = r#"
+        rule stop_at_condition {
+            strings:
+                $s = "x" ascii
+            condition:
+                $s
+        }
+        "#;
+        assert!(parse_rule(input).is_ok());
+    }
+
+    #[test]
+    fn test_keywords_require_token_boundaries() {
+        // Identifiers that merely start with a keyword must not be absorbed.
+        let src = "rule k { condition: truexyy }";
+        assert!(parse_rule(src).is_err());
+
+        let src = "rule k { condition: falsepositive }";
+        assert!(parse_rule(src).is_err());
+
+        // `allofthem` is a single identifier in real YARA, not three tokens.
+        let src = "rule k { condition: allofthem }";
+        assert!(parse_rule(src).is_err());
+
+        let src = "rule k { strings: $a = \"x\" condition: anyof ($a) }";
+        assert!(parse_rule(src).is_err());
+    }
+
+    #[test]
+    fn test_keyword_conditions_still_parse_with_boundaries() {
+        for cond in ["true", "false", "all of them", "any of them", "1 of them"] {
+            let src = format!("rule ok {{ strings: $a = \"x\" condition: {} }}", cond);
+            assert!(parse_rule(&src).is_ok(), "'{}' should parse", cond);
+        }
+
+        let with_set = r#"
+        rule set {
+            strings:
+                $a = "x"
+                $b = "y"
+            condition:
+                all of ($a, $b)
+        }
+        "#;
+        assert!(parse_rule(with_set).is_ok());
     }
 }

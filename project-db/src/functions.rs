@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use crate::types::Type;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub enum FunctionType {
+    #[default]
     Normal,
     Thunk,           // Jump table entry
     Trampoline,      // Import thunk
@@ -10,15 +11,16 @@ pub enum FunctionType {
     UserDefined,     // Manually created by user
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub enum AnalysisStatus {
+    #[default]
     NotAnalyzed,
     Analyzing,
     Analyzed,
     Failed(String),
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct FunctionEntry {
     pub address: u64,
     pub name: String,
@@ -40,7 +42,7 @@ pub struct FunctionEntry {
     pub decompiled_code: Option<String>,
 
     // Raw function bytes (for plugin analysis)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub code_bytes: Option<Vec<u8>>,
     
     // Metadata
@@ -183,5 +185,14 @@ mod tests {
         
         assert_eq!(func.parameters.len(), 2);
         assert!(func.return_type.is_some());
+    }
+
+    #[test]
+    fn test_bincode_roundtrip() {
+        let func = FunctionEntry::new(0x401000, "x".to_string(), 10);
+        let bytes = bincode::serialize(&func).unwrap();
+        let back: FunctionEntry = bincode::deserialize(&bytes)
+            .unwrap_or_else(|e| panic!("roundtrip failed: {} (bytes: {:?})", e, &bytes[..bytes.len().min(48)]));
+        assert_eq!(back.address, 0x401000);
     }
 }

@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_assignments)]
+#![allow(unused_assignments)]
 //! # elf-parser
 //!
 //! Security-oriented ELF32/ELF64 parser for malware analysis.
@@ -133,16 +133,16 @@ impl<'a> ElfFile<'a> {
             return Err(ElfError::TooSmall(data.len()));
         }
 
-        let e_type = read_u16::<BE>(data, 16);
-        let e_machine = read_u16::<BE>(data, 18);
-        let e_entry = read_u64::<BE>(data, 24);
-        let e_phoff = read_u64::<BE>(data, 32);
-        let e_shoff = read_u64::<BE>(data, 40);
-        let e_phentsize = read_u16::<BE>(data, 54);
-        let e_phnum = read_u16::<BE>(data, 56);
-        let e_shentsize = read_u16::<BE>(data, 58);
-        let e_shnum = read_u16::<BE>(data, 60);
-        let e_shstrndx = read_u16::<BE>(data, 62);
+        let e_type = read_u16::<BE>(data, 16).unwrap_or(0);
+        let e_machine = read_u16::<BE>(data, 18).unwrap_or(0);
+        let e_entry = read_u64::<BE>(data, 24).unwrap_or(0);
+        let e_phoff = read_u64::<BE>(data, 32).unwrap_or(0);
+        let e_shoff = read_u64::<BE>(data, 40).unwrap_or(0);
+        let e_phentsize = read_u16::<BE>(data, 54).unwrap_or(0);
+        let e_phnum = read_u16::<BE>(data, 56).unwrap_or(0);
+        let e_shentsize = read_u16::<BE>(data, 58).unwrap_or(0);
+        let e_shnum = read_u16::<BE>(data, 60).unwrap_or(0);
+        let e_shstrndx = read_u16::<BE>(data, 62).unwrap_or(0);
 
         let elf_type = ElfType::from_raw(e_type);
         let machine = ElfMachine::from_raw(e_machine);
@@ -191,16 +191,16 @@ impl<'a> ElfFile<'a> {
             return Err(ElfError::TooSmall(data.len()));
         }
 
-        let e_type = read_u16::<BE>(data, 16);
-        let e_machine = read_u16::<BE>(data, 18);
-        let e_entry = read_u32::<BE>(data, 24) as u64;
-        let e_phoff = read_u32::<BE>(data, 28) as u64;
-        let e_shoff = read_u32::<BE>(data, 32) as u64;
-        let e_phentsize = read_u16::<BE>(data, 42);
-        let e_phnum = read_u16::<BE>(data, 44);
-        let e_shentsize = read_u16::<BE>(data, 46);
-        let e_shnum = read_u16::<BE>(data, 48);
-        let e_shstrndx = read_u16::<BE>(data, 50);
+        let e_type = read_u16::<BE>(data, 16).unwrap_or(0);
+        let e_machine = read_u16::<BE>(data, 18).unwrap_or(0);
+        let e_entry = read_u32::<BE>(data, 24).unwrap_or(0) as u64;
+        let e_phoff = read_u32::<BE>(data, 28).unwrap_or(0) as u64;
+        let e_shoff = read_u32::<BE>(data, 32).unwrap_or(0) as u64;
+        let e_phentsize = read_u16::<BE>(data, 42).unwrap_or(0);
+        let e_phnum = read_u16::<BE>(data, 44).unwrap_or(0);
+        let e_shentsize = read_u16::<BE>(data, 46).unwrap_or(0);
+        let e_shnum = read_u16::<BE>(data, 48).unwrap_or(0);
+        let e_shstrndx = read_u16::<BE>(data, 50).unwrap_or(0);
 
         let elf_type = ElfType::from_raw(e_type);
         let machine = ElfMachine::from_raw(e_machine);

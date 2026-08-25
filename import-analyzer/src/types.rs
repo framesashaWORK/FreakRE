@@ -7,6 +7,9 @@ pub struct ImportedModule {
     pub name_rva: u32,
     /// Список импортированных функций
     pub functions: Vec<ImportedFunction>,
+    /// Модуль получен из таблицы отложенной загрузки (Delay Import Directory),
+    /// а не из обычной Import Directory Table
+    pub is_delay_load: bool,
 }
 
 /// Одна импортированная функция

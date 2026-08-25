@@ -1,0 +1,7 @@
+[package]
+name = "freakre-x86"
+version = "0.1.0"
+edition = "2021"
+description = "Own x86/x64 disassembler. Table-driven, no external deps, no panics."
+
+[dependencies]

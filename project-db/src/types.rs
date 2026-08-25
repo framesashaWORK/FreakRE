@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+﻿use serde::{Deserialize, Serialize};
 
 /// A bookmark for quick navigation to important addresses.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -97,7 +97,9 @@ impl Type {
                 PrimitiveType::I64 | PrimitiveType::U64 | PrimitiveType::F64 => 8,
             }),
             Type::Pointer(_) => Some(8), // assume 64-bit
-            Type::Array(inner, count) => inner.size(type_db).map(|s| s * count),
+            Type::Array(inner, count) => inner
+                .size(type_db)
+                .and_then(|s| s.checked_mul(*count)),
             Type::Struct(name) => type_db.get_struct(name).map(|s| s.total_size),
             Type::Enum(name) => type_db.get_enum(name).map(|e| {
                 match e.underlying {
@@ -114,7 +116,7 @@ impl Type {
         }
     }
 
-    pub fn display(&self, type_db: &TypeDatabase) -> String {
+    pub fn display(&self, _type_db: &TypeDatabase) -> String {
         match self {
             Type::Primitive(p) => match p {
                 PrimitiveType::Void => "void".to_string(),
@@ -131,20 +133,20 @@ impl Type {
                 PrimitiveType::F64 => "double".to_string(),
                 PrimitiveType::Char => "char".to_string(),
             },
-            Type::Pointer(inner) => format!("{}*", inner.display(type_db)),
-            Type::Array(inner, size) => format!("{}[{}]", inner.display(type_db), size),
+            Type::Pointer(inner) => format!("{}*", inner.display(_type_db)),
+            Type::Array(inner, size) => format!("{}[{}]", inner.display(_type_db), size),
             Type::Struct(name) => format!("struct {}", name),
             Type::Enum(name) => format!("enum {}", name),
             Type::Function(sig) => {
                 let params: Vec<String> = sig.parameters.iter()
-                    .map(|(name, ty)| format!("{} {}", ty.display(type_db), name))
+                    .map(|(name, ty)| format!("{} {}", ty.display(_type_db), name))
                     .collect();
                 let params_str = if sig.variadic {
                     format!("{}, ...", params.join(", "))
                 } else {
                     params.join(", ")
                 };
-                format!("{}({})", sig.return_type.display(type_db), params_str)
+                format!("{}({})", sig.return_type.display(_type_db), params_str)
             }
             Type::Typedef(name, _) => name.clone(),
             Type::Unknown => "???".to_string(),
@@ -189,10 +191,18 @@ impl TypeDatabase {
     }
 
     pub fn resolve_typedef(&self, ty: &Type) -> Type {
+        let mut visited = std::collections::HashSet::new();
+        self.resolve_typedef_inner(ty, &mut visited)
+    }
+
+    fn resolve_typedef_inner(&self, ty: &Type, visited: &mut std::collections::HashSet<String>) -> Type {
         match ty {
             Type::Typedef(name, _) => {
+                if visited.len() >= 64 || !visited.insert(name.clone()) {
+                    return ty.clone();
+                }
                 if let Some(resolved) = self.typedefs.get(name) {
-                    self.resolve_typedef(resolved)
+                    self.resolve_typedef_inner(resolved, visited)
                 } else {
                     ty.clone()
                 }
@@ -263,5 +273,16 @@ mod tests {
         let db = TypeDatabase::new();
         let arr = Type::Array(Box::new(Type::Primitive(PrimitiveType::U32)), 10);
         assert_eq!(arr.size(&db), Some(40));
+    }
+
+    #[test]
+    fn test_array_size_overflow_is_graceful() {
+        let db = TypeDatabase::new();
+        // usize::MAX * 8 would overflow; must yield None instead of panicking.
+        let arr = Type::Array(
+            Box::new(Type::Primitive(PrimitiveType::U64)),
+            usize::MAX,
+        );
+        assert_eq!(arr.size(&db), None);
     }
 }

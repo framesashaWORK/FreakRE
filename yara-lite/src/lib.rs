@@ -27,7 +27,7 @@
 //!
 //! let parsed = parse_rules(rules_text).unwrap();
 //! let compiled: Vec<_> = parsed.iter().map(|r| compile_rule(r).unwrap()).collect();
-//! let scanner = Scanner::new(compiled);
+//! let scanner = Scanner::new(compiled).unwrap();
 //!
 //! let data = b"\x4D\x5A\x90\x00";
 //! let result = scanner.scan(data);
@@ -42,6 +42,6 @@ pub mod scanner;
 // Re-exports for convenience
 pub use compiler::{compile_rule, CompiledRule};
 pub use parser::{parse_rule, parse_rules};
-pub use scanner::{Match, ScanResult, Scanner};
+pub use scanner::{Match, MAX_COLLECTED_MATCHES, ScanResult, Scanner};
 
 

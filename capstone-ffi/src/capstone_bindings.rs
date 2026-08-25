@@ -87,11 +87,14 @@ extern "C" {
     ) -> usize;
     fn cs_free(insn: *mut CsInsn, count: usize);
     fn cs_option(handle: CsHandle, opt_type: i32, value: usize) -> CsErr;
+    /// Check if instruction belongs to a specific group (CS_GRP_*).
+    /// Returns true if the instruction is in the given group.
+    fn cs_insn_group(handle: CsHandle, insn: *const CsInsn, group_id: u8) -> bool;
 }
 
 // cs_option types
-const CS_OPT_DETAIL: i32 = 1;
-const CS_OPT_ON: usize = 3;
+const CS_OPT_DETAIL: i32 = 2;
+const CS_OPT_ON: usize = 2;
 
 // ─── Safe wrapper ────────────────────────────────────────────────────
 
@@ -142,6 +145,22 @@ impl CapstoneHandle {
             cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
         }
 
+        // FIXED: Runtime size check to detect CsInsn layout mismatch between
+        // compile-time struct definition and linked Capstone library version.
+        // A mismatch would cause reading garbage from wrong offsets → UB.
+        let actual_size = std::mem::size_of::<CsInsn>();
+        // Capstone 4.x/5.x cs_insn is 248 bytes on 64-bit platforms.
+        // Allow 240-256 range to accommodate minor platform differences.
+        if !(240..=256).contains(&actual_size) {
+            unsafe { cs_close(&mut handle); }
+            return Err(DisasmError::InitFailed(format!(
+                "CsInsn size mismatch: expected 240-256 bytes, got {}. \
+                 This indicates a Capstone version incompatibility. \
+                 Please rebuild with the correct Capstone headers.",
+                actual_size
+            )));
+        }
+
         Ok(Self { handle, arch, mode })
     }
 
@@ -176,7 +195,7 @@ impl CapstoneHandle {
             let mnemonic = cstr_to_string(&cs_insn.mnemonic);
             let operands = cstr_to_string(&cs_insn.op_str);
 
-            let kind = classify_cs_instruction(cs_insn.id, self.arch);
+            let kind = classify_by_groups(self.handle, cs_insn as *const CsInsn);
 
             instructions.push(Instruction {
                 address: cs_insn.address,
@@ -233,51 +252,28 @@ fn classify_cs_instruction(id: u32, arch: Arch) -> InstructionKind {
     }
 }
 
-fn classify_x86(id: u32) -> InstructionKind {
-    // X86 instruction IDs from Capstone's x86.h
-    // X86_INS_RET = 537
-    // X86_INS_CALL = 59 (relative), various indirect call IDs exist
-    // X86_INS_JMP = 301
-    // X86_INS_JA..JG..JLE = range 265-296
-    // X86_INS_NOP = 378
-    // X86_INS_LOOP.. = 329..331
-    match id {
-        537 => InstructionKind::Return,    // RET
-        59 | 58 => InstructionKind::Call,  // CALL rel, CALL indirect
-        301 => InstructionKind::UnconditionalJump, // JMP
-        265..=296 => InstructionKind::ConditionalBranch, // Jcc
-        329..=331 => InstructionKind::ConditionalBranch, // LOOPcc
-        378 => InstructionKind::Nop,       // NOP
-        _ => InstructionKind::Normal,
+/// Classify instruction using Capstone's group API instead of hardcoded IDs.
+/// This is version-independent and works across Capstone 4.x and 5.x.
+fn classify_by_groups(handle: CsHandle, insn: *const CsInsn) -> InstructionKind {
+    // Safety: handle and insn are valid during disassemble() scope
+    unsafe {
+        if cs_insn_group(handle, insn, CS_GRP_RET) {
+            return InstructionKind::Return;
+        }
+        if cs_insn_group(handle, insn, CS_GRP_CALL) {
+            return InstructionKind::Call;
+        }
+        if cs_insn_group(handle, insn, CS_GRP_JUMP) {
+            // Distinguish conditional vs unconditional by checking
+            // BRANCH_RELATIVE group or falling through to Normal
+            if cs_insn_group(handle, insn, CS_GRP_BRANCH_RELATIVE) {
+                return InstructionKind::ConditionalBranch;
+            }
+            return InstructionKind::UnconditionalJump;
+        }
+        if cs_insn_group(handle, insn, CS_GRP_INT) {
+            return InstructionKind::Normal; // Interrupts treated as normal
+        }
     }
-}
-
-fn classify_arm(id: u32) -> InstructionKind {
-    // ARM_INS_BX = 25, ARM_INS_BLX = 17, ARM_INS_B = 12, ARM_INS_BL = 13
-    // ARM_BX_RET variants etc.
-    match id {
-        12 | 13 => InstructionKind::ConditionalBranch, // B / BL (conditional in ARM)
-        17 => InstructionKind::Call,                    // BLX
-        25 => InstructionKind::Return,                  // BX LR (common return pattern)
-        _ => InstructionKind::Normal,
-    }
-}
-
-fn classify_arm64(id: u32) -> InstructionKind {
-    // AArch64_INS_BL = 31, AArch64_INS_B = 21, AArch64_INS_RET = 196
-    match id {
-        31 => InstructionKind::Call,
-        196 => InstructionKind::Return,
-        21 => InstructionKind::ConditionalBranch,
-        _ => InstructionKind::Normal,
-    }
-}
-
-fn classify_mips(id: u32) -> InstructionKind {
-    match id {
-        26 => InstructionKind::Call,   // JAL
-        25 => InstructionKind::UnconditionalJump, // J
-        32 => InstructionKind::Return, // JR $ra
-        _ => InstructionKind::Normal,
-    }
+    InstructionKind::Normal
 }

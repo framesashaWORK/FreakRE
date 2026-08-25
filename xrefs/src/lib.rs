@@ -15,6 +15,23 @@
 use serde::Serialize;
 use std::collections::HashMap;
 
+/// Safety budget on collected xref matches: prevents multi-GB allocations
+/// when millions of needles match a large binary.
+pub const MAX_XREF_RESULTS: usize = 250_000;
+
+/// Hard budget on examined candidate matches (collected or not): bounds
+/// scan time when common short strings produce billions of raw hits.
+pub const MAX_XREF_SCANNED: usize = 20_000_000;
+
+/// Strings shorter than this are noise for xref purposes (they match
+/// everywhere) and blow up automaton construction on big binaries.
+/// Import-name needles are held to the same threshold: short API names
+/// like "sin"/"atoi" match all over a binary and produce garbage xrefs.
+const MIN_XREF_STRING_LEN: usize = 8;
+
+/// Cap on distinct needles fed into the automaton; the longest win.
+const MAX_XREF_NEEDLES: usize = 50_000;
+
 // ─── Types ────────────────────────────────────────────────────────────
 
 /// What kind of entity is being referenced.
@@ -100,14 +117,16 @@ pub struct XrefSummary {
 /// In-memory cross-reference database.
 ///
 /// Internally stores xrefs indexed by target label for O(1) lookup.
+/// Duplicate xrefs (same source offset AND same target) are rejected on
+/// insert so totals and correlation results are never inflated.
 #[derive(Debug, Clone)]
 pub struct XrefDatabase {
     /// Primary index: target label → list of xrefs pointing to it.
     by_target: HashMap<String, Vec<Xref>>,
     /// Reverse index: source offset → list of targets referenced from there.
     by_source: HashMap<usize, Vec<XrefTarget>>,
-    /// Total xref count.
-    total: usize,
+    /// Insertion guard: (source_offset, target) pairs already stored.
+    seen: std::collections::HashSet<(usize, XrefTarget)>,
 }
 
 impl XrefDatabase {
@@ -116,13 +135,19 @@ impl XrefDatabase {
         Self {
             by_target: HashMap::new(),
             by_source: HashMap::new(),
-            total: 0,
+            seen: std::collections::HashSet::new(),
         }
     }
 
     /// Add a single cross-reference.
+    ///
+    /// Identical xrefs (same source offset and target) are deduplicated:
+    /// a re-insert is a no-op, keeping counts and indexes consistent.
     pub fn add(&mut self, xref: Xref) {
         let key = xref.target.label.clone();
+        if !self.seen.insert((xref.source_offset, xref.target.clone())) {
+            return;
+        }
         self.by_target
             .entry(key)
             .or_default()
@@ -131,7 +156,6 @@ impl XrefDatabase {
             .entry(xref.source_offset)
             .or_default()
             .push(xref.target);
-        self.total += 1;
     }
 
     /// Batch-add xrefs.
@@ -203,20 +227,24 @@ impl XrefDatabase {
         let mut results: Vec<CorrelatedXref> = intersection
             .into_iter()
             .map(|offset| {
+                // Section info, when known, lives on the stored xrefs
+                // themselves; take the first non-None section among the
+                // xrefs matching this source offset.
+                let mut section: Option<String> = None;
                 let targets: Vec<XrefTarget> = target_labels
                     .iter()
                     .filter_map(|label| {
                         self.xrefs_to(label)
                             .iter()
                             .find(|x| x.source_offset == offset)
-                            .map(|x| x.target.clone())
+                            .map(|x| {
+                                if section.is_none() {
+                                    section = x.source_section.clone();
+                                }
+                                x.target.clone()
+                            })
                     })
                     .collect();
-
-                let section = self
-                    .by_source
-                    .get(&offset)
-                    .and_then(|_| None); // Section info would come from PE/ELF context
 
                 CorrelatedXref {
                     source_offset: offset,
@@ -231,10 +259,14 @@ impl XrefDatabase {
     }
 
     /// Get summary statistics.
+    ///
+    /// All counts are derived from the indexes on each call, so they always
+    /// reflect exactly what `xrefs_to`/`xrefs_from` will return (no stale
+    /// stored counters, even across future index mutations).
     pub fn summary(&self) -> XrefSummary {
         let all_xrefs: Vec<&Xref> = self.by_target.values().flat_map(|v| v.iter()).collect();
         XrefSummary {
-            total_xrefs: self.total,
+            total_xrefs: all_xrefs.len(),
             unique_targets: self.by_target.len(),
             string_xrefs: all_xrefs.iter().filter(|x| x.target.kind == XrefTargetKind::String).count(),
             import_xrefs: all_xrefs.iter().filter(|x| x.target.kind == XrefTargetKind::Import).count(),
@@ -245,12 +277,12 @@ impl XrefDatabase {
 
     /// Number of xrefs in the database.
     pub fn len(&self) -> usize {
-        self.total
+        self.by_target.values().map(|v| v.len()).sum()
     }
 
     /// Whether the database is empty.
     pub fn is_empty(&self) -> bool {
-        self.total == 0
+        self.by_target.values().all(|v| v.is_empty())
     }
 }
 
@@ -265,71 +297,155 @@ impl Default for XrefDatabase {
 /// Build xrefs from extracted strings by scanning the binary for each string's
 /// raw bytes appearing at non-string locations (i.e., code/data referencing the string).
 ///
-/// Uses `memchr::memmem` for O(n+m) substring search instead of naive O(n*m).
+/// All needles are searched in a single Aho-Corasick pass (O(n + m + z)), so the
+/// cost is independent of how many strings the binary contains — critical for
+/// system libraries that embed thousands of strings.
 pub fn build_string_xrefs(
     data: &[u8],
     strings: &[str_extract::ExtractedString<'_>],
 ) -> Vec<Xref> {
-    let mut xrefs = Vec::new();
-
-    // Build a single multi-pattern finder for all strings at once.
-    // Fall back to per-string search if Aho-Corasick isn't available here.
+    // Collect non-empty needles, dedupe by bytes, and keep a parallel mapping
+    // from pattern index -> (original offset, value).
+    let mut needles: Vec<&[u8]> = Vec::new();
+    let mut infos: Vec<(usize, String)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for s in strings {
-        let needle = s.raw_bytes;
-        if needle.is_empty() || needle.len() > data.len() {
+        let n = s.raw_bytes;
+        if n.len() < MIN_XREF_STRING_LEN || n.len() > data.len() {
             continue;
         }
-
-        let finder = memchr::memmem::Finder::new(needle);
-        for abs_pos in finder.find_iter(data) {
-            // Skip the string's own location (a string doesn't xref itself)
-            if abs_pos == s.offset {
-                continue;
-            }
-
-            xrefs.push(Xref {
-                source_offset: abs_pos,
-                source_section: None,
-                target: XrefTarget {
-                    kind: XrefTargetKind::String,
-                    label: s.value.clone(),
-                    target_offset: Some(s.offset),
-                },
-            });
+        if seen.insert(n.to_vec()) {
+            needles.push(n);
+            infos.push((s.offset, s.value.clone()));
         }
     }
+    if needles.is_empty() {
+        return Vec::new();
+    }
+    if needles.len() > MAX_XREF_NEEDLES {
+        let mut order: Vec<usize> = (0..needles.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(needles[i].len()));
+        order.truncate(MAX_XREF_NEEDLES);
+        let kept: std::collections::HashSet<usize> = order.iter().copied().collect();
+        let mut new_needles = Vec::with_capacity(MAX_XREF_NEEDLES);
+        let mut new_infos = Vec::with_capacity(MAX_XREF_NEEDLES);
+        for i in 0..needles.len() {
+            if kept.contains(&i) {
+                new_needles.push(needles[i]);
+                new_infos.push(infos[i].clone());
+            }
+        }
+        needles = new_needles;
+        infos = new_infos;
+    }
 
-    xrefs
+    let ac = match freakre_patterns::AhoCorasick::build(&needles) {
+        Ok(ac) => ac,
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<Xref> = Vec::new();
+    let mut scanned = 0usize;
+    for m in ac.iter_overlapping(data) {
+        scanned += 1;
+        if out.len() >= MAX_XREF_RESULTS || scanned >= MAX_XREF_SCANNED {
+            eprintln!(
+                "[xrefs] string-xref budget reached ({} kept, {} scanned), results truncated",
+                out.len(),
+                scanned
+            );
+            break;
+        }
+        let (off, val) = match infos.get(m.pattern_id) {
+            Some(v) => v,
+            None => continue,
+        };
+        // Skip the string's own location (a string doesn't xref itself).
+        if m.start == *off {
+            continue;
+        }
+        out.push(Xref {
+            source_offset: m.start,
+            source_section: None,
+            target: XrefTarget {
+                kind: XrefTargetKind::String,
+                label: val.clone(),
+                target_offset: Some(*off),
+            },
+        });
+    }
+    out
 }
 
 /// Build xrefs from import names by scanning for their ASCII representation
 /// in the binary (IAT entries, string references in code, etc.).
 ///
-/// Uses `memchr::memmem` for efficient O(n+m) search per import name.
+/// Mirrors `build_string_xrefs` filtering: names shorter than
+/// `MIN_XREF_STRING_LEN` are skipped (short names like "sin"/"atoi" match
+/// everywhere and produce garbage xrefs).
+///
+/// The first occurrence of a name is treated as the import's canonical
+/// location (its definition site) and is not reported as a reference — same
+/// self-location rule as strings. Subsequent occurrences are recorded as
+/// xrefs whose `target_offset` points at that canonical location, so all
+/// refs to one import group under a single stable target.
+///
+/// Single Aho-Corasick pass over all import names (O(n + m + z)).
 pub fn build_import_xrefs(data: &[u8], import_names: &[String]) -> Vec<Xref> {
-    let mut xrefs = Vec::new();
-
+    let mut needles: Vec<&[u8]> = Vec::new();
+    let mut infos: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for name in import_names {
-        let needle = name.as_bytes();
-        if needle.is_empty() || needle.len() > data.len() {
+        let n = name.as_bytes();
+        if n.len() < MIN_XREF_STRING_LEN || n.len() > data.len() {
             continue;
         }
-
-        let finder = memchr::memmem::Finder::new(needle);
-        for abs_pos in finder.find_iter(data) {
-            xrefs.push(Xref {
-                source_offset: abs_pos,
-                source_section: None,
-                target: XrefTarget {
-                    kind: XrefTargetKind::Import,
-                    label: name.clone(),
-                    target_offset: Some(abs_pos),
-                },
-            });
+        if seen.insert(n.to_vec()) {
+            needles.push(n);
+            infos.push(name.clone());
         }
     }
+    if needles.is_empty() {
+        return Vec::new();
+    }
 
-    xrefs
+    let ac = match freakre_patterns::AhoCorasick::build(&needles) {
+        Ok(ac) => ac,
+        Err(_) => return Vec::new(),
+    };
+    // Canonical (first-seen) location per pattern; None until encountered.
+    let mut canonical: Vec<Option<usize>> = vec![None; needles.len()];
+    let mut out: Vec<Xref> = Vec::new();
+    let mut scanned = 0usize;
+    for m in ac.iter_overlapping(data) {
+        scanned += 1;
+        if out.len() >= MAX_XREF_RESULTS || scanned >= MAX_XREF_SCANNED {
+            break;
+        }
+        let pid = m.pattern_id;
+        let name = match infos.get(pid) {
+            Some(v) => v,
+            None => continue,
+        };
+        let canon = match canonical[pid] {
+            Some(off) => off,
+            // First occurrence = the import's own site; record it as the
+            // canonical target location and do not emit an xref for it.
+            None => {
+                canonical[pid] = Some(m.start);
+                continue;
+            }
+        };
+        out.push(Xref {
+            source_offset: m.start,
+            source_section: None,
+            target: XrefTarget {
+                kind: XrefTargetKind::Import,
+                label: name.clone(),
+                target_offset: Some(canon),
+            },
+        });
+    }
+    out
 }
 
 /// Build xrefs for a specific byte pattern across the entire binary.
@@ -532,6 +648,153 @@ mod tests {
         assert_eq!(xrefs.len(), 2);
         assert_eq!(xrefs[0].source_offset, 1);
         assert_eq!(xrefs[1].source_offset, 4);
+    }
+
+    // ─── Dedup tests ──────────────────────────────────────────────────
+
+    fn string_xref(source_offset: usize, label: &str) -> Xref {
+        Xref {
+            source_offset,
+            source_section: Some(".text".into()),
+            target: XrefTarget {
+                kind: XrefTargetKind::String,
+                label: label.into(),
+                target_offset: Some(0x5000),
+            },
+        }
+    }
+
+    #[test]
+    fn test_add_dedups_identical_xrefs() {
+        let mut db = XrefDatabase::new();
+        db.add(string_xref(0x100, "cmd.exe"));
+        db.add(string_xref(0x100, "cmd.exe"));
+        db.add(string_xref(0x100, "cmd.exe"));
+
+        assert_eq!(db.len(), 1);
+        assert_eq!(db.xrefs_to("cmd.exe").len(), 1);
+        assert_eq!(db.xrefs_from(0x100).len(), 1);
+
+        let summary = db.summary();
+        assert_eq!(summary.total_xrefs, 1);
+        assert_eq!(summary.unique_targets, 1);
+        assert_eq!(summary.string_xrefs, 1);
+    }
+
+    #[test]
+    fn test_add_dedup_keeps_distinct_xrefs() {
+        let mut db = XrefDatabase::new();
+        // Same source, different target → kept.
+        db.add(string_xref(0x100, "cmd.exe"));
+        db.add(string_xref(0x100, "kernel32.dll"));
+        // Same target, different source → kept.
+        db.add(string_xref(0x200, "cmd.exe"));
+
+        assert_eq!(db.len(), 3);
+        assert_eq!(db.xrefs_to("cmd.exe").len(), 2);
+        assert_eq!(db.xrefs_from(0x100).len(), 2);
+        assert_eq!(db.xrefs_from(0x200).len(), 1);
+
+        let summary = db.summary();
+        assert_eq!(summary.total_xrefs, 3);
+        assert_eq!(summary.unique_targets, 2);
+    }
+
+    #[test]
+    fn test_correlate_not_inflated_by_duplicates() {
+        let mut db = XrefDatabase::new();
+        for _ in 0..3 {
+            db.add(string_xref(0x100, "cmd.exe"));
+            db.add(Xref {
+                source_offset: 0x100,
+                source_section: None,
+                target: XrefTarget {
+                    kind: XrefTargetKind::Import,
+                    label: "CreateProcessA".into(),
+                    target_offset: None,
+                },
+            });
+        }
+
+        let correlated = db.correlate(&["cmd.exe", "CreateProcessA"]);
+        assert_eq!(correlated.len(), 1);
+        assert_eq!(correlated[0].targets.len(), 2);
+    }
+
+    #[test]
+    fn test_correlate_populates_source_section_from_xrefs() {
+        let mut db = XrefDatabase::new();
+        db.add(string_xref(0x100, "cmd.exe")); // source_section = Some(".text")
+        db.add(Xref {
+            source_offset: 0x100,
+            source_section: None,
+            target: XrefTarget {
+                kind: XrefTargetKind::Import,
+                label: "CreateProcessA".into(),
+                target_offset: None,
+            },
+        });
+
+        let correlated = db.correlate(&["cmd.exe", "CreateProcessA"]);
+        assert_eq!(correlated.len(), 1);
+        assert_eq!(correlated[0].source_section.as_deref(), Some(".text"));
+    }
+
+    #[test]
+    fn test_summary_matches_xrefs_to_after_dedup() {
+        let mut db = XrefDatabase::new();
+        db.add(string_xref(0x100, "cmd.exe"));
+        db.add(string_xref(0x100, "cmd.exe"));
+        db.add(string_xref(0x200, "cmd.exe"));
+
+        let summary = db.summary();
+        assert_eq!(summary.total_xrefs, db.len());
+        assert_eq!(
+            summary.string_xrefs,
+            db.xrefs_to("cmd.exe").len()
+        );
+    }
+
+    // ─── Import xref filtering tests ──────────────────────────────────
+
+    #[test]
+    fn test_build_import_xrefs_filters_short_names() {
+        // "sin" and "atoi" are below MIN_XREF_STRING_LEN and must be ignored
+        // even though they occur multiple times in the data.
+        let mut data = b"useless sin(x) calls atoi(y) here sin again".to_vec();
+        data.extend_from_slice(b"padding padding");
+        let names = vec!["sin".to_string(), "atoi".to_string()];
+        let xrefs = build_import_xrefs(&data, &names);
+        assert!(xrefs.is_empty());
+    }
+
+    #[test]
+    fn test_build_import_xrefs_skips_canonical_site_and_groups_target_offset() {
+        let name = b"VirtualAlloc";
+        let mut data = vec![0x90u8; 8];
+        let canonical_off = data.len();
+        data.extend_from_slice(name); // definition site (e.g., import table)
+        let ref_off = data.len();
+        data.extend_from_slice(name); // a second occurrence = a reference
+
+        let names = vec!["VirtualAlloc".to_string()];
+        let xrefs = build_import_xrefs(&data, &names);
+
+        assert_eq!(xrefs.len(), 1);
+        assert_eq!(xrefs[0].source_offset, ref_off);
+        assert_eq!(xrefs[0].target.label, "VirtualAlloc");
+        // All refs to the same import share the canonical location as
+        // target_offset (not the per-match position), so grouping works.
+        assert_eq!(xrefs[0].target.target_offset, Some(canonical_off));
+    }
+
+    #[test]
+    fn test_build_import_xrefs_single_occurrence_yields_no_refs() {
+        let mut data = vec![0xCCu8; 4];
+        data.extend_from_slice(b"VirtualFree");
+        let names = vec!["VirtualFree".to_string()];
+        // Only the definition site exists → no references to report.
+        assert!(build_import_xrefs(&data, &names).is_empty());
     }
 }
 

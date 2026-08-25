@@ -1,0 +1,8 @@
+[package]
+name = "flat-binary"
+version = "0.1.0"
+edition = "2021"
+description = "Flat binary, Intel HEX, and Motorola S-Record parser for FreakRE"
+
+[dependencies]
+serde = { workspace = true }

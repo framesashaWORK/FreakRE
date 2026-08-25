@@ -12,6 +12,7 @@ pub mod crypto_finder;
 pub mod string_analyzer;
 pub mod func_classifier;
 pub mod entropy_mapper;
+pub mod util;
 
 pub use crypto_finder::CryptoFinderPlugin;
 pub use string_analyzer::StringAnalyzerPlugin;

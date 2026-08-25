@@ -4,7 +4,7 @@
 //! This builds on the reaching definitions analysis.
 
 use crate::reaching_definitions::{Definition, ReachingDefinitions};
-use bibleteks_ir::{BlockId, IrFunction, Value};
+use freakre_ir::{BlockId, IrFunction, Value};
 use std::collections::{BTreeSet, HashMap};
 
 /// A use of a variable: (block_id, instruction_offset, variable)
@@ -166,7 +166,7 @@ impl DefUseChains {
             for def in defs {
                 chains
                     .entry(def.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(use_site.clone());
             }
         }
@@ -197,7 +197,7 @@ impl DefUseChains {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bibleteks_ir::{OpCode, Ty};
+    use freakre_ir::{IrInst, OpCode, Ty};
 
     #[test]
     fn test_use_def_chains() {

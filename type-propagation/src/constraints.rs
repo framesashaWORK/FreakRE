@@ -2,7 +2,7 @@
 //!
 //! Constraints represent relationships between types that must be satisfied.
 
-use bibleteks_ir::{OpCode, Ty, Value};
+use freakre_ir::{OpCode, Ty, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -61,7 +61,12 @@ pub struct ConstraintSystem {
     /// All constraints
     pub constraints: Vec<Constraint>,
     
-    /// Map from Value to TypeVar
+    /// Map from Value to TypeVar.
+    ///
+    /// Keys are canonicalized via [`ConstraintSystem::canonical_value`]:
+    /// the `Ty` annotation carried by `Value::Var` / `Value::Register` is
+    /// stripped, so the same SSA variable or register always maps to a
+    /// single TypeVar regardless of how it was annotated at each use site.
     pub value_to_var: HashMap<Value, TypeVar>,
     
     /// Next type variable ID
@@ -81,13 +86,34 @@ impl ConstraintSystem {
         var
     }
     
-    /// Get or create a type variable for a value
+    /// Normalize a value to its identity form.
+    ///
+    /// `Value::Var` and `Value::Register` carry a `Ty` annotation that is
+    /// pure metadata: the same SSA variable or register may appear with
+    /// different annotations across instructions. Keying constraints by
+    /// the annotated value would split one variable into several TypeVars
+    /// and break inference, so annotations are stripped here. Constants,
+    /// strings, and symbols carry no annotation and map to themselves.
+    pub fn canonical_value(value: &Value) -> Value {
+        match value {
+            Value::Var { id, .. } => Value::var(*id, Ty::Unknown),
+            Value::Register { name, .. } => Value::reg(name, Ty::Unknown),
+            other => other.clone(),
+        }
+    }
+
+    /// Get or create a type variable for a value.
+    ///
+    /// Lookup and insertion both go through [`ConstraintSystem::canonical_value`],
+    /// so identity is keyed by variable id / register name, never by the
+    /// per-use type annotation.
     pub fn var_for_value(&mut self, value: &Value) -> TypeVar {
-        if let Some(&var) = self.value_to_var.get(value) {
+        let key = Self::canonical_value(value);
+        if let Some(&var) = self.value_to_var.get(&key) {
             var
         } else {
             let var = self.fresh_var();
-            self.value_to_var.insert(value.clone(), var);
+            self.value_to_var.insert(key, var);
             var
         }
     }
@@ -124,8 +150,16 @@ impl ConstraintSystem {
         self.constraints.push(Constraint::SameWidth(a, b));
     }
     
-    /// Generate constraints from an operation
+    /// Generate constraints from an operation.
+    ///
+    /// Tolerates an empty `srcs` slice: no equality constraints can be
+    /// formed without operands, so the call returns cleanly instead of
+    /// panicking on public input.
     pub fn generate_from_op(&mut self, op: OpCode, dst: TypeVar, srcs: &[TypeVar]) {
+        if srcs.is_empty() {
+            return;
+        }
+
         match op {
             // Arithmetic operations: all operands must be same type
             OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod => {
@@ -134,13 +168,20 @@ impl ConstraintSystem {
                 }
             }
             
-            // Bitwise operations: operands must be integers
-            OpCode::And | OpCode::Or | OpCode::Xor | OpCode::Not |
-            OpCode::Shl | OpCode::Shr | OpCode::Sar | OpCode::Ror | OpCode::Rol => {
+            // Bitwise operations: all operands must be the same type
+            OpCode::And | OpCode::Or | OpCode::Xor | OpCode::Not => {
                 self.add_equal(dst, srcs[0]);
                 if srcs.len() > 1 {
                     self.add_equal(dst, srcs[1]);
                 }
+            }
+            
+            // Shifts / rotates: the result matches the shifted operand
+            // only. The shift amount is an independent (typically smaller)
+            // integer and must NOT be unified with the destination — a
+            // width relation between them is added by the caller instead.
+            OpCode::Shl | OpCode::Shr | OpCode::Sar | OpCode::Ror | OpCode::Rol => {
+                self.add_equal(dst, srcs[0]);
             }
             
             // Comparison operations: operands must be same type, result is bool
@@ -234,5 +275,79 @@ mod tests {
         
         // Should return the same variable for the same value
         assert_eq!(v1, v2);
+    }
+    
+    #[test]
+    fn test_var_for_value_keys_on_identity_not_annotation() {
+        let mut cs = ConstraintSystem::new();
+
+        // Same register, different type annotations -> one TypeVar.
+        let r1 = cs.var_for_value(&Value::reg("rax", Ty::i64()));
+        let r2 = cs.var_for_value(&Value::reg("rax", Ty::Unknown));
+        let r3 = cs.var_for_value(&Value::reg("rax", Ty::u32()));
+        assert_eq!(r1, r2);
+        assert_eq!(r1, r3);
+
+        // Same SSA variable id, different annotations -> one TypeVar.
+        let v1 = cs.var_for_value(&Value::var(42, Ty::i32()));
+        let v2 = cs.var_for_value(&Value::var(42, Ty::f64()));
+        assert_eq!(v1, v2);
+
+        // Distinct identities still get distinct variables.
+        assert_ne!(cs.var_for_value(&Value::reg("rbx", Ty::i64())), r1);
+        assert_ne!(cs.var_for_value(&Value::var(43, Ty::i32())), v1);
+
+        // Non-annotated values keep working.
+        assert_eq!(
+            cs.var_for_value(&Value::Const(7)),
+            cs.var_for_value(&Value::Const(7))
+        );
+    }
+
+    #[test]
+    fn test_shift_amount_not_unified_with_destination() {
+        let mut cs = ConstraintSystem::new();
+        let dst = cs.fresh_var();
+        let val = cs.fresh_var();
+        let amt = cs.fresh_var();
+
+        cs.generate_from_op(OpCode::Shl, dst, &[val, amt]);
+        cs.generate_from_op(OpCode::Shr, dst, &[val, amt]);
+        cs.generate_from_op(OpCode::Sar, dst, &[val, amt]);
+
+        // dst == shifted operand is required...
+        assert!(cs.constraints.contains(&Constraint::Equal(dst, val)));
+        // ...but the shift amount must not be equated to dst or val.
+        assert!(!cs.constraints.contains(&Constraint::Equal(dst, amt)));
+        assert!(!cs.constraints.contains(&Constraint::Equal(val, amt)));
+
+        // End to end: a 64-bit value shifted by an 8-bit amount solves fine.
+        cs.add_must_be(dst, Ty::i64());
+        cs.add_must_be(amt, Ty::u8());
+        let inf = crate::inference::TypeInference::solve(&cs).unwrap();
+        assert_eq!(inf.resolve(dst), Ty::i64());
+        assert_eq!(inf.resolve(amt), Ty::u8());
+    }
+
+    #[test]
+    fn test_generate_from_op_tolerates_empty_srcs() {
+        let mut cs = ConstraintSystem::new();
+        let dst = cs.fresh_var();
+
+        let ops = [
+            OpCode::Add, OpCode::Sub, OpCode::Mul, OpCode::Div, OpCode::Mod,
+            OpCode::And, OpCode::Or, OpCode::Xor, OpCode::Not,
+            OpCode::Shl, OpCode::Shr, OpCode::Sar, OpCode::Ror, OpCode::Rol,
+            OpCode::Eq, OpCode::Ne, OpCode::LtU, OpCode::GeS,
+            OpCode::Zext, OpCode::Sext, OpCode::Trunc,
+            OpCode::FloatAdd, OpCode::FloatNeg, OpCode::FloatAbs, OpCode::FloatSqrt,
+            OpCode::IntToFloat, OpCode::FloatToInt, OpCode::Copy,
+        ];
+        for op in ops {
+            cs.generate_from_op(op, dst, &[]);
+        }
+
+        // Graceful: no panic above; without sources nothing is generated.
+        assert!(cs.constraints.is_empty());
     }
 }

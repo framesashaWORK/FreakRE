@@ -6,6 +6,7 @@ use crate::{
 };
 use crate::patterns::*;
 use crate::recursive::*;
+use func_sigs::{scan_signatures, SigScanConfig};
 use std::collections::HashMap;
 
 /// Main function analyzer
@@ -62,8 +63,8 @@ impl FunctionAnalyzer {
         if self.config.scan_prologues {
             let prologue_funcs = self.scan_prologues(&code_regions)?;
             for func in prologue_funcs {
-                if !all_functions.contains_key(&func.address) {
-                    all_functions.insert(func.address, func);
+                if let std::collections::hash_map::Entry::Vacant(e) = all_functions.entry(func.address) {
+                    e.insert(func);
                     stats.prologue_count += 1;
                 }
             }
@@ -71,7 +72,14 @@ impl FunctionAnalyzer {
 
         // Phase 3: Recursive descent from all known entry points
         if self.config.recursive_descent {
-            let mut entry_addrs: Vec<u64> = all_functions.keys().cloned().collect();
+            // Only seed from candidates that meet the confidence threshold;
+            // low-confidence prologue hits (e.g. weak 0x55/0x4-sub matches) must
+            // not spawn recursive descent at bogus mid-stream addresses.
+            let mut entry_addrs: Vec<u64> = all_functions
+                .values()
+                .filter(|f| f.confidence >= self.config.min_confidence)
+                .map(|f| f.address)
+                .collect();
             entry_addrs.extend(entry_points);
 
             let mut analyzer = RecursiveAnalyzer::new(self.arch, self.config.clone());
@@ -79,8 +87,8 @@ impl FunctionAnalyzer {
 
             let recursive_funcs = analyzer.analyze(&code_regions)?;
             for func in recursive_funcs {
-                if !all_functions.contains_key(&func.address) {
-                    all_functions.insert(func.address, func);
+                if let std::collections::hash_map::Entry::Vacant(e) = all_functions.entry(func.address) {
+                    e.insert(func);
                     stats.recursive_count += 1;
                 }
             }
@@ -88,8 +96,7 @@ impl FunctionAnalyzer {
 
         // Phase 4: Signature matching (using func-sigs)
         if self.config.signature_matching {
-            // TODO: integrate with func-sigs crate
-            // For now, this is a placeholder
+            stats.signature_count += self.match_signatures(&mut all_functions, &code_regions);
         }
 
         // Filter by minimum confidence
@@ -167,6 +174,59 @@ impl FunctionAnalyzer {
         }
 
         Ok(functions)
+    }
+
+    /// Match discovered functions against the func-sigs signature database.
+    /// Returns how many functions were annotated with a signature match.
+    fn match_signatures(
+        &self,
+        functions: &mut HashMap<u64, DiscoveredFunction>,
+        regions: &[CodeRegion],
+    ) -> usize {
+        let config = SigScanConfig {
+            step: 1,
+            max_matches: 4096,
+            detect_compiler: false,
+        };
+        let mut applied = 0;
+
+        for region in regions {
+            if !region.executable {
+                continue;
+            }
+
+            let scan = scan_signatures(&region.data, 0, &config);
+            for m in scan.matches {
+                let addr = region.address + m.offset as u64;
+                let candidate = functions
+                    .values_mut()
+                    .filter(|f| f.address <= addr)
+                    .max_by_key(|f| f.address);
+
+                if let Some(func) = candidate {
+                    let known_end =
+                        func.address + func.size.max(m.signature.min_func_len) as u64;
+                    if addr >= known_end {
+                        continue;
+                    }
+
+                    if func.name.is_none() {
+                        func.name = Some(format!(
+                            "{}::{}",
+                            m.signature.library, m.signature.function_name
+                        ));
+                    }
+                    func.source = FunctionSource::SignatureMatch;
+                    let confidence = m.confidence as f32;
+                    if confidence > func.confidence {
+                        func.confidence = confidence;
+                    }
+                    applied += 1;
+                }
+            }
+        }
+
+        applied
     }
 
     /// Find the end of a function by looking for epilogue patterns
@@ -363,5 +423,67 @@ mod tests {
         assert!(analyzer.config.scan_prologues);
         assert!(!analyzer.config.recursive_descent);
         assert_eq!(analyzer.config.min_function_size, 8);
+    }
+
+    #[test]
+    fn test_signature_phase_runs() {
+        let code = vec![
+            0x55, 0x48, 0x89, 0xE5,
+            0x31, 0xC0,
+            0x5D, 0xC3,
+            0xCC, 0xCC, 0xCC, 0xCC,
+        ];
+
+        let config = FinderConfig { signature_matching: true, min_function_size: 4, ..Default::default() };
+
+        let region = make_code_region(0x401000, code);
+        let analyzer = FunctionAnalyzer::with_config(Architecture::X86_64, config);
+        let result = analyzer.analyze(vec![region], vec![0x401000], None).unwrap();
+
+        assert!(result.function_count() >= 1);
+    }
+
+    #[test]
+    fn test_lone_push_bytes_are_not_functions() {
+        // Bare 0x55 (push rbp/ebp) bytes used to match a single-byte prologue
+        // pattern at every offset; they must not produce any function now.
+        let code = vec![0x55, 0xC3, 0x55, 0xC3, 0x55, 0xC3, 0x55, 0xC3];
+        let region = make_code_region(0x401000, code);
+
+        let result = FunctionAnalyzer::new(Architecture::X86_64)
+            .quick_analyze(vec![region])
+            .unwrap();
+
+        assert_eq!(result.function_count(), 0);
+    }
+
+    #[test]
+    fn test_modern_x64_function_decodes_through_two_byte_ops() {
+        // Prologue + movzx/setcc/cmov/jcc-near + epilogue: before the LDE fix
+        // the first 0F opcode truncated the recursive sweep almost immediately.
+        let mut code = vec![
+            0x55,                         // push rbp
+            0x48, 0x89, 0xE5,             // mov rbp, rsp
+            0x31, 0xC9,                   // xor ecx, ecx
+            0x0F, 0xB6, 0xC1,             // movzx eax, cl
+            0x0F, 0x95, 0xC2,             // setne dl
+            0x85, 0xD2,                   // test edx, edx
+            0x74, 0x02,                   // jz +2
+            0x90,                         // nop
+            0x0F, 0x44, 0xCA,             // cmove ecx, edx
+            0x5D,                         // pop rbp
+            0xC3,                         // ret
+        ];
+        code.extend_from_slice(&[0xCC; 8]); // padding must stay outside
+
+        let region = make_code_region(0x401000, code);
+        let mut analyzer = RecursiveAnalyzer::new(Architecture::X86_64, FinderConfig::default());
+        analyzer.add_entry_point(0x401000);
+        let funcs = analyzer.analyze(&[region]).unwrap();
+
+        assert_eq!(funcs.len(), 1);
+        // The full 22-byte body was swept: last block ends at the RET.
+        let end = funcs[0].blocks.iter().map(|b| b.end).max().unwrap();
+        assert_eq!(end, 0x401015); // offset of the final C3
     }
 }

@@ -1,9 +1,77 @@
-//! Type printer for C-like syntax
+﻿//! Type printer for C-like syntax
 
 use crate::{Type, TypeDatabase, Result};
 
-/// Print a type in C-like syntax
+/// Print a type in C-like syntax.
+///
+/// Without a name the result is an abstract declarator, e.g. a pointer to
+/// an array prints as `uint32_t (*)[3]` and an array of arrays as
+/// `uint32_t[2][3]`.
 pub fn print_type(db: &TypeDatabase, ty: &Type) -> String {
+    format_declaration(db, ty, "")
+}
+
+/// Build a C declaration for `ty` around the declarator `decl`
+/// (a variable name for definitions, "" for abstract declarators).
+///
+/// Handles pointer/array precedence correctly:
+/// - pointer to array:  `uint32_t (*x)[3]`
+/// - array of arrays:   `uint32_t x[2][3]`
+fn format_declaration(db: &TypeDatabase, ty: &Type, decl: &str) -> String {
+    match ty {
+        Type::Pointer(inner) => {
+            let star_decl = format!("*{}", decl);
+            // '*' binds tighter than a following '[]'/'()' suffix, so a
+            // pointer to an array/function needs parentheses.
+            let owned = match inner.as_ref() {
+                Type::Array(_, _) | Type::Function(_) => format!("({})", star_decl),
+                _ => star_decl,
+            };
+            format_declaration(db, inner, &owned)
+        }
+        Type::Array(inner, len) => {
+            let indexed = format!("{}[{}]", decl, len);
+            format_declaration(db, inner, &indexed)
+        }
+        Type::Function(func) => {
+            let params: Vec<String> = func.parameters.iter().map(|p| print_type(db, p)).collect();
+            let params_str = if params.is_empty() {
+                "void".to_string()
+            } else {
+                params.join(", ")
+            };
+            let variadic = if func.variadic { ", ..." } else { "" };
+            // A bare function type denotes a function pointer in this crate.
+            let decl = if decl.is_empty() { "(*)" } else { decl };
+            let with_params = format!("{}({}{})", decl, params_str, variadic);
+            format_declaration(db, &func.return_type, &with_params)
+        }
+        other => combine(print_simple_type(db, other), decl),
+    }
+}
+
+/// Attach a declarator to a base type string with conventional spacing.
+fn combine(base: String, decl: &str) -> String {
+    if decl.is_empty() {
+        return base;
+    }
+    let stars = decl.len() - decl.trim_start_matches('*').len();
+    if stars > 0 {
+        let rest = &decl[stars..];
+        if rest.is_empty() {
+            return format!("{}{}", base, &decl[..stars]);
+        }
+        return format!("{}{} {}", base, &decl[..stars], rest);
+    }
+    if decl.starts_with('[') {
+        // Abstract array declarator stays glued to the base type.
+        return format!("{}{}", base, decl);
+    }
+    format!("{} {}", base, decl)
+}
+
+/// Print a non-compound type (base of a declaration).
+fn print_simple_type(db: &TypeDatabase, ty: &Type) -> String {
     match ty {
         Type::Void => "void".to_string(),
         Type::Bool => "bool".to_string(),
@@ -24,23 +92,14 @@ pub fn print_type(db: &TypeDatabase, ty: &Type) -> String {
             64 => "double".to_string(),
             _ => format!("float{}", bits),
         },
-        Type::Pointer(inner) => format!("{}*", print_type(db, inner)),
-        Type::Array(inner, len) => format!("{}[{}]", print_type(db, inner), len),
         Type::Struct(name) => format!("struct {}", name),
         Type::Union(name) => format!("union {}", name),
         Type::Enum(name) => format!("enum {}", name),
         Type::Typedef(name) => name.clone(),
-        Type::Function(func) => {
-            let params: Vec<String> = func.parameters.iter().map(|p| print_type(db, p)).collect();
-            let params_str = if params.is_empty() {
-                "void".to_string()
-            } else {
-                params.join(", ")
-            };
-            let variadic = if func.variadic { ", ..." } else { "" };
-            format!("{}(*)({}{})", print_type(db, &func.return_type), params_str, variadic)
-        }
         Type::Unknown => "unknown".to_string(),
+        // Compound types are handled by format_declaration before this is
+        // reached; route them back defensively instead of mis-printing.
+        _ => format_declaration(db, ty, ""),
     }
 }
 
@@ -55,13 +114,9 @@ pub fn print_struct_def(db: &TypeDatabase, struct_def: &crate::StructDef) -> Res
     lines.push(format!("struct {} {{", struct_def.name));
 
     for field in &struct_def.fields {
-        let type_str = print_type(db, &field.ty);
-        let mut line = format!("    {} {}", type_str, field.name);
-
-        // Check if it's an array
-        if let Type::Array(_, len) = &field.ty {
-            line = format!("    {} {}[{}]", print_type(db, field.ty.pointee().unwrap_or(&Type::Unknown)), field.name, len);
-        }
+        // Declarator-based rendering keeps arrays/pointers valid:
+        // `uint32_t data[3]`, `uint32_t x[2][3]`, `uint32_t (*rows)[3]`.
+        let mut line = format!("    {}", format_declaration(db, &field.ty, &field.name));
 
         if let Some(comment) = &field.comment {
             line.push_str(&format!("; /* {} */", comment));
@@ -167,5 +222,66 @@ mod tests {
         assert!(output.contains("struct Point {"));
         assert!(output.contains("int32_t x;"));
         assert!(output.contains("int32_t y;"));
+    }
+
+    #[test]
+    fn test_print_pointer_to_array() {
+        let db = TypeDatabase::new();
+
+        // Abstract form (cast style).
+        let ty = Type::pointer(Type::array(Type::u32(), 3));
+        assert_eq!(print_type(&db, &ty), "uint32_t (*)[3]");
+
+        // Named field form.
+        let s = StructBuilder::new("Grid")
+            .add_field("rows", Type::pointer(Type::array(Type::u32(), 3)))
+            .build();
+        let output = print_struct_def(&db, &s).unwrap();
+        assert!(output.contains("uint32_t (*rows)[3];"), "got:\n{}", output);
+    }
+
+    #[test]
+    fn test_print_array_of_arrays() {
+        let db = TypeDatabase::new();
+
+        // Array(Array(u32, 3), 2) == two rows of three uint32_t.
+        let ty = Type::array(Type::array(Type::u32(), 3), 2);
+        assert_eq!(print_type(&db, &ty), "uint32_t[2][3]");
+
+        let s = StructBuilder::new("Matrix")
+            .add_field("matrix", Type::array(Type::array(Type::u32(), 3), 2))
+            .build();
+        let output = print_struct_def(&db, &s).unwrap();
+        assert!(output.contains("uint32_t matrix[2][3];"), "got:\n{}", output);
+    }
+
+    #[test]
+    fn test_print_nested_pointer_to_array() {
+        let db = TypeDatabase::new();
+
+        // ptr -> ptr -> array of 3
+        let ty = Type::pointer(Type::pointer(Type::array(Type::u32(), 3)));
+        assert_eq!(print_type(&db, &ty), "uint32_t (**)[3]");
+    }
+
+    #[test]
+    fn test_print_pointer_and_function_still_valid() {
+        let db = TypeDatabase::new();
+
+        assert_eq!(print_type(&db, &Type::pointer(Type::i32())), "int32_t*");
+        assert_eq!(
+            print_type(&db, &Type::pointer(Type::pointer(Type::i32()))),
+            "int32_t**"
+        );
+
+        let func = crate::FunctionType::new(Type::i32(), vec![Type::u8()]);
+        assert_eq!(
+            print_type(&db, &Type::Function(func.clone())),
+            "int32_t (*)(uint8_t)"
+        );
+        assert_eq!(
+            print_type(&db, &Type::pointer(Type::Function(func))),
+            "int32_t (*)(uint8_t)"
+        );
     }
 }

@@ -5,4 +5,4 @@ edition = "2021"
 description = "Zero-copy Mach-O parser for macOS malware analysis"
 
 [dependencies]
-thiserror = "2"
+thiserror = { workspace = true }

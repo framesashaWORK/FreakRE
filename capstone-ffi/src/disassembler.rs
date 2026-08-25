@@ -124,8 +124,10 @@ impl Disassembler {
             }
         }
 
-        // Fallback: built-in LDE (x86/x64 only)
+        // ⚠️ LIMITED DISASSEMBLY MODE — Built-in LDE fallback (x86/x64 only)
+        // Install Capstone for full multi-arch disassembly.
         if self.arch == Arch::X86 {
+            eprintln!("[FreakRE] WARNING: Using limited built-in LDE. Install Capstone for full support.");
             return builtin_lde_disassemble(code, base_address, self.mode == Mode::Mode64);
         }
 
@@ -148,8 +150,15 @@ impl Disassembler {
 
 // ─── Built-in LDE for x86/x64 ────────────────────────────────────────
 
-/// Built-in disassembly using Length Disassembler Engine for x86/x64.
-/// This is a fallback when Capstone is not available.
+/// ⚠️ LIMITED DISASSEMBLY MODE — Built-in LDE fallback for x86/x64 only.
+///
+/// LIMITATIONS:
+/// - VEX/EVEX prefixes (AVX/AVX2/AVX-512) are NOT decoded
+/// - REX prefix handling assumes single REX after legacy prefixes
+/// - Operand size heuristic is approximate; rare encodings may misdecode
+/// - No operand parsing beyond rough classification
+///
+/// Install Capstone library for full multi-architecture disassembly.
 fn builtin_lde_disassemble(code: &[u8], base_address: u64, is_64bit: bool) -> Vec<Instruction> {
     let mut instructions = Vec::new();
     let mut offset = 0usize;
@@ -231,6 +240,16 @@ fn operands_from_bytes(bytes: &[u8], kind: &InstructionKind, _is_64bit: bool) ->
 
 // ─── LDE: Length Disassembler Engine (x86/x64) ───────────────────────
 // Reused from cfg-builder with full instruction classification.
+//
+// LIMITATIONS (documented for users):
+// - VEX/EVEX prefixes (AVX/AVX2/AVX-512) are NOT decoded. Instructions
+//   with these prefixes will be classified as Unknown or Normal with
+//   incorrect length. Use Capstone backend for full AVX support.
+// - REX prefix handling assumes single REX after legacy prefixes.
+//   Multiple REX or REX in non-canonical positions may cause misdecode.
+// - Operand size heuristic is approximate; some rare encodings may
+//   produce incorrect instruction lengths.
+// This LDE is intended as a FALLBACK only when Capstone is unavailable.
 
 fn lde_classify(code: &[u8], is_64bit: bool) -> (usize, InstructionKind) {
     if code.is_empty() {
@@ -246,6 +265,20 @@ fn lde_classify(code: &[u8], is_64bit: bool) -> (usize, InstructionKind) {
                 pos += 1;
             }
             _ => break,
+        }
+    }
+
+    // FIXED: Detect VEX/EVEX prefixes and bail out gracefully.
+    // VEX 2-byte: 0xC5, VEX 3-byte: 0xC4, EVEX: 0x62
+    // These require full decoder state that LDE cannot provide.
+    if pos < code.len() {
+        match code[pos] {
+            0xC4 | 0xC5 | 0x62 => {
+                // Cannot decode VEX/EVEX without full table — return as Unknown
+                // with minimum length to avoid desynchronization
+                return (pos.max(1), InstructionKind::Unknown);
+            }
+            _ => {}
         }
     }
 
@@ -267,18 +300,18 @@ fn lde_classify(code: &[u8], is_64bit: bool) -> (usize, InstructionKind) {
         pos += 1;
 
         // 0F 80-8F: Jcc rel32
-        if second >= 0x80 && second <= 0x8F {
+        if (0x80..=0x8F).contains(&second) {
             return (pos + 4, InstructionKind::ConditionalBranch);
         }
 
         // 0F 90-9F: SETcc (ModR/M)
-        if second >= 0x90 && second <= 0x9F {
+        if (0x90..=0x9F).contains(&second) {
             let len = if pos < code.len() { modrm_length(code[pos]) } else { 0 };
             return (pos + len, InstructionKind::Normal);
         }
 
         // 0F 40-4F: CMOVcc (ModR/M)
-        if second >= 0x40 && second <= 0x4F {
+        if (0x40..=0x4F).contains(&second) {
             let len = if pos < code.len() { modrm_length(code[pos]) } else { 0 };
             return (pos + len, InstructionKind::Normal);
         }
@@ -370,16 +403,16 @@ fn operand_size_heuristic(opcode: u8, next_byte: Option<u8>) -> usize {
         0x80 | 0x82 => next_byte.map(|m| 1 + modrm_length(m) + 1).unwrap_or(2),
         0x81 => next_byte.map(|m| 1 + modrm_length(m) + 4).unwrap_or(5),
         0x83 => next_byte.map(|m| 1 + modrm_length(m) + 1).unwrap_or(2),
-        0x88..=0x8B => next_byte.map(|m| modrm_length(m)).unwrap_or(1),
-        0x8D => next_byte.map(|m| modrm_length(m)).unwrap_or(1),
-        0x84 | 0x85 => next_byte.map(|m| modrm_length(m)).unwrap_or(1),
+        0x88..=0x8B => next_byte.map(modrm_length).unwrap_or(1),
+        0x8D => next_byte.map(modrm_length).unwrap_or(1),
+        0x84 | 0x85 => next_byte.map(modrm_length).unwrap_or(1),
         0x91..=0x97 => 0,
         0x98 | 0x99 | 0x9B | 0x9C | 0x9D | 0x9E | 0x9F => 0,
         0x6A => 1,
         0x68 => 4,
         0x6B => next_byte.map(|m| modrm_length(m) + 1).unwrap_or(2),
         0x69 => next_byte.map(|m| modrm_length(m) + 4).unwrap_or(5),
-        _ => next_byte.map(|m| modrm_length(m)).unwrap_or(1),
+        _ => next_byte.map(modrm_length).unwrap_or(1),
     }
 }
 

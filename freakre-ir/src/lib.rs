@@ -72,7 +72,10 @@ pub mod arch;
 
 pub use ir::*;
 pub use lifter::{Lifter, LifterError};
-pub use ssa::{to_ssa, SsaContext};
+pub use ssa::{
+    from_ssa, remove_trivial_phis, to_ssa, BaseVar, Phi, SsaBlock, SsaError, SsaFunction, SsaInst,
+    SsaVal, VersionedVar,
+};
 pub use types::Ty;
 
 

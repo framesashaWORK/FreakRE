@@ -120,8 +120,7 @@ freakre/
 ├── capstone-ffi/       # Multi-arch disassembler bindings
 ├── scanner/            # CLI orchestrator
 ├── desktop-ui/         # egui-based GUI
-├── web-ui/             # Web interface (Actix-web)
-└── fuzz/               # 7 fuzz targets для парсеров
+└── fuzz/               # 14 fuzz targets для парсеров
 ```
 
 ---

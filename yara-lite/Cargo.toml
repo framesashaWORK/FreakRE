@@ -5,8 +5,7 @@ edition = "2021"
 description = "Lightweight YARA-compatible pattern matching engine for malware analysis"
 
 [dependencies]
-aho-corasick = "1"
-regex = "1"
-thiserror = "2"
+freakre-patterns = { path = "../freakre-patterns" }
+thiserror = { workspace = true }
 
 [dev-dependencies]

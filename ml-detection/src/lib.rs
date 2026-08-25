@@ -1,18 +1,19 @@
 #![allow(dead_code, unused_assignments)]
 //! # ml-detection
 //!
-//! ML-based malware classification engine for Bibleteks.
+//! Heuristic malware classification engine for Bibleteks.
 //!
-//! Provides feature extraction from binaries and an ensemble classifier
-//! that combines multiple heuristic decision trees for accurate
-//! malware detection.
+//! Despite the crate name, this is **not** machine learning: it is a
+//! hand-tuned ensemble of weighted heuristic decision trees that score a
+//! binary's extracted features. All tree weights and thresholds were set
+//! manually from common malware patterns — nothing here is trained on data.
 //!
 //! ## Architecture
 //!
 //! ```text
 //! Binary ──→ Feature Extraction (96 features)
 //!                ↓
-//!         Ensemble Classifier (8 decision trees)
+//!    Heuristic Ensemble (8 hand-tuned decision trees)
 //!                ↓
 //!         ┌──────────────────┐
 //!         │  Clean           │
@@ -23,12 +24,19 @@
 //!         └──────────────────┘
 //! ```
 //!
+//! ## Roadmap
+//!
+//! A future iteration may replace the hand-tuned ensemble with a real,
+//! trained ML model (e.g. gradient-boosted trees over the same feature
+//! vector). Until then, treat all verdicts as heuristic signals that
+//! warrant manual review, not model predictions.
+//!
 //! ## Quick Start
 //!
 //! ```rust
 //! use ml_detection::{EnsembleClassifier, extract_features, BinaryInfo};
 //!
-//! let data = std::fs::read("malware.exe").unwrap();
+//! let data: Vec<u8> = std::fs::read("malware.exe").unwrap_or_else(|_| vec![0x4D, 0x5A, 0x90, 0x00]);
 //! let info = BinaryInfo::default(); // populate from PE/ELF parsing
 //! let features = extract_features(&data, &info);
 //!

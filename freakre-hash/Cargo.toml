@@ -1,0 +1,7 @@
+[package]
+name = "freakre-hash"
+version = "0.1.0"
+edition = "2021"
+description = "Audit-friendly cryptographic hash implementations. Zero external dependencies."
+
+[dependencies]

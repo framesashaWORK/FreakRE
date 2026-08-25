@@ -1,6 +1,6 @@
-# Bibleteks Fuzzing Suite
+# FreakRE Fuzzing Suite
 
-Fuzz targets for Bibleteks parsers to ensure they don't panic on malformed input.
+Fuzz targets for FreakRE parsers to ensure they don't panic on malformed input.
 
 ## Prerequisites
 
@@ -48,14 +48,18 @@ cargo +nightly fuzz run fuzz_yara --jobs 8
 
 ## Seed Corpus
 
-For better fuzzing, provide seed corpus with real binaries:
+For better fuzzing, provide seed corpus with real binaries.
+
+Seed inputs are committed under `fuzz/corpus/seeds/` (the only corpus
+subdirectory tracked by git — everything else under `corpus/` is generated
+output and ignored):
 
 ```bash
-mkdir -p fuzz/corpus/pe_parser
-# Add real PE files to corpus
-cp /path/to/samples/*.exe fuzz/corpus/pe_parser/
+mkdir -p fuzz/corpus/seeds
+# Add real PE files to the committed seed corpus
+cp /path/to/samples/*.exe fuzz/corpus/seeds/
 
-cargo +nightly fuzz run fuzz_pe_parser fuzz/corpus/pe_parser
+cargo +nightly fuzz run fuzz_pe_parser fuzz/corpus/seeds
 ```
 
 ## CI Integration

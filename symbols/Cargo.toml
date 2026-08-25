@@ -1,0 +1,11 @@
+[package]
+name = "freakre-symbols"
+version = "0.1.0"
+edition = "2021"
+description = "Debug symbol loading for freakRE: PDB (Windows) and DWARF (ELF)"
+
+[dependencies]
+pdb = "0.8"
+gimli = "0.31"
+thiserror = { workspace = true }
+elf-parser = { path = "../elf-parser" }

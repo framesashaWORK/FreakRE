@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+serde = { workspace = true }
 str-extract = { path = "../str-extract" }
 memchr = "2"
+freakre-patterns = { path = "../freakre-patterns" }

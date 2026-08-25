@@ -8,8 +8,9 @@ description = "Built-in system plugins for FreakRE"
 plugins = { path = "../plugins" }
 project-db = { path = "../project-db" }
 func-finder = { path = "../func-finder" }
+freakre-x86 = { path = "../freakre-x86" }
 entropy-rs = { path = "../entropy-rs" }
 str-extract = { path = "../str-extract" }
 type-system = { path = "../type-system" }
-thiserror = "1.0"
-serde = { version = "1.0", features = ["derive"] }
+thiserror = { workspace = true }
+serde = { workspace = true }

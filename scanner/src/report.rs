@@ -35,6 +35,25 @@ pub struct Finding {
     pub details: Option<String>,
 }
 
+/// Information about a detected function
+#[derive(Debug, Clone, Serialize)]
+pub struct FunctionInfo {
+    pub address: u64,
+    pub name: String,
+    pub size: usize,
+    pub func_type: FunctionType,
+}
+
+/// Type of detected function
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FunctionType {
+    User,
+    Library,
+    Imported,
+    Thunk,
+}
+
 /// Complete scan report for a single file
 #[derive(Debug, Clone, Serialize)]
 pub struct FileReport {
@@ -55,6 +74,14 @@ pub struct FileReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub macho_info: Option<MachoInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub wasm_info: Option<WasmInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dex_info: Option<DexInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coff_info: Option<CoffInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flat_binary_info: Option<FlatBinaryInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub backdoor_report: Option<BackdoorSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shellcode_report: Option<ShellcodeSummary>,
@@ -67,6 +94,8 @@ pub struct FileReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ml_classification: Option<MlClassificationInfo>,
     pub scan_duration_ms: u128,
+    /// Detected functions (populated by func-sigs analysis)
+    pub functions: Vec<FunctionInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +168,61 @@ pub struct MachoInfo {
     pub rwx_segments: Vec<String>,
     pub entry_point: Option<String>,
     pub warnings: Vec<String>,
+}
+
+/// Information about a WASM (WebAssembly) module
+#[derive(Debug, Clone, Serialize)]
+pub struct WasmInfo {
+    pub version: u32,
+    pub num_types: usize,
+    pub num_functions: usize,
+    pub num_imports: usize,
+    pub num_exports: usize,
+    pub num_tables: usize,
+    pub num_memories: usize,
+    pub num_globals: usize,
+    pub num_data_segments: usize,
+    pub imported_functions: Vec<String>,
+    pub exported_functions: Vec<String>,
+    pub custom_sections: Vec<String>,
+    pub total_code_size: usize,
+}
+
+/// Information about a DEX (Dalvik Executable) file
+#[derive(Debug, Clone, Serialize)]
+pub struct DexInfo {
+    pub version: String,
+    pub num_classes: usize,
+    pub num_methods: usize,
+    pub num_fields: usize,
+    pub num_strings: usize,
+    pub num_types: usize,
+    pub class_names: Vec<String>,
+    pub method_names: Vec<String>,
+}
+
+/// Information about a COFF file
+#[derive(Debug, Clone, Serialize)]
+pub struct CoffInfo {
+    pub machine: String,
+    pub num_sections: usize,
+    pub num_symbols: usize,
+    pub timestamp: u32,
+    pub characteristics: Vec<String>,
+    pub section_names: Vec<String>,
+    pub functions: Vec<String>,
+    pub externals: Vec<String>,
+}
+
+/// Information about a flat binary file
+#[derive(Debug, Clone, Serialize)]
+pub struct FlatBinaryInfo {
+    pub size: usize,
+    pub entropy: f64,
+    pub looks_like_shellcode: bool,
+    pub shellcode_type: Option<String>,
+    pub is_intel_hex: bool,
+    pub is_srecord: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

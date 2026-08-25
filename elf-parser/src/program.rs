@@ -92,9 +92,18 @@ pub fn parse_program_headers_64<const BE: bool>(
     }
 
     let entry_size = if ph_entsize == 0 { 56usize } else { ph_entsize as usize };
-    let total = entry_size * ph_num as usize;
+    let total = match entry_size.checked_mul(ph_num as usize) {
+        Some(t) => t,
+        None => {
+            warnings.push(ElfWarning {
+                kind: ElfWarningKind::OverlappingRegions,
+                message: "Program header table size overflow".into(),
+            });
+            return Vec::new();
+        }
+    };
 
-    if ph_offset as usize + total > data.len() {
+    if (ph_offset as usize).checked_add(total).is_none_or(|end| end > data.len()) {
         warnings.push(ElfWarning {
             kind: ElfWarningKind::OverlappingRegions,
             message: format!(
@@ -113,14 +122,14 @@ pub fn parse_program_headers_64<const BE: bool>(
             break;
         }
 
-        let p_type_raw = read_u32::<BE>(data, base);
-        let p_flags_raw = read_u32::<BE>(data, base + 4);
-        let p_offset = read_u64::<BE>(data, base + 8);
-        let p_vaddr = read_u64::<BE>(data, base + 16);
-        let p_paddr = read_u64::<BE>(data, base + 24);
-        let p_filesz = read_u64::<BE>(data, base + 32);
-        let p_memsz = read_u64::<BE>(data, base + 40);
-        let p_align = read_u64::<BE>(data, base + 48);
+        let p_type_raw = read_u32::<BE>(data, base).unwrap_or(0);
+        let p_flags_raw = read_u32::<BE>(data, base + 4).unwrap_or(0);
+        let p_offset = read_u64::<BE>(data, base + 8).unwrap_or(0);
+        let p_vaddr = read_u64::<BE>(data, base + 16).unwrap_or(0);
+        let p_paddr = read_u64::<BE>(data, base + 24).unwrap_or(0);
+        let p_filesz = read_u64::<BE>(data, base + 32).unwrap_or(0);
+        let p_memsz = read_u64::<BE>(data, base + 40).unwrap_or(0);
+        let p_align = read_u64::<BE>(data, base + 48).unwrap_or(0);
 
         let p_type = ProgramType::from_raw(p_type_raw);
         let flags = ProgramFlags::from_bits_truncate(p_flags_raw);
@@ -180,9 +189,18 @@ pub fn parse_program_headers_32<const BE: bool>(
     }
 
     let entry_size = if ph_entsize == 0 { 32usize } else { ph_entsize as usize };
-    let total = entry_size * ph_num as usize;
+    let total = match entry_size.checked_mul(ph_num as usize) {
+        Some(t) => t,
+        None => {
+            warnings.push(ElfWarning {
+                kind: ElfWarningKind::OverlappingRegions,
+                message: "Program header table size overflow".into(),
+            });
+            return Vec::new();
+        }
+    };
 
-    if ph_offset as usize + total > data.len() {
+    if (ph_offset as usize).checked_add(total).is_none_or(|end| end > data.len()) {
         warnings.push(ElfWarning {
             kind: ElfWarningKind::OverlappingRegions,
             message: format!(
@@ -201,14 +219,14 @@ pub fn parse_program_headers_32<const BE: bool>(
             break;
         }
 
-        let p_type_raw = read_u32::<BE>(data, base);
-        let p_offset = read_u32::<BE>(data, base + 4) as u64;
-        let p_vaddr = read_u32::<BE>(data, base + 8) as u64;
-        let p_paddr = read_u32::<BE>(data, base + 12) as u64;
-        let p_filesz = read_u32::<BE>(data, base + 16) as u64;
-        let p_memsz = read_u32::<BE>(data, base + 20) as u64;
-        let p_flags_raw = read_u32::<BE>(data, base + 24);
-        let p_align = read_u32::<BE>(data, base + 28) as u64;
+        let p_type_raw = read_u32::<BE>(data, base).unwrap_or(0);
+        let p_offset = read_u32::<BE>(data, base + 4).unwrap_or(0) as u64;
+        let p_vaddr = read_u32::<BE>(data, base + 8).unwrap_or(0) as u64;
+        let p_paddr = read_u32::<BE>(data, base + 12).unwrap_or(0) as u64;
+        let p_filesz = read_u32::<BE>(data, base + 16).unwrap_or(0) as u64;
+        let p_memsz = read_u32::<BE>(data, base + 20).unwrap_or(0) as u64;
+        let p_flags_raw = read_u32::<BE>(data, base + 24).unwrap_or(0);
+        let p_align = read_u32::<BE>(data, base + 28).unwrap_or(0) as u64;
 
         let p_type = ProgramType::from_raw(p_type_raw);
         let flags = ProgramFlags::from_bits_truncate(p_flags_raw);

@@ -1,7 +1,7 @@
 //! Type database for managing all types in a project
 
 use crate::{EnumDef, StructDef, TypedefDef, Type, UnionDef};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -182,22 +182,55 @@ impl TypeDatabase {
         serde_json::to_string_pretty(&export).map_err(|e| TypeError::Invalid(e.to_string()))
     }
 
-    /// Import types from JSON
+    /// Import types from JSON.
+    ///
+    /// The entire batch is validated up-front — both against the current
+    /// database contents and for duplicates within the batch itself — so a
+    /// failing import can never leave the database half-filled.
     pub fn import_json(&mut self, json: &str) -> Result<()> {
         let export: TypeExport =
             serde_json::from_str(json).map_err(|e| TypeError::Invalid(e.to_string()))?;
 
+        {
+            let mut struct_names: HashSet<&str> = HashSet::new();
+            for def in &export.structs {
+                if !struct_names.insert(def.name.as_str()) || self.structs.contains_key(&def.name) {
+                    return Err(TypeError::AlreadyExists(def.name.clone()));
+                }
+            }
+            let mut union_names: HashSet<&str> = HashSet::new();
+            for def in &export.unions {
+                if !union_names.insert(def.name.as_str()) || self.unions.contains_key(&def.name) {
+                    return Err(TypeError::AlreadyExists(def.name.clone()));
+                }
+            }
+            let mut enum_names: HashSet<&str> = HashSet::new();
+            for def in &export.enums {
+                if !enum_names.insert(def.name.as_str()) || self.enums.contains_key(&def.name) {
+                    return Err(TypeError::AlreadyExists(def.name.clone()));
+                }
+            }
+            let mut typedef_names: HashSet<&str> = HashSet::new();
+            for def in &export.typedefs {
+                if !typedef_names.insert(def.name.as_str()) || self.typedefs.contains_key(&def.name)
+                {
+                    return Err(TypeError::AlreadyExists(def.name.clone()));
+                }
+            }
+        }
+
+        // Validation passed: the inserts below cannot fail.
         for def in export.structs {
-            self.add_struct(def)?;
+            self.structs.insert(def.name.clone(), def);
         }
         for def in export.unions {
-            self.add_union(def)?;
+            self.unions.insert(def.name.clone(), def);
         }
         for def in export.enums {
-            self.add_enum(def)?;
+            self.enums.insert(def.name.clone(), def);
         }
         for def in export.typedefs {
-            self.add_typedef(def)?;
+            self.typedefs.insert(def.name.clone(), def);
         }
 
         Ok(())
@@ -253,9 +286,72 @@ mod tests {
     #[test]
     fn test_resolve_typedef() {
         let mut db = TypeDatabase::new();
-        db.add_typedef(TypedefDef::new("DWORD", Type::u32())).unwrap();
+        db.add_typedef(TypedefDef::new("MY_DWORD", Type::u32())).unwrap();
 
-        let resolved = db.resolve_type(&Type::typedef("DWORD")).unwrap();
+        let resolved = db.resolve_type(&Type::typedef("MY_DWORD")).unwrap();
         assert_eq!(resolved, Type::u32());
+    }
+
+    #[test]
+    fn test_import_json_is_atomic_on_duplicate() {
+        let mut db = TypeDatabase::new();
+        db.add_struct(StructBuilder::new("Existing").build()).unwrap();
+
+        // "Existing" collides with the pre-defined struct; the valid
+        // entries before it must not be applied (no partial import).
+        let json = r#"{
+            "structs": [
+                {"name":"Fresh","fields":[],"packed":false,"comment":null},
+                {"name":"Existing","fields":[],"packed":false,"comment":null}
+            ],
+            "unions": [],
+            "enums": [],
+            "typedefs": []
+        }"#;
+
+        match db.import_json(json) {
+            Err(TypeError::AlreadyExists(name)) => assert_eq!(name, "Existing"),
+            other => panic!("expected AlreadyExists error, got {:?}", other),
+        }
+
+        assert!(db.get_struct("Fresh").is_none(), "partial import leaked an entry");
+        assert!(db.get_struct("Existing").is_some());
+    }
+
+    #[test]
+    fn test_import_json_rejects_duplicates_within_batch() {
+        let mut db = TypeDatabase::new();
+
+        let json = r#"{
+            "structs": [
+                {"name":"Dup","fields":[],"packed":false,"comment":null},
+                {"name":"Dup","fields":[],"packed":false,"comment":null}
+            ],
+            "unions": [],
+            "enums": [],
+            "typedefs": []
+        }"#;
+
+        assert!(matches!(
+            db.import_json(json),
+            Err(TypeError::AlreadyExists(_))
+        ));
+        assert!(db.get_struct("Dup").is_none());
+    }
+
+    #[test]
+    fn test_import_json_success() {
+        let mut db = TypeDatabase::new();
+
+        let json = r#"{
+            "structs": [{"name":"A","fields":[],"packed":false,"comment":null}],
+            "unions": [],
+            "enums": [],
+            "typedefs": [{"name":"MY_T","base_type":{"Int":{"bits":32,"signed":true}},"comment":null}]
+        }"#;
+
+        db.import_json(json).unwrap();
+        assert!(db.get_struct("A").is_some());
+        assert!(db.get_typedef("MY_T").is_some());
     }
 }

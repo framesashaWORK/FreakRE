@@ -1,6 +1,6 @@
 //! Abstract Syntax Tree for decompiled code.
 
-use bibleteks_ir::Ty;
+use freakre_ir::Ty;
 use serde::{Deserialize, Serialize};
 
 /// A decompiled function
@@ -104,6 +104,23 @@ pub enum Stmt {
     /// Empty statement
     Empty,
     
+    /// Try-catch block
+    TryCatch {
+        try_body: Vec<Stmt>,
+        catch_var: Option<String>,
+        catch_body: Vec<Stmt>,
+    },
+
+    /// Goto (fallback for unstructured edges)
+    Goto {
+        label: String,
+    },
+
+    /// Label (for goto targets)
+    Label {
+        name: String,
+    },
+
     /// Comment (for annotations)
     Comment(String),
 }
@@ -117,7 +134,7 @@ pub struct SwitchCase {
 }
 
 /// An expression
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Expr {
     /// Integer literal
     IntLit(i64),
@@ -207,6 +224,10 @@ pub enum BinOp {
     Le,
     Gt,
     Ge,
+    LtU,
+    LeU,
+    GtU,
+    GeU,
     LogAnd,
     LogOr,
 }
@@ -217,7 +238,8 @@ impl BinOp {
             BinOp::Mul | BinOp::Div | BinOp::Mod => 13,
             BinOp::Add | BinOp::Sub => 12,
             BinOp::Shl | BinOp::Shr => 11,
-            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 10,
+            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            | BinOp::LtU | BinOp::LeU | BinOp::GtU | BinOp::GeU => 10,
             BinOp::Eq | BinOp::Ne => 9,
             BinOp::And => 8,
             BinOp::Xor => 7,
@@ -227,6 +249,15 @@ impl BinOp {
         }
     }
     
+    pub fn is_comparison(&self) -> bool {
+        matches!(
+            self,
+            BinOp::Eq | BinOp::Ne
+            | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            | BinOp::LtU | BinOp::LeU | BinOp::GtU | BinOp::GeU
+        )
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             BinOp::Add => "+",
@@ -245,6 +276,10 @@ impl BinOp {
             BinOp::Le => "<=",
             BinOp::Gt => ">",
             BinOp::Ge => ">=",
+            BinOp::LtU => "<",
+            BinOp::LeU => "<=",
+            BinOp::GtU => ">",
+            BinOp::GeU => ">=",
             BinOp::LogAnd => "&&",
             BinOp::LogOr => "||",
         }

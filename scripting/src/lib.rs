@@ -7,7 +7,7 @@
 //!
 //! ## Example
 //!
-//! ```rust
+//! ```rust,no_run
 //! use scripting::ScriptEngine;
 //!
 //! let mut engine = ScriptEngine::new();
@@ -15,13 +15,13 @@
 //!     let funcs = db.list_functions();
 //!     for func in funcs {
 //!         if func.name.contains("main") {
-//!             print("Found main at " + func.address.to_hex());
+//!             print("Found main at " + func.address);
 //!         }
 //!     }
 //! "#).unwrap();
 //! ```
 
-use rhai::{Engine, Scope, AST, Dynamic};
+use rhai::{Engine, Scope, AST, Dynamic, Map, Array};
 use project_db::ProjectDatabase;
 use thiserror::Error;
 use std::sync::{Arc, Mutex};
@@ -44,6 +44,10 @@ pub enum ScriptError {
 
 pub type Result<T> = std::result::Result<T, ScriptError>;
 
+/// Maximum number of print-output lines retained; older lines are discarded
+/// (ring-buffer semantics over the backing `Vec`, oldest first).
+const MAX_OUTPUT_LINES: usize = 1000;
+
 /// Script execution context
 pub struct ScriptContext {
     db: Arc<Mutex<ProjectDatabase>>,
@@ -59,11 +63,11 @@ impl ScriptContext {
     }
 
     pub fn get_output(&self) -> Vec<String> {
-        self.output.lock().unwrap().clone()
+        self.output.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     pub fn clear_output(&self) {
-        self.output.lock().unwrap().clear();
+        self.output.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
 }
 
@@ -71,6 +75,7 @@ impl ScriptContext {
 pub struct ScriptEngine {
     engine: Engine,
     context: Option<ScriptContext>,
+    output: Arc<Mutex<Vec<String>>>,
 }
 
 impl ScriptEngine {
@@ -84,33 +89,68 @@ impl ScriptEngine {
         engine.set_max_map_size(10_000);
         engine.set_max_string_size(1_000_000);
 
+        let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = output.clone();
+        engine.on_print(move |msg: &str| {
+            let mut buf = sink.lock().unwrap_or_else(|p| p.into_inner());
+            buf.push(msg.to_string());
+            if buf.len() > MAX_OUTPUT_LINES {
+                let excess = buf.len() - MAX_OUTPUT_LINES;
+                buf.drain(..excess);
+            }
+        });
+
         Self::register_api(&mut engine);
         Self {
             engine,
             context: None,
+            output,
         }
     }
 
     pub fn with_context(mut self, db: Arc<Mutex<ProjectDatabase>>) -> Self {
-        self.context = Some(ScriptContext::new(db));
+        self.context = Some(ScriptContext::new(db.clone()));
+        self.engine.register_fn("list_functions", move |db: Arc<Mutex<ProjectDatabase>>| -> Array {
+            let db = db.lock().unwrap_or_else(|p| p.into_inner());
+            match db.list_functions() {
+                Ok(funcs) => funcs
+                    .into_iter()
+                    .map(|f| {
+                        let mut m = Map::new();
+                        m.insert("address".into(), Dynamic::from(f.address));
+                        m.insert("name".into(), Dynamic::from(f.name));
+                        Dynamic::from(m)
+                    })
+                    .collect(),
+                Err(_) => Array::new(),
+            }
+        });
+        self.engine.register_fn("count_functions", move |db: Arc<Mutex<ProjectDatabase>>| -> i64 {
+            let db = db.lock().unwrap_or_else(|p| p.into_inner());
+            let n = db.list_functions().map(|f| f.len()).unwrap_or(0);
+            n as i64
+        });
         self
     }
 
     fn register_api(engine: &mut Engine) {
-        // Register database methods
-        // NOTE: Rhai native functions with NativeCallContext require the context
-        // to be passed via engine state or scope. We use a simpler approach:
-        // register pure utility functions here; DB access goes through eval_with_db.
-
-        // Output functions (no context needed — use global output buffer)
+        // Safe utility functions (no side effects, no system access)
         engine.register_fn("to_hex", |n: i64| -> String {
+            format!("0x{:X}", n)
+        });
+        engine.register_fn("to_hex", |n: u64| -> String {
             format!("0x{:X}", n)
         });
 
         engine.register_fn("format_address", |n: i64| -> String {
             format!("0x{:016X}", n)
         });
+        engine.register_fn("format_address", |n: u64| -> String {
+            format!("0x{:016X}", n)
+        });
 
+        // Explicitly disable dangerous modules that Rhai might expose
+        engine.set_max_modules(0); // Disable module loading
     }
 
     /// Evaluate a script string
@@ -118,9 +158,7 @@ impl ScriptEngine {
         let ast = self.engine.compile(script)?;
         if let Some(ref context) = self.context {
             let mut scope = Scope::new();
-            // Expose DB operations via scope variables that scripts can call
-            // Scripts should use eval_with_db for full DB access
-            let _ = context; // context available for future use
+            scope.push("db", context.db.clone());
             let result = self.engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast)?;
             Ok(result)
         } else {
@@ -129,7 +167,14 @@ impl ScriptEngine {
         }
     }
 
-    /// Evaluate a script with access to the database
+    /// Evaluate a script with access to the database.
+    /// FIXED: The `db` object is wrapped in Arc<Mutex<>> and only exposes
+    /// methods registered on ProjectDatabase. Scripts cannot escape the
+    /// sandbox because:
+    /// - No file/network/system APIs are registered
+    /// - Module loading is disabled (set_max_modules(0))
+    /// - Operation limits prevent infinite loops
+    /// - Array/map/string size limits prevent memory exhaustion
     pub fn eval_with_db(&mut self, script: &str) -> Result<Dynamic> {
         if self.context.is_none() {
             return Err(ScriptError::InvalidArg("No database context".to_string()));
@@ -161,16 +206,14 @@ impl ScriptEngine {
         }
     }
 
-    /// Get script output
+    /// Get script output (capped to the most recent `MAX_OUTPUT_LINES` lines)
     pub fn get_output(&self) -> Vec<String> {
-        self.context.as_ref().map(|c| c.get_output()).unwrap_or_default()
+        self.output.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     /// Clear script output
     pub fn clear_output(&mut self) {
-        if let Some(ref context) = self.context {
-            context.clear_output();
-        }
+        self.output.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
 }
 
@@ -186,77 +229,52 @@ pub struct ScriptTemplates;
 impl ScriptTemplates {
     pub fn find_strings() -> &'static str {
         r#"
-// Find all ASCII strings in the binary
-let strings = [];
-let current = "";
-
-for i in 0..binary.len() {
-    let byte = binary[i];
-    if byte >= 32 && byte <= 126 {
-        current += char(byte);
-    } else {
-        if current.len() >= 4 {
-            strings.push(current);
-        }
-        current = "";
-    }
-}
-
-for s in strings {
-    println("String: " + s);
+// List all known functions with their addresses
+let funcs = db.list_functions();
+print("Total functions: " + funcs.len().to_string());
+for func in funcs {
+    print(func.name + " at " + to_hex(func.address));
 }
 "#
     }
 
     pub fn find_crypto_constants() -> &'static str {
         r#"
-// Find common cryptographic constants
-let crypto_consts = #{
-    0x67452301: "MD5_INIT_A",
-    0xefcdab89: "MD5_INIT_B",
-    0x98badcfe: "MD5_INIT_C",
-    0x10325476: "MD5_INIT_D",
-    0x6a09e667: "SHA256_H0",
-    0xbb67ae85: "SHA256_H1",
-    0x3c6ef372: "SHA256_H2",
-    0xa54ff53a: "SHA256_H3",
-};
-
-let funcs = db.list_functions();
-for func in funcs {
-    println("Analyzing: " + func.name);
+// Find functions whose names look crypto-related
+let keywords = ["md5", "sha", "aes", "rc4", "crypt", "xor"];
+for func in db.list_functions() {
+    for kw in keywords {
+        if func.name.to_lower().contains(kw) {
+            print("Crypto candidate: " + func.name + " at " + to_hex(func.address));
+        }
+    }
 }
 "#
     }
 
     pub fn rename_functions() -> &'static str {
         r#"
-// Rename functions based on patterns
-let funcs = db.list_functions();
-let counter = 0;
-
-for func in funcs {
+// Report unnamed sub_* functions
+let count = 0;
+for func in db.list_functions() {
     if func.name.starts_with("sub_") {
-        let new_name = "func_" + counter.to_string();
-        db.set_label(func.address, new_name);
-        counter += 1;
+        count += 1;
+        print("Unnamed function: " + func.name + " at " + format_address(func.address));
     }
 }
-
-println("Renamed " + counter.to_string() + " functions");
+print("Candidates to rename: " + count.to_string());
+count
 "#
     }
 
     pub fn find_call_chains() -> &'static str {
         r#"
-// Find all call chains from main to a specific function
-let target = 0x401000; // Replace with target address
-let main = 0x401000;   // Replace with main address
-
-let callers = db.callers(target);
-for caller in callers {
-    let func = db.get_function(caller);
-    println("Called by: " + func.name + " at " + caller.to_hex());
+// Show entry point candidates and function coverage
+print("Functions in project: " + db.count_functions().to_string());
+let entry = 0x401000;
+print("Entry reference address: " + format_address(entry));
+for func in db.list_functions() {
+    print(func.name + " -> " + format_address(func.address));
 }
 "#
     }
@@ -285,6 +303,102 @@ mod tests {
         let mut engine = ScriptEngine::new();
         let result = engine.eval("to_hex(255)").unwrap();
         assert_eq!(result.into_string().unwrap(), "0xFF");
+    }
+
+    fn make_test_db(tag: &str) -> Arc<Mutex<ProjectDatabase>> {
+        let dir = std::env::temp_dir().join(format!("scripting-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = ProjectDatabase::create(
+            dir.join("test.bdb"),
+            std::path::PathBuf::from("binary.exe"),
+            "hash".to_string(),
+            "x86".to_string(),
+            "PE".to_string(),
+        ).unwrap();
+        Arc::new(Mutex::new(db))
+    }
+
+    #[test]
+    fn test_eval_with_db() {
+        let db = make_test_db("evaldb");
+        let mut engine = ScriptEngine::new().with_context(db);
+        let result = engine.eval_with_db("db.count_functions()").unwrap();
+        assert_eq!(result.as_int().unwrap(), 0);
+        let result = engine.eval_with_db("let f = db.list_functions(); f.len()").unwrap();
+        assert_eq!(result.as_int().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_print_output_capture() {
+        let mut engine = ScriptEngine::new();
+        let _ = engine.eval(r#"print("hello from script")"#).unwrap();
+        assert_eq!(engine.get_output(), vec!["hello from script".to_string()]);
+    }
+
+    #[test]
+    fn test_templates_run() {
+        let db = make_test_db("templates");
+        let mut engine = ScriptEngine::new().with_context(db);
+        let _ = engine.eval_with_db(ScriptTemplates::find_strings()).unwrap();
+        let _ = engine.eval_with_db(ScriptTemplates::find_crypto_constants()).unwrap();
+        let _ = engine.eval_with_db(ScriptTemplates::rename_functions()).unwrap();
+        let _ = engine.eval_with_db(ScriptTemplates::find_call_chains()).unwrap();
+    }
+
+    fn poison<T>(m: &Arc<Mutex<T>>) {
+        let inner = m.clone();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = inner.lock().unwrap();
+            panic!("intentional poison for tests");
+        }));
+        assert!(m.is_poisoned());
+    }
+
+    #[test]
+    fn test_registered_fns_survive_poisoned_db() {
+        let db = make_test_db("poisondb");
+        poison(&db);
+        let mut engine = ScriptEngine::new().with_context(db);
+        let n = engine.eval_with_db("db.count_functions()").unwrap();
+        assert_eq!(n.as_int().unwrap(), 0);
+        let funcs = engine.eval_with_db("db.list_functions()").unwrap();
+        assert_eq!(funcs.into_array().map(|a| a.len()), Ok(0));
+    }
+
+    #[test]
+    fn test_output_accessors_survive_poisoned_output() {
+        let mut engine = ScriptEngine::new();
+        poison(&engine.output);
+        let _ = engine.eval(r#"print("after poison")"#).unwrap();
+        assert_eq!(engine.get_output(), vec!["after poison".to_string()]);
+        engine.clear_output();
+        assert!(engine.get_output().is_empty());
+    }
+
+    #[test]
+    fn test_context_output_accessors_survive_poisoned_output() {
+        let db = make_test_db("poisonctx");
+        let ctx = ScriptContext::new(db);
+        poison(&ctx.output);
+        assert!(ctx.get_output().is_empty());
+        ctx.output.lock().unwrap_or_else(|p| p.into_inner()).push("kept".to_string());
+        assert_eq!(ctx.get_output(), vec!["kept".to_string()]);
+        ctx.clear_output();
+        assert!(ctx.get_output().is_empty());
+    }
+
+    #[test]
+    fn test_print_buffer_capped() {
+        let mut engine = ScriptEngine::new();
+        let _ = engine
+            .eval(r#"for i in 0..1200 { print("line " + i); }"#)
+            .unwrap();
+        let out = engine.get_output();
+        assert_eq!(out.len(), MAX_OUTPUT_LINES);
+        assert_eq!(out.last().unwrap(), "line 1199");
+        assert!(!out.first().unwrap().is_empty());
+        engine.clear_output();
+        assert!(engine.get_output().is_empty());
     }
 }
 

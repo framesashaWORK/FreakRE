@@ -4,7 +4,7 @@
 //! they will be used before being redefined. This is a backward may-analysis.
 
 use crate::worklist::{Direction, Fact, Framework, WorklistSolver};
-use bibleteks_ir::{BlockId, IrFunction, Value};
+use freakre_ir::{BlockId, IrFunction, Value};
 use std::collections::{BTreeSet, HashMap};
 
 /// Live variables analysis result
@@ -116,7 +116,9 @@ impl LiveVariables {
         }
 
         let mut solver = WorklistSolver::new(framework, func.blocks.len(), deps);
-        solver.solve();
+        if !solver.solve() {
+            eprintln!("warning: live variables analysis did not converge; returning partial results");
+        }
 
         // Convert results back to BlockId-indexed maps
         let mut in_sets = HashMap::new();
@@ -178,12 +180,11 @@ impl LiveVariables {
                                 found_this_inst = true;
                                 continue;
                             }
-                            if found_this_inst {
-                                if other_inst.sources().contains(&dst) {
+                            if found_this_inst
+                                && other_inst.sources().contains(&dst) {
                                     used_later = true;
                                     break;
                                 }
-                            }
                         }
 
                         if !used_later {
@@ -201,7 +202,7 @@ impl LiveVariables {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bibleteks_ir::{OpCode, Ty};
+    use freakre_ir::{IrInst, OpCode, Ty};
 
     #[test]
     fn test_simple_live_vars() {

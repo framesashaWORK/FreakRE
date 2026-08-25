@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 
 /// A monotone framework fact — a set of elements that grows monotonically.
 pub type Fact<T> = BTreeSet<T>;
+type Facts<T> = Vec<Fact<T>>;
 
 /// Direction of analysis: forward or backward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +58,9 @@ pub struct WorklistSolver<F: Framework> {
     num_blocks: usize,
     /// Predecessor indices for each block (forward) or successor indices (backward).
     deps: Vec<Vec<usize>>,
+    /// Reverse adjacency list: successors for forward analysis, predecessors for backward.
+    /// FIXED: Precomputed to avoid O(n²) linear scan when finding successors/predecessors.
+    reverse_deps: Vec<Vec<usize>>,
     /// IN facts for each block.
     in_facts: Vec<Fact<F::Element>>,
     /// OUT facts for each block.
@@ -77,13 +81,45 @@ impl<F: Framework> WorklistSolver<F> {
         let in_facts = vec![initial.clone(); num_blocks];
         let out_facts = vec![initial; num_blocks];
 
+        // FIXED: Precompute reverse adjacency list to avoid O(n²) successor lookup
+        // in forward analysis. For forward: deps[i] = predecessors of i,
+        // so reverse_deps[i] = successors of i (blocks that have i in their deps).
+        // For backward: deps[i] = successors of i,
+        // so reverse_deps[i] = predecessors of i (same as deps[i]).
+        let mut reverse_deps = vec![Vec::new(); num_blocks];
+        match framework.direction() {
+            Direction::Forward => {
+                for (block, preds) in deps.iter().enumerate() {
+                    for &pred in preds {
+                        if pred < num_blocks {
+                            reverse_deps[pred].push(block);
+                        }
+                    }
+                }
+            }
+            Direction::Backward => {
+                // For backward analysis, deps already contains successors,
+                // and we need predecessors (which are the blocks whose deps contain us).
+                // But actually for backward, the worklist adds deps[block_idx] directly,
+                // so reverse_deps is not needed. We still build it for consistency.
+                for (block, succs) in deps.iter().enumerate() {
+                    for &succ in succs {
+                        if succ < num_blocks {
+                            reverse_deps[succ].push(block);
+                        }
+                    }
+                }
+            }
+        }
+
         WorklistSolver {
             framework,
             num_blocks,
             deps,
+            reverse_deps,
             in_facts,
             out_facts,
-            max_iterations: 1000,
+            max_iterations: num_blocks.saturating_mul(50).max(1000),
             iterations: 0,
         }
     }
@@ -97,6 +133,11 @@ impl<F: Framework> WorklistSolver<F> {
     ///
     /// Returns `true` if convergence was reached within `max_iterations`.
     pub fn solve(&mut self) -> bool {
+        // Guard: a function may contain zero blocks; nothing to solve.
+        if self.num_blocks == 0 {
+            return true;
+        }
+
         // Set boundary condition
         let boundary = self.framework.boundary_fact();
         match self.framework.direction() {
@@ -117,6 +158,7 @@ impl<F: Framework> WorklistSolver<F> {
 
         // Initialise worklist with all blocks
         let mut worklist: BTreeSet<usize> = (0..self.num_blocks).collect();
+        let direction = self.framework.direction();
 
         while let Some(block_idx) = worklist.pop_first() {
             self.iterations += 1;
@@ -124,49 +166,47 @@ impl<F: Framework> WorklistSolver<F> {
                 return false;
             }
 
-            // Compute new IN fact from dependencies
+            // Compute new IN fact (forward) or OUT fact (backward) from dependencies.
+            // Forward: IN[b] = ⋃ OUT[pred]; Backward: OUT[b] = ⋃ IN[succ].
             let dep_facts: Vec<&Fact<F::Element>> = self.deps[block_idx]
                 .iter()
-                .map(|&dep| match self.framework.direction() {
+                .map(|&dep| match direction {
                     Direction::Forward => &self.out_facts[dep],
                     Direction::Backward => &self.in_facts[dep],
                 })
                 .collect();
 
-            let new_in = if dep_facts.is_empty() {
-                // Entry block (forward) or exit block (backward)
-                match self.framework.direction() {
-                    Direction::Forward => self.in_facts[block_idx].clone(),
-                    Direction::Backward => self.out_facts[block_idx].clone(),
-                }
+            let new_fact = if dep_facts.is_empty() {
+                // Entry block (forward) or exit block (backward): boundary condition
+                self.framework.boundary_fact()
             } else {
                 self.framework.confluence(&dep_facts)
             };
 
-            // Check if IN changed
-            let old_in = std::mem::replace(&mut self.in_facts[block_idx], new_in);
-            if self.in_facts[block_idx] != old_in {
-                // Recompute OUT
-                let new_out = self.framework.transfer(block_idx, &self.in_facts[block_idx]);
-                if new_out != self.out_facts[block_idx] {
-                    self.out_facts[block_idx] = new_out;
-                    // Add successors (forward) or predecessors (backward) to worklist
-                    match self.framework.direction() {
-                        Direction::Forward => {
-                            // Successors = blocks that have block_idx in their deps
-                            for (other, deps) in self.deps.iter().enumerate() {
-                                if deps.contains(&block_idx) {
-                                    worklist.insert(other);
-                                }
-                            }
-                        }
-                        Direction::Backward => {
-                            // Predecessors = deps of this block
-                            for &dep in &self.deps[block_idx] {
-                                worklist.insert(dep);
-                            }
-                        }
-                    }
+            // Store the merged fact, then ALWAYS apply the transfer function to
+            // get the opposite-side fact (OUT for forward, IN for backward).
+            // Facts start at the initial (usually empty) state, so a confluence
+            // result equal to the current fact does not imply that transfer has
+            // ever run for this block; skipping it would leave OUT/IN stale.
+            let changed = match direction {
+                Direction::Forward => {
+                    let old = std::mem::replace(&mut self.in_facts[block_idx], new_fact);
+                    self.out_facts[block_idx] =
+                        self.framework.transfer(block_idx, &self.in_facts[block_idx]);
+                    self.in_facts[block_idx] != old
+                }
+                Direction::Backward => {
+                    let old = std::mem::replace(&mut self.out_facts[block_idx], new_fact);
+                    self.in_facts[block_idx] =
+                        self.framework.transfer(block_idx, &self.out_facts[block_idx]);
+                    self.out_facts[block_idx] != old
+                }
+            };
+
+            if changed {
+                // Add successors (forward) or predecessors (backward) to worklist
+                for &next in &self.reverse_deps[block_idx] {
+                    worklist.insert(next);
                 }
             }
         }
@@ -190,7 +230,7 @@ impl<F: Framework> WorklistSolver<F> {
     }
 
     /// Consume solver and return (in_facts, out_facts).
-    pub fn into_facts(self) -> (Vec<Fact<F::Element>>, Vec<Fact<F::Element>>) {
+    pub fn into_facts(self) -> (Facts<F::Element>, Facts<F::Element>) {
         (self.in_facts, self.out_facts)
     }
 }

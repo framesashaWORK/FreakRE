@@ -6,6 +6,8 @@
 
 use plugins::{Plugin, PluginContext, PluginMetadata, MenuItem};
 use project_db::FunctionEntry;
+use crate::util;
+use freakre_x86::{Mnemonic, Operand};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum FuncClass {
@@ -75,22 +77,26 @@ impl Plugin for FuncClassifierPlugin {
             let class = classify_function(func);
             *counts.entry(class).or_insert(0usize) += 1;
 
-            // Add classification as comment
-            let _ = ctx.db.set_comment(
+            // Add classification as an append-style comment (never clobbers
+            // user text; re-runs refresh only our own "[class:" line).
+            util::upsert_tagged_comment(
+                &mut ctx.db,
                 func.address,
-                format!("[class: {}]", class),
+                "[class:",
+                &format!("[class: {}]", class),
             );
 
-            // Auto-label special classes
+            // Auto-label special classes — but never overwrite user labels.
             match class {
                 FuncClass::Thunk => {
-                    let existing = ctx.db.get_label(func.address).ok().flatten().unwrap_or_default();
-                    if existing.is_empty() || existing.starts_with("sub_") {
-                        let _ = ctx.db.set_label(func.address, format!("thunk_{:X}", func.address));
-                    }
+                    util::set_label_if_free(
+                        &mut ctx.db,
+                        func.address,
+                        format!("thunk_{:X}", func.address),
+                    );
                 }
                 FuncClass::EntryPoint => {
-                    let _ = ctx.db.set_label(func.address, "entry_point".into());
+                    util::set_label_if_free(&mut ctx.db, func.address, "entry_point".into());
                 }
                 _ => {}
             }
@@ -123,23 +129,12 @@ fn classify_function(func: &FunctionEntry) -> FuncClass {
         }
     }
 
-    // Count CALL instructions (E8 xx xx xx xx)
-    let mut call_count = 0usize;
-    let mut has_self_call = false;
-    let mut i = 0;
-    while i < code.len() {
-        if code[i] == 0xE8 && i + 5 <= code.len() {
-            call_count += 1;
-            let rel = i32::from_le_bytes([code[i+1], code[i+2], code[i+3], code[i+4]]);
-            let target = (i as i64 + 5 + rel as i64) as usize;
-            if target == 0 {
-                has_self_call = true;
-            }
-            i += 5;
-        } else {
-            i += 1;
-        }
-    }
+    // Count CALL instructions via real instruction decoding, so 0xE8 bytes
+    // that are actually immediates/displacements of other instructions don't
+    // inflate the count.
+    let scan = scan_calls(code);
+    let call_count = scan.count;
+    let has_self_call = scan.self_call;
 
     // Leaf: no calls at all
     if call_count == 0 && size > 6 {
@@ -161,7 +156,7 @@ fn classify_function(func: &FunctionEntry) -> FuncClass {
     if size > 100 && call_count > 3 {
         // Look for patterns typical of CRT startup
         let has_crt_pattern = code.windows(3).any(|w| w == [0x55, 0x89, 0xE5]) // push ebp; mov ebp, esp
-            && code.windows(1).any(|w| w == [0xE8]) // has calls
+            && call_count > 0 // has decoded CALL instructions
             && size > 200;
         if has_crt_pattern && func.address < 0x10000 {
             return FuncClass::EntryPoint;
@@ -174,4 +169,114 @@ fn classify_function(func: &FunctionEntry) -> FuncClass {
     }
 
     FuncClass::Normal
+}
+
+/// Result of a decoded CALL scan over a function body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallScan {
+    /// Number of decoded CALL instructions (direct and indirect).
+    pub count: usize,
+    /// True when a direct relative call targets the function's own start.
+    pub self_call: bool,
+}
+
+/// Linear instruction-level scan of `code` counting real CALL instructions.
+///
+/// Uses the `freakre-x86` decoder instead of matching raw 0xE8 bytes: an 0xE8
+/// appearing as part of another instruction's immediate/displacement no longer
+/// counts as a call. Decode errors step forward one byte so malformed/padded
+/// regions can't stall the scan.
+fn scan_calls(code: &[u8]) -> CallScan {
+    let mut result = CallScan { count: 0, self_call: false };
+    let mut off = 0usize;
+    while off < code.len() {
+        match freakre_x86::decode(&code[off..], false) {
+            Ok(insn) => {
+                if insn.mnemonic == Mnemonic::Call {
+                    result.count += 1;
+                    // `decode()` uses base address 0, so a direct rel32 call's
+                    // Rel operand is the target offset relative to the slice
+                    // start; adding the instruction offset gives the target
+                    // relative to the function start. Zero → call to self.
+                    if let Some(Operand::Rel(target)) = insn.operands.first() {
+                        if (off as i64).wrapping_add(*target as i64) == 0 {
+                            result.self_call = true;
+                        }
+                    }
+                }
+                off += insn.length.max(1);
+            }
+            Err(_) => {
+                off += 1;
+            }
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_scan_calls_real_call_counted() {
+        // call rel32 (+5 → 0x0A); ret  — one real CALL
+        let code = [0xE8, 0x05, 0x00, 0x00, 0x00, 0xC3];
+        let scan = scan_calls(&code);
+        assert_eq!(scan.count, 1);
+        assert!(!scan.self_call);
+    }
+
+    #[test]
+    fn test_scan_calls_embedded_e8_not_counted() {
+        // mov eax, 0x909090E8 — the 0xE8 is an immediate byte of a MOV,
+        // not an instruction; the old raw-byte scanner miscounted this.
+        let code = [0xB8, 0xE8, 0x90, 0x90, 0x90, 0xC3];
+        let scan = scan_calls(&code);
+        assert_eq!(scan.count, 0);
+
+        // Same byte stream prefixed so 0xE8 lands mid-instruction as a
+        // displacement: mov [eax+0xE8...], ... style — use lea with disp8.
+        // lea eax, [ecx*1+0xE8] would need SIB; simpler: cmp dword [eax+0xE8], imm8
+        // 83 B8 E8 00 00 00 07 = cmp dword ptr [eax + 0xE8], 7
+        let code2 = [0x83, 0xB8, 0xE8, 0x00, 0x00, 0x00, 0x07, 0xC3];
+        assert_eq!(scan_calls(&code2).count, 0);
+    }
+
+    #[test]
+    fn test_scan_calls_self_call_detected() {
+        // Function starting with: nop; nop; nop; nop; nop; nop;
+        // then `call -11` (target = offset 6+5-11 = 0 → self), then ret.
+        let code = [
+            0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+            0xE8, 0xF5, 0xFF, 0xFF, 0xFF,
+            0xC3,
+        ];
+        let scan = scan_calls(&code);
+        assert_eq!(scan.count, 1);
+        assert!(scan.self_call);
+
+        // classify_function should report Recursive for it.
+        let mut func = FunctionEntry::default();
+        func.address = 0x1000;
+        func.code_bytes = Some(code.to_vec());
+        assert_eq!(classify_function(&func), FuncClass::Recursive);
+    }
+
+    #[test]
+    fn test_scan_calls_indirect_call_counted() {
+        // call eax (FF D0); ret — indirect call must count too.
+        let code = [0xFF, 0xD0, 0xC3];
+        assert_eq!(scan_calls(&code).count, 1);
+    }
+
+    #[test]
+    fn test_leaf_classification_uses_decoded_calls() {
+        // >6 bytes containing only an embedded 0xE8 immediate and no real
+        // call → leaf, not "has calls".
+        let mut func = FunctionEntry::default();
+        func.address = 0x2000;
+        func.code_bytes = Some(vec![0xB8, 0xE8, 0x90, 0x90, 0x90, 0x90, 0x90, 0xC3]);
+        assert_eq!(classify_function(&func), FuncClass::Leaf);
+    }
 }

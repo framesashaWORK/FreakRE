@@ -1,5 +1,7 @@
 # Fuzz corpus (large binary files)
-corpus/
+# Generated corpora are ignored, but committed seed inputs live in corpus/seeds/
+corpus/*
+!corpus/seeds/
 
 # Fuzz artifacts
 artifacts/

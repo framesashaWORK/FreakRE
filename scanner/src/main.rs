@@ -9,9 +9,12 @@ use freakre_scanner::{
 use clap::Parser;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use walkdir::WalkDir;
+
+const PROGRESS_STEP: usize = 100;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -40,8 +43,8 @@ struct Cli {
     depth: usize,
 
     /// Number of parallel threads (0 = auto)
-    #[arg(short, long, default_value_t = 0)]
-    jobs: usize,
+    #[arg(short = 'j', long, alias = "jobs", default_value_t = 0)]
+    threads: usize,
 
     /// Only show files with findings
     #[arg(long)]
@@ -61,9 +64,9 @@ fn main() {
     let scan_start = Instant::now();
 
     // Configure thread pool
-    if cli.jobs > 0 {
+    if cli.threads > 0 {
         rayon::ThreadPoolBuilder::new()
-            .num_threads(cli.jobs)
+            .num_threads(cli.threads)
             .build_global()
             .ok();
     }
@@ -86,17 +89,44 @@ fn main() {
         std::process::exit(1);
     }
 
+    let num_threads = if cli.threads > 0 {
+        cli.threads
+    } else {
+        rayon::current_num_threads()
+    };
+
     eprintln!(
         "Scanning {} file(s) with {} thread(s)...",
-        total_files,
-        rayon::current_num_threads()
+        total_files, num_threads
     );
 
     // Parallel scan — lock-free collection via par_iter().map().collect()
+    let completed = AtomicUsize::new(0);
+    let read_errors = AtomicUsize::new(0);
+
     let mut reports: Vec<FileReport> = files
         .par_iter()
-        .map(|path| scanner.scan_file(path))
+        .map(|path| {
+            let report = scanner.scan_file(path);
+            if report.verdict == Verdict::Error {
+                read_errors.fetch_add(1, Ordering::Relaxed);
+            }
+            let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+            if done.is_multiple_of(PROGRESS_STEP) || done == total_files {
+                eprintln!("Scanned {}/{} file(s)...", done, total_files);
+            }
+            report
+        })
         .collect();
+
+    let err_count = read_errors.load(Ordering::Relaxed);
+    if err_count > 0 {
+        eprintln!(
+            "Warning: {} file(s) could not be read and are marked as ERROR",
+            err_count
+        );
+    }
+
     reports.sort_by(|a, b| a.path.cmp(&b.path));
 
     let scan_duration = scan_start.elapsed().as_millis();
@@ -192,7 +222,11 @@ fn collect_files(target: &Path, max_depth: usize) -> Vec<PathBuf> {
         return vec![target.to_path_buf()];
     }
     WalkDir::new(target)
-        .max_depth(max_depth)
+        .max_depth(if max_depth == 0 {
+            usize::MAX
+        } else {
+            max_depth
+        })
         .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -211,6 +245,20 @@ fn parse_severity(s: &str) -> Severity {
     }
 }
 
+fn csv_escape(field: &str) -> String {
+    let mut out = String::with_capacity(field.len() + 2);
+    out.push('"');
+    for c in field.chars() {
+        if c == '"' {
+            out.push_str("\"\"");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn print_csv(reports: &[FileReport], summary: &ScanSummary) {
     println!(
         "path,size,sha256,file_type,suspicion_score,verdict,findings_count,critical_findings,scan_ms"
@@ -222,13 +270,13 @@ fn print_csv(reports: &[FileReport], summary: &ScanSummary) {
             .filter(|f| f.severity == Severity::Critical)
             .count();
         println!(
-            "\"{}\",{},{},{},{:.4},{},{},{},{}",
-            r.path.display(),
+            "{},{},{},{},{:.4},{},{},{},{}",
+            csv_escape(&r.path.display().to_string()),
             r.size,
-            r.sha256,
-            r.file_type,
+            csv_escape(&r.sha256),
+            csv_escape(&r.file_type),
             r.suspicion_score,
-            r.verdict,
+            csv_escape(&r.verdict.to_string()),
             r.findings.len(),
             crit,
             r.scan_duration_ms
@@ -238,4 +286,72 @@ fn print_csv(reports: &[FileReport], summary: &ScanSummary) {
         "\n# Summary: {} files, {} malicious, {} suspicious, {} clean",
         summary.total_files, summary.malicious, summary.suspicious, summary.clean
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn fingerprint(reports: &[FileReport]) -> BTreeSet<(String, String)> {
+        reports
+            .iter()
+            .map(|r| (r.path.display().to_string(), r.md5.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn parallel_scan_matches_sequential() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["a.bin", "b.txt", "c.dat", "d.exe", "e", "f.dll"];
+        for (i, name) in names.iter().enumerate() {
+            let mut data = vec![b'A' + i as u8; 64 * (i + 1)];
+            data.extend_from_slice(name.as_bytes());
+            std::fs::write(dir.path().join(name), &data).unwrap();
+        }
+
+        let files = collect_files(dir.path(), 0);
+        assert_eq!(files.len(), names.len());
+
+        let scanner = Arc::new(Scanner::new());
+
+        let mut sequential: Vec<FileReport> =
+            files.iter().map(|p| scanner.scan_file(p)).collect();
+        sequential.sort_by(|a, b| a.path.cmp(&b.path));
+
+        let mut parallel: Vec<FileReport> =
+            files.par_iter().map(|p| scanner.scan_file(p)).collect();
+        assert_eq!(
+            files.len(),
+            parallel.len(),
+            "par_iter().collect() must preserve input order"
+        );
+        parallel.sort_by(|a, b| a.path.cmp(&b.path));
+
+        assert_eq!(fingerprint(&sequential), fingerprint(&parallel));
+        for (s, p) in sequential.iter().zip(parallel.iter()) {
+            assert_eq!(s.verdict, p.verdict);
+            assert_eq!(s.findings.len(), p.findings.len());
+        }
+    }
+
+    #[test]
+    fn depth_zero_means_unlimited() {
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("a").join("b").join("c");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("deep.txt"), b"x").unwrap();
+
+        assert_eq!(collect_files(dir.path(), 0).len(), 1);
+        assert!(collect_files(dir.path(), 1).is_empty());
+        assert!(collect_files(dir.path(), 3).is_empty());
+        assert_eq!(collect_files(dir.path(), 4).len(), 1);
+    }
+
+    #[test]
+    fn csv_field_escaping() {
+        assert_eq!(csv_escape("plain"), "\"plain\"");
+        assert_eq!(csv_escape("C:\\a\"b,c.csv"), "\"C:\\a\"\"b,c.csv\"");
+        assert_eq!(csv_escape(""), "\"\"");
+    }
 }
