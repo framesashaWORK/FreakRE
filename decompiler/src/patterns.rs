@@ -338,12 +338,73 @@ fn store_addr_info(addr: &Expr) -> Option<(String, i64)> {
     }
 }
 
-fn detect_memcpy_pattern(_stmts: &mut Vec<Stmt>) {
-    // More complex: requires matching load+store pairs with sequential addresses
-    // Left as extension point — the pattern is:
-    //   tmp1 = *src; *dst = tmp1;
-    //   tmp2 = *(src+4); *(dst+4) = tmp2;
-    //   ...
+fn detect_memcpy_pattern(stmts: &mut Vec<Stmt>) {
+    // Detect unrolled memcpy: tmp = *src; *dst = tmp; tmp2 = *(src+4); *(dst+4) = tmp2; ...
+    // At least 2 pairs with base+0, base+4, base+8 etc.
+    let mut i = 0;
+    while i + 1 < stmts.len() {
+        // Look for Load then Store pair
+        let (src_base, src_off, tmp_name) = match &stmts[i] {
+            Stmt::Assign { target: Expr::Var(tmp), value: Expr::Deref(addr) } => {
+                if let Some((base, off)) = store_addr_info(addr) {
+                    (base, off, tmp.clone())
+                } else { i+=1; continue; }
+            }
+            _ => { i+=1; continue; }
+        };
+        let (dst_base, dst_off) = match &stmts[i+1] {
+            Stmt::Assign { target: Expr::Deref(addr), value: Expr::Var(v) } if v == &tmp_name => {
+                if let Some((base, off)) = store_addr_info(addr) {
+                    (base, off)
+                } else { i+=1; continue; }
+            }
+            _ => { i+=1; continue; }
+        };
+        // Found first pair, check for sequential pairs
+        let mut count = 1;
+        let mut last_src_off = src_off;
+        let mut last_dst_off = dst_off;
+        while i + count*2 + 1 < stmts.len() {
+            let src_idx = i + count*2;
+            let dst_idx = i + count*2 + 1;
+            let src_ok = match &stmts[src_idx] {
+                Stmt::Assign { target: Expr::Var(tmp), value: Expr::Deref(addr) } => {
+                    if let Some((base, off)) = store_addr_info(addr) {
+                        base == src_base && off == last_src_off + 4 && tmp != &tmp_name
+                    } else { false }
+                }
+                _ => false,
+            };
+            let dst_ok = match &stmts[dst_idx] {
+                Stmt::Assign { target: Expr::Deref(addr), value: Expr::Var(v) } => {
+                    // Need to check that v is the tmp from previous src
+                    if let Stmt::Assign { target: Expr::Var(tmp2), .. } = &stmts[src_idx] {
+                        if v != tmp2 { false } else {
+                            if let Some((base, off)) = store_addr_info(addr) {
+                                base == dst_base && off == last_dst_off + 4
+                            } else { false }
+                        }
+                    } else { false }
+                }
+                _ => false,
+            };
+            if src_ok && dst_ok {
+                count += 1;
+                last_src_off += 4;
+                last_dst_off += 4;
+            } else {
+                break;
+            }
+        }
+        if count >= 2 {
+            // Replace with memcpy call
+            let src_expr = Expr::Var(src_base.clone());
+            let dst_expr = Expr::Var(dst_base.clone());
+            stmts[i] = Stmt::Call { func: "memcpy".into(), args: vec![dst_expr, src_expr, Expr::IntLit(count as i64 * 4)] };
+            stmts.drain((i+1)..(i+count*2));
+        }
+        i += 1;
+    }
 }
 
 fn is_zero_expr(expr: &Expr) -> bool {

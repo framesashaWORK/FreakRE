@@ -90,6 +90,16 @@ fn decode_opcode(
 
     let reg = |idx: u8, ext: bool, size: OperandSize| pick_reg(idx, ext, size, rex_present);
 
+    // VEX/EVEX/FPU early exits — handled as Unknown but with correct length already validated by LDE
+    if is_64 && (opcode == 0xC4 || opcode == 0xC5 || opcode == 0x62) {
+        return Ok((Mnemonic::Unknown, vec![]));
+    }
+    if (0xD8..=0xDF).contains(&opcode) {
+        // FPU: decode ModR/M to validate but return Unknown
+        let _ = decode_modrm(bytes, pos, is_64, rex, op_size, op_size);
+        return Ok((Mnemonic::Unknown, vec![]));
+    }
+
     Ok(match opcode {
         // в”Ђв”Ђ Misc / system в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         0x90 => (Mnemonic::Nop, vec![]),

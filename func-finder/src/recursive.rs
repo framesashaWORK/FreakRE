@@ -607,7 +607,7 @@ impl RecursiveAnalyzer {
                 };
                 match op {
                     0xC2..=0xC3 | 0xCA..=0xCB => true, // ret / ret imm16
-                    0xE9 | 0xEB | 0xEA => true,        // jmp rel32 / rel8 / far
+                    0xE9..=0xEB => true,               // jmp rel32 / rel8 / far
                     // jmp r/m (FF /4) and ljmp r/m (FF /5); calls (/2, /3) continue
                     0xFF => matches!(after.first().map(|m| (m >> 3) & 7), Some(4 | 5)),
                     0xF4 => true, // hlt

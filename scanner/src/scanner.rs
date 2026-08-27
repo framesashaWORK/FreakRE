@@ -1312,13 +1312,17 @@ impl Scanner {
             });
         }
 
-        // в”Ђв”Ђв”Ђ Decompiler Pipeline (experimental) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-        // Attempt to lift and decompile the first detected function.
+        // вЂDecompiler Pipeline (experimental) вЂ
+        // Lift and decompile the largest detected function from .text.
+        // Uses func-finder to locate real function boundaries instead of
+        // blindly lifting the first N bytes (which may be data/padding).
         // This is opt-in via `decompiler` feature; failures don't affect scan results.
         #[cfg(feature = "decompiler")]
         if let Some(pe) = pe {
             if let Some(ref _cfg_summary) = cfg_summary_info {
                 use freakre_ir::x86_lifter::X86Lifter;
+                use freakre_ir::Lifter;
+                use func_finder::{Architecture, FunctionFinder};
                 use decompiler::{decompile_function, DecompilerConfig};
                 
                 // Extract code region from .text section
@@ -1330,47 +1334,72 @@ impl Scanner {
                 if let Some(sec) = text_section {
                     let code_region = sec.raw_data(&data);
                     if !code_region.is_empty() {
-                        // Limit to first 4KB for performance
-                        let code_limit = code_region.len().min(4096);
-                        let code_slice = &code_region[..code_limit];
+                        // Find actual function boundaries using prologue scanning
+                        let arch = if pe.is_64bit {
+                            Architecture::X86_64
+                        } else {
+                            Architecture::X86
+                        };
+                        let finder = FunctionFinder::new(arch)
+                            .with_code_base(sec.virtual_address as u64);
+                        // pe.entry_point and sec.virtual_address are both RVAs from image base.
+                        // FunctionFinder needs the VA, so use image_base + entry_point_rva.
+                        let entry_va = pe.image_base + pe.entry_point as u64;
+                        let detected = finder.find_all(code_region, &[entry_va])
+                            .unwrap_or_default();
                         
-                        // Lift to IR
-                        let lifter = X86Lifter::new(pe.is_64bit);
-                        match lifter.lift_function(code_slice, sec.virtual_address as u64) {
-                            Ok(ir_func) => {
-                                // Decompile to C pseudocode
-                                let config = DecompilerConfig::default();
-                                match decompile_function(&ir_func) {
-                                    Ok(c_code) => {
-                                        findings.push(Finding {
-                                            severity: Severity::Info,
-                                            module: "decompiler".into(),
-                                            rule_id: "DECOMPILED_CODE".into(),
-                                            description: format!("Decompiled {} bytes of .text section to C pseudocode", code_limit),
-                                            details: Some(c_code.lines().take(20).collect::<Vec<_>>().join("\n")),
-                                        });
-                                    }
-                                    Err(e) => {
-                                        // Decompilation failed вЂ” not critical, just log
-                                        findings.push(Finding {
-                                            severity: Severity::Low,
-                                            module: "decompiler".into(),
-                                            rule_id: "DECOMPILE_FAILED".into(),
-                                            description: format!("Decompiler failed: {}", e),
-                                            details: None,
-                                        });
+                        // Pick the largest function (most meaningful to decompile)
+                        let best = detected.iter()
+                            .max_by_key(|f| f.size)
+                            .or_else(|| detected.first());
+                        
+                        if let Some(func) = best {
+                            let func_offset = (func.start - sec.virtual_address as u64) as usize;
+                            let func_size = func.size;
+                            // Safety: clamp to bounds
+                            let func_end = (func_offset + func_size).min(code_region.len());
+                            let func_slice = &code_region[func_offset..func_end];
+                            
+                            // Lift to IR
+                            let lifter = X86Lifter::new(pe.is_64bit);
+                            let func_name = format!("sub_{:X}", func.start);
+                            match lifter.lift_function(func_slice, func.start, &func_name) {
+                                Ok(ir_func) => {
+                                    // Decompile to C pseudocode
+                                    let _config = DecompilerConfig::default();
+                                    match decompile_function(&ir_func) {
+                                        Ok(c_code) => {
+                                            findings.push(Finding {
+                                                severity: Severity::Info,
+                                                module: "decompiler".into(),
+                                                rule_id: "DECOMPILED_CODE".into(),
+                                                description: format!(
+                                                    "Decompiled function at 0x{:X} ({} bytes) to C pseudocode",
+                                                    func.start, func_size
+                                                ),
+                                                details: Some(c_code.lines().take(20).collect::<Vec<_>>().join("\n")),
+                                            });
+                                        }
+                                        Err(e) => {
+                                            findings.push(Finding {
+                                                severity: Severity::Low,
+                                                module: "decompiler".into(),
+                                                rule_id: "DECOMPILE_FAILED".into(),
+                                                description: format!("Decompiler failed: {}", e),
+                                                details: None,
+                                            });
+                                        }
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                // Lifting failed вЂ” not critical, just log
-                                findings.push(Finding {
-                                    severity: Severity::Low,
-                                    module: "decompiler".into(),
-                                    rule_id: "LIFT_FAILED".into(),
-                                    description: format!("IR lifter failed: {}", e),
-                                    details: None,
-                                });
+                                Err(e) => {
+                                    findings.push(Finding {
+                                        severity: Severity::Low,
+                                        module: "decompiler".into(),
+                                        rule_id: "LIFT_FAILED".into(),
+                                        description: format!("IR lifter failed: {}", e),
+                                        details: None,
+                                    });
+                                }
                             }
                         }
                     }
@@ -1954,7 +1983,7 @@ fn is_yara_budget_notice(f: &Finding) -> bool {
     f.module == "yara-lite" && f.rule_id == "YARA_MATCH_BUDGET"
 }
 
-fn detect_file_type(data: &[u8]) -> String {
+pub fn detect_file_type(data: &[u8]) -> String {
     if data.len() < 4 {
         return "unknown".into();
     }
@@ -2098,7 +2127,7 @@ fn detect_file_type(data: &[u8]) -> String {
     "unknown".into()
 }
 
-fn hex_sha256(data: &[u8]) -> String {
+pub fn hex_sha256(data: &[u8]) -> String {
     let digest = freakre_sha256(data);
     // Manual hex encode (no external `hex` crate)
     let mut s = String::with_capacity(64);

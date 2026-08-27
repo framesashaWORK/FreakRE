@@ -391,7 +391,7 @@ fn detect_compiler(code: &[u8]) -> Option<CompilerInfo> {
     // Pick compiler with most pattern matches; break ties deterministically
     // by count descending, then name ascending
     let mut candidates: Vec<(&str, usize)> = compiler_counts.into_iter().collect();
-    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     candidates.first().map(|(compiler, _)| CompilerInfo {
         compiler: compiler.to_string(),
         version: None,

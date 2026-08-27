@@ -123,6 +123,20 @@ pub enum SsaInst {
         op: OpCode,
         src: SsaVal,
     },
+    /// dst = a + b + carry (ADC)
+    Adc {
+        dst: VersionedVar,
+        a: SsaVal,
+        b: SsaVal,
+        carry: SsaVal,
+    },
+    /// dst = a - b - carry (SBB)
+    Sbb {
+        dst: VersionedVar,
+        a: SsaVal,
+        b: SsaVal,
+        carry: SsaVal,
+    },
     /// dst = LOAD(addr, size)
     Load {
         dst: VersionedVar,
@@ -185,6 +199,12 @@ impl SsaInst {
                 format!("{} = {} {}, {}", dst, op, val(lhs), val(rhs))
             }
             SsaInst::Unary { dst, op, src } => format!("{} = {} {}", dst, op, val(src)),
+            SsaInst::Adc { dst, a, b, carry } => {
+                format!("{} = ADC {}, {}, {}", dst, val(a), val(b), val(carry))
+            }
+            SsaInst::Sbb { dst, a, b, carry } => {
+                format!("{} = SBB {}, {}, {}", dst, val(a), val(b), val(carry))
+            }
             SsaInst::Load { dst, addr, size } => format!("{} = LOAD({}, {})", dst, val(addr), size),
             SsaInst::Store { addr, value, size } => {
                 format!("STORE({}, {}, {})", val(addr), val(value), size)
@@ -485,6 +505,18 @@ fn to_ssa_inst(inst: &IrInst) -> SsaInst {
             lhs: val_to_ssa(lhs),
             rhs: val_to_ssa(rhs),
         },
+        IrInst::Adc { dst, a, b, carry } => SsaInst::Adc {
+            dst: ver_of(dst),
+            a: val_to_ssa(a),
+            b: val_to_ssa(b),
+            carry: val_to_ssa(carry),
+        },
+        IrInst::Sbb { dst, a, b, carry } => SsaInst::Sbb {
+            dst: ver_of(dst),
+            a: val_to_ssa(a),
+            b: val_to_ssa(b),
+            carry: val_to_ssa(carry),
+        },
         IrInst::Unary { dst, op, src } => SsaInst::Unary {
             dst: ver_of(dst),
             op: *op,
@@ -535,6 +567,8 @@ fn ssa_inst_dst(inst: &mut SsaInst) -> Option<&mut VersionedVar> {
     match inst {
         SsaInst::Binary { dst, .. }
         | SsaInst::Unary { dst, .. }
+        | SsaInst::Adc { dst, .. }
+        | SsaInst::Sbb { dst, .. }
         | SsaInst::Load { dst, .. } => Some(dst),
         SsaInst::Call { dst: Some(dst), .. } => Some(dst),
         _ => None,
@@ -549,6 +583,16 @@ fn ssa_inst_map_vals(inst: &mut SsaInst, f: &mut impl FnMut(&mut SsaVal)) {
             f(rhs);
         }
         SsaInst::Unary { src, .. } => f(src),
+        SsaInst::Adc { a, b, carry, .. } => {
+            f(a);
+            f(b);
+            f(carry);
+        }
+        SsaInst::Sbb { a, b, carry, .. } => {
+            f(a);
+            f(b);
+            f(carry);
+        }
         SsaInst::Load { addr, .. } => f(addr),
         SsaInst::Store { addr, value, .. } => {
             f(addr);
@@ -942,6 +986,18 @@ fn lower_inst(
             op: *op,
             lhs: lower_val(vals, out, lhs),
             rhs: lower_val(vals, out, rhs),
+        },
+        SsaInst::Adc { dst, a, b, carry } => IrInst::Adc {
+            dst: concrete(vals, out, dst),
+            a: lower_val(vals, out, a),
+            b: lower_val(vals, out, b),
+            carry: lower_val(vals, out, carry),
+        },
+        SsaInst::Sbb { dst, a, b, carry } => IrInst::Sbb {
+            dst: concrete(vals, out, dst),
+            a: lower_val(vals, out, a),
+            b: lower_val(vals, out, b),
+            carry: lower_val(vals, out, carry),
         },
         SsaInst::Unary { dst, op, src } => IrInst::Unary {
             dst: concrete(vals, out, dst),

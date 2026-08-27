@@ -31,6 +31,44 @@ pub enum BackdoorRuleId {
     EncryptedConfig,
     /// Firmware/UEFI backdoor indicators
     FirmwareIndicator,
+
+    // ─── Common malware pack ─────────────────────────────────────────
+    /// Keylogger: keystroke hooking / async key-state polling + exfil
+    Keylogger,
+    /// Clipboard hijack: monitor + replace clipboard contents
+    ClipboardHijack,
+    /// Screen capture primitives combined with network capability
+    ScreenCapture,
+    /// Cryptocurrency miner indicators (pool protocol, bulk CryptoAPI)
+    Cryptominer,
+    /// Ransomware: mass file enumeration + encryption + ransom markers
+    Ransomware,
+
+    // ─── Rare TTP pack ───────────────────────────────────────────────
+    /// Process hollowing / section-based code injection
+    ProcessHollowing,
+    /// Execution via callback-registration APIs paired with RWX memory
+    CallbackInjection,
+    /// UAC bypass via auto-elevate handler registry abuse
+    UacBypass,
+    /// Living-off-the-land binary abuse (certutil/mshta/regsvr32/bitsadmin)
+    LolbinAbuse,
+    /// DNS resolver APIs without any HTTP/socket stack (DNS-only C2 shape)
+    DnsC2Anomaly,
+
+    // ─── Anti-debug / anti-VM / sandbox-evasion pack ─────────────────
+    /// Debugger detection APIs
+    AntiDebug,
+    /// VM / sandbox artifact probing via distinctive guest markers
+    AntiVm,
+    /// Timing-loop evasion proxy (tick counter + Sleep + network)
+    SleepEvasion,
+    /// Human interaction check (cursor position + key state polling)
+    MouseActivityCheck,
+
+    // ─── Byte-level pack ─────────────────────────────────────────────
+    /// Direct syscall stubs (mov eax, SSN; syscall; ret)
+    DirectSyscalls,
 }
 
 impl fmt::Display for BackdoorRuleId {
@@ -48,6 +86,25 @@ impl fmt::Display for BackdoorRuleId {
             Self::HiddenAccount => write!(f, "HIDDEN_ACCOUNT"),
             Self::EncryptedConfig => write!(f, "ENCRYPTED_CONFIG"),
             Self::FirmwareIndicator => write!(f, "FIRMWARE_INDICATOR"),
+
+            Self::Keylogger => write!(f, "KEYLOGGER"),
+            Self::ClipboardHijack => write!(f, "CLIPBOARD_HIJACK"),
+            Self::ScreenCapture => write!(f, "SCREEN_CAPTURE"),
+            Self::Cryptominer => write!(f, "CRYPTOMINER"),
+            Self::Ransomware => write!(f, "RANSOMWARE"),
+
+            Self::ProcessHollowing => write!(f, "PROCESS_HOLLOWING"),
+            Self::CallbackInjection => write!(f, "CALLBACK_INJECTION"),
+            Self::UacBypass => write!(f, "UAC_BYPASS"),
+            Self::LolbinAbuse => write!(f, "LOLBIN_ABUSE"),
+            Self::DnsC2Anomaly => write!(f, "DNS_C2_ANOMALY"),
+
+            Self::AntiDebug => write!(f, "ANTI_DEBUG"),
+            Self::AntiVm => write!(f, "ANTI_VM"),
+            Self::SleepEvasion => write!(f, "SLEEP_EVASION"),
+            Self::MouseActivityCheck => write!(f, "MOUSE_ACTIVITY_CHECK"),
+
+            Self::DirectSyscalls => write!(f, "DIRECT_SYSCALLS"),
         }
     }
 }
@@ -68,6 +125,25 @@ impl BackdoorRuleId {
             Self::HiddenAccount => "Hidden/suspicious user account creation via NetUserAdd",
             Self::EncryptedConfig => "High-entropy encrypted config block adjacent to network API",
             Self::FirmwareIndicator => "Firmware/UEFI backdoor indicators (DXE/SMM references)",
+
+            Self::Keylogger => "Keystroke monitoring via hook installation or async key-state polling with exfiltration",
+            Self::ClipboardHijack => "Clipboard read-modify-write chain combined with network capability (clipper)",
+            Self::ScreenCapture => "Screen capture primitives (BitBlt/GetDC/GDI+) combined with network capability",
+            Self::Cryptominer => "Cryptocurrency mining indicators: pool protocol strings and bulk CryptoAPI usage",
+            Self::Ransomware => "Mass file enumeration + encryption + ransom markers (renamed extensions, shadow-copy deletion)",
+
+            Self::ProcessHollowing => "Process hollowing/injection primitives: section manipulation with WriteProcessMemory and thread-context rewrite",
+            Self::CallbackInjection => "RWX allocation paired with callback-registration APIs (EnumWindows/SetTimer-style)",
+            Self::UacBypass => "UAC bypass via auto-elevate handler registry abuse (fodhelper/eventvwr/ICMLuaUtil)",
+            Self::LolbinAbuse => "Living-off-the-land download/exec command lines (certutil -urlcache, mshta, regsvr32, bitsadmin)",
+            Self::DnsC2Anomaly => "DNS resolver APIs present without any HTTP/socket stack — possible DNS-only C2 (also true of DNS utilities)",
+
+            Self::AntiDebug => "Debugger detection APIs (IsDebuggerPresent, ProcessDebugPort queries, OutputDebugString tricks)",
+            Self::AntiVm => "VM/sandbox artifact probes (VirtualBox/VMware/QEMU/Sandboxie/Cuckoo guest markers)",
+            Self::SleepEvasion => "Weak static proxy: Sleep + tick-counter APIs co-resident with network imports (timing-loop evasion)",
+            Self::MouseActivityCheck => "Human interaction check: cursor position + key state polling (low confidence; games use the same pair)",
+
+            Self::DirectSyscalls => "Direct syscall stubs (mov eax, SSN; syscall; ret) bypassing ntdll API hooks",
         }
     }
 
@@ -86,6 +162,25 @@ impl BackdoorRuleId {
             Self::HiddenAccount => &["T1136.001"],
             Self::EncryptedConfig => &["T1573", "T1027"],
             Self::FirmwareIndicator => &["T1542.001", "T1542.003"],
+
+            Self::Keylogger => &["T1056.001"],
+            Self::ClipboardHijack => &["T1115"],
+            Self::ScreenCapture => &["T1113"],
+            Self::Cryptominer => &["T1496"],
+            Self::Ransomware => &["T1486", "T1490"],
+
+            Self::ProcessHollowing => &["T1055.012"],
+            Self::CallbackInjection => &["T1055"],
+            Self::UacBypass => &["T1548.002"],
+            Self::LolbinAbuse => &["T1105", "T1218"],
+            Self::DnsC2Anomaly => &["T1071.004"],
+
+            Self::AntiDebug => &["T1622"],
+            Self::AntiVm => &["T1497.001"],
+            Self::SleepEvasion => &["T1497.003"],
+            Self::MouseActivityCheck => &["T1497.001"],
+
+            Self::DirectSyscalls => &["T1106"],
         }
     }
 }
@@ -213,6 +308,180 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
                          "VirtualAlloc", "NtUnmapViewOfSection"],
         min_optional: 1,
     },
+    // ─── Common malware pack ─────────────────────────────────────────
+    // Keylogger: keyboard hook installation. SetWindowsHookEx alone is used
+    // by IMEs/accessibility tools, so an outbound network outlet is mandatory
+    // before a hook chain is treated as exfiltrating keystrokes. (The
+    // WH_KEYBOARD / WH_KEYBOARD_LL hook ids are call-time constants invisible
+    // to static import analysis; the hook-install API is the closest proxy.)
+    ImportSignature {
+        rule_id: BackdoorRuleId::Keylogger,
+        required_apis: &["SetWindowsHookEx"],
+        optional_apis: &["connect", "socket", "send", "WSAStartup",
+                         "InternetOpenA", "HttpSendRequestA"],
+        min_optional: 1,
+    },
+    // Keylogger variant: raw async key-state polling loops. Games poll
+    // GetAsyncKeyState constantly, so network capability is mandatory
+    // before this shape is treated as keystroke theft.
+    ImportSignature {
+        rule_id: BackdoorRuleId::Keylogger,
+        required_apis: &["GetAsyncKeyState"],
+        optional_apis: &["connect", "socket", "send", "WSAStartup",
+                         "InternetOpenA", "HttpSendRequestA"],
+        min_optional: 1,
+    },
+    // Clipboard hijack: full read-modify-write clipboard chain + network.
+    // Any single clipboard API (or OpenClipboard+GetClipboardData for reads)
+    // is ordinary clipboard-manager behavior; only the complete replacement
+    // chain with a network outlet indicates a clipper.
+    ImportSignature {
+        rule_id: BackdoorRuleId::ClipboardHijack,
+        required_apis: &["OpenClipboard", "GetClipboardData", "SetClipboardData"],
+        optional_apis: &["connect", "socket", "send", "WSAStartup",
+                         "InternetOpenA", "HttpSendRequestA"],
+        min_optional: 1,
+    },
+    // Screen capture: blit from a screen DC. Every local screenshot utility
+    // shares these GDI primitives, so a network outlet (exfil path) is
+    // mandatory before the pair is treated as surveillance.
+    ImportSignature {
+        rule_id: BackdoorRuleId::ScreenCapture,
+        required_apis: &["BitBlt", "GetDC"],
+        optional_apis: &["connect", "socket", "send", "WSAStartup",
+                         "InternetOpenA", "HttpSendRequestA"],
+        min_optional: 1,
+    },
+    // Screen capture variant: GDI+ encoder fed from a screen DC, again
+    // gated on network capability.
+    ImportSignature {
+        rule_id: BackdoorRuleId::ScreenCapture,
+        required_apis: &["GdiplusStartup", "GetDC"],
+        optional_apis: &["connect", "socket", "send", "WSAStartup"],
+        min_optional: 1,
+    },
+    // Cryptominer: classic CryptoAPI exercised at bulk scale (4 of 5
+    // operations). Single hash/encrypt calls are ordinary software; miners
+    // derive keys and hash continuously while talking to pools.
+    ImportSignature {
+        rule_id: BackdoorRuleId::Cryptominer,
+        required_apis: &["CryptAcquireContextA"],
+        optional_apis: &["CryptHashData", "CryptDeriveKey", "CryptCreateHash",
+                         "CryptEncrypt", "CryptDecrypt"],
+        min_optional: 4,
+    },
+    // Cryptominer (wide-char CryptoAPI variant).
+    ImportSignature {
+        rule_id: BackdoorRuleId::Cryptominer,
+        required_apis: &["CryptAcquireContextW"],
+        optional_apis: &["CryptHashData", "CryptDeriveKey", "CryptCreateHash",
+                         "CryptEncrypt", "CryptDecrypt"],
+        min_optional: 4,
+    },
+    // Ransomware: file iteration + bulk encryption.
+    ImportSignature {
+        rule_id: BackdoorRuleId::Ransomware,
+        required_apis: &["FindFirstFileA", "CryptEncrypt"],
+        optional_apis: &["FindNextFileA", "CryptAcquireContextA",
+                         "DeleteFileA", "WriteFile"],
+        min_optional: 1,
+    },
+    // Ransomware (wide-char / CNG variant).
+    ImportSignature {
+        rule_id: BackdoorRuleId::Ransomware,
+        required_apis: &["FindFirstFileW", "BCryptEncrypt"],
+        optional_apis: &["FindNextFileW", "BCryptOpenAlgorithmProvider",
+                         "DeleteFileW", "WriteFile"],
+        min_optional: 1,
+    },
+    // ─── Rare TTP pack ───────────────────────────────────────────────
+    // Process hollowing: write payload + redirect execution into a
+    // sacrificial process.
+    ImportSignature {
+        rule_id: BackdoorRuleId::ProcessHollowing,
+        required_apis: &["WriteProcessMemory", "SetThreadContext"],
+        optional_apis: &["ResumeThread", "NtUnmapViewOfSection",
+                         "ZwUnmapViewOfSection", "VirtualAllocEx",
+                         "ReadProcessMemory", "CreateProcessA", "CreateProcessW"],
+        min_optional: 1,
+    },
+    // Process hollowing variant: section-mapping injection path.
+    ImportSignature {
+        rule_id: BackdoorRuleId::ProcessHollowing,
+        required_apis: &["NtCreateSection", "NtMapViewOfSection"],
+        optional_apis: &["WriteProcessMemory", "SetThreadContext", "ResumeThread",
+                         "NtCreateThreadEx", "RtlCreateUserThread"],
+        min_optional: 1,
+    },
+    // Callback injection: RWX-capable allocation combined with execution via
+    // callback-registration APIs. VirtualAlloc/EnumWindows alone describe
+    // ordinary GUI code; two further callback/protect APIs are required.
+    ImportSignature {
+        rule_id: BackdoorRuleId::CallbackInjection,
+        required_apis: &["VirtualAlloc", "EnumWindows"],
+        optional_apis: &["SetTimer", "SetWindowsHookExA", "SetWindowsHookExW",
+                         "EnumChildWindows", "CertDuplicateCertificateContext",
+                         "CreateThread", "VirtualProtect"],
+        min_optional: 2,
+    },
+    // ─── Anti-debug / anti-VM / sandbox-evasion pack ─────────────────
+    // Debugger detection: canonical check plus at least one companion probe.
+    ImportSignature {
+        rule_id: BackdoorRuleId::AntiDebug,
+        required_apis: &["IsDebuggerPresent"],
+        optional_apis: &["CheckRemoteDebuggerPresent", "NtQueryInformationProcess",
+                         "OutputDebugStringA", "OutputDebugStringW"],
+        min_optional: 1,
+    },
+    // Debugger detection: cross-process debug check on its own is already
+    // tool-grade behavior in a client binary.
+    ImportSignature {
+        rule_id: BackdoorRuleId::AntiDebug,
+        required_apis: &["CheckRemoteDebuggerPresent"],
+        optional_apis: &[],
+        min_optional: 0,
+    },
+    // ProcessDebugPort heuristic: the ProcessDebugPort argument (7) is not
+    // visible statically; NtQueryInformationProcess combined with debugger-
+    // probe companions is the closest import-level proxy.
+    ImportSignature {
+        rule_id: BackdoorRuleId::AntiDebug,
+        required_apis: &["NtQueryInformationProcess"],
+        optional_apis: &["OutputDebugStringA", "OutputDebugStringW",
+                         "IsDebuggerPresent", "CheckRemoteDebuggerPresent"],
+        min_optional: 1,
+    },
+    // Sleep-acceleration / timing-loop evasion: WEAK static proxy. Malware
+    // in sandboxes detects sleep-skipping via GetTickCount deltas around
+    // Sleep and switches to busy-wait loops; statically, however, the mere
+    // co-residence of a tick counter and Sleep cannot prove that pattern —
+    // every networked UI app with a timer shares it. The network-import gate
+    // only removes the most obvious non-networked false positives, so this
+    // rule is deliberately Medium severity / low confidence.
+    ImportSignature {
+        rule_id: BackdoorRuleId::SleepEvasion,
+        required_apis: &["Sleep", "GetTickCount"],
+        optional_apis: &["connect", "socket", "send", "WSAStartup",
+                         "InternetOpenA", "HttpSendRequestA"],
+        min_optional: 1,
+    },
+    // Sleep-acceleration variant: high-resolution counter instead of ticks.
+    ImportSignature {
+        rule_id: BackdoorRuleId::SleepEvasion,
+        required_apis: &["Sleep", "QueryPerformanceCounter"],
+        optional_apis: &["connect", "socket", "send", "WSAStartup",
+                         "InternetOpenA", "HttpSendRequestA"],
+        min_optional: 1,
+    },
+    // Human interaction check: cursor position + key state polling.
+    // Deliberately low confidence — games and automation frameworks use the
+    // identical API pair for entirely legitimate purposes.
+    ImportSignature {
+        rule_id: BackdoorRuleId::MouseActivityCheck,
+        required_apis: &["GetCursorPos", "GetAsyncKeyState"],
+        optional_apis: &[],
+        min_optional: 0,
+    },
 ];
 
 // ─── String Signatures ────────────────────────────────────────────────
@@ -282,6 +551,93 @@ pub const STRING_SIGNATURES: &[StringSignature] = &[
         patterns: &[".dll"],
         min_matches: 1,
         optional_patterns: &["\\AppData\\", "\\Temp\\", "\\ProgramData\\"],
+    },
+    // ─── Common malware pack ─────────────────────────────────────────
+    // Cryptominer protocol/config markers. Pool hostnames alone ("pool.")
+    // are too generic and would double-count inside "stratum+tcp://pool/..."
+    // strings, so only protocol verbs and miner identities carry signal.
+    // Patterns are pairwise non-substring so one token cannot satisfy two.
+    StringSignature {
+        rule_id: BackdoorRuleId::Cryptominer,
+        patterns: &["stratum+", "mining.subscribe", "mining.authorize",
+                    "xmrig", "cryptonight", "randomx"],
+        min_matches: 2,
+        optional_patterns: &[],
+    },
+    // Ransomware markers: renamed-file extensions and shadow-copy /
+    // recovery destruction commands. Patterns chosen non-overlapping so a
+    // single token cannot satisfy two at once.
+    StringSignature {
+        rule_id: BackdoorRuleId::Ransomware,
+        patterns: &[".encrypted", ".locked",
+                    "vssadmin delete shadows", "wbadmin delete catalog",
+                    "bcdedit /set recoveryenabled",
+                    "how_to_decrypt", "how to restore files"],
+        min_matches: 2,
+        optional_patterns: &[],
+    },
+    // ─── Rare TTP pack ───────────────────────────────────────────────
+    // UAC bypass via auto-elevate handlers. Tokens are handler-specific;
+    // generic HKCU registry paths appear in every installer and are excluded.
+    StringSignature {
+        rule_id: BackdoorRuleId::UacBypass,
+        patterns: &["ICMLuaUtil", "fodhelper", "eventvwr.exe", "ms-settings:",
+                    "Software\\Classes\\exefile\\shell\\open\\command"],
+        min_matches: 2,
+        optional_patterns: &[],
+    },
+    // LOLBin abuse: distinctive download/exec command lines. A single hit is
+    // already specific; the corroboration downgrade covers documentation
+    // strings in security tooling.
+    StringSignature {
+        rule_id: BackdoorRuleId::LolbinAbuse,
+        patterns: &["certutil -urlcache", "mshta http", "mshta vbscript",
+                    "regsvr32 /i:http", "bitsadmin /transfer", "bitsadmin /create"],
+        min_matches: 1,
+        optional_patterns: &[],
+    },
+    // ─── Anti-analysis pack ──────────────────────────────────────────
+    // VM/sandbox artifact probes. A probe is only meaningful when a binary
+    // goes hunting for FOREIGN hypervisor/sandbox families: virtualization
+    // vendors' own software legitimately embeds every artifact of its OWN
+    // family (a VMware installer strings "VMware"/"vmtoolsd" everywhere), so
+    // same-family repeats must never count as evidence. Each signature below
+    // therefore demands one marker from a HOME family plus at least one
+    // marker from a DIFFERENT family. All patterns are pairwise
+    // non-substring so a single token cannot satisfy two slots.
+    //
+    // "VBoxMiniRdDN" also matches the full guest pipe "\\.\pipe\VBoxMiniRdDN"
+    // and "Oracle\\VirtualBox Guest Additions" matches the registry key under
+    // SOFTWARE — both classic VirtualBox probe targets.
+    StringSignature {
+        rule_id: BackdoorRuleId::AntiVm,
+        // Home family: VirtualBox guest artifacts.
+        patterns: &["VBoxService", "VBoxTray", "VBoxMiniRdDN",
+                    "Oracle\\VirtualBox Guest Additions"],
+        min_matches: 1,
+        // Foreign families: VMware / Sandboxie / Cuckoo / QEMU.
+        optional_patterns: &["vmware", "vmtoolsd",
+                             "SbieDll.dll", "Sandboxie", "cuckoo", "qemu"],
+    },
+    StringSignature {
+        rule_id: BackdoorRuleId::AntiVm,
+        // Home family: VMware / QEMU guest artifacts.
+        patterns: &["vmware", "vmtoolsd", "qemu"],
+        min_matches: 1,
+        // Foreign families: VirtualBox / Sandboxie / Cuckoo.
+        optional_patterns: &["VBoxService", "VBoxTray", "VBoxMiniRdDN",
+                             "Oracle\\VirtualBox Guest Additions",
+                             "SbieDll.dll", "Sandboxie", "cuckoo"],
+    },
+    StringSignature {
+        rule_id: BackdoorRuleId::AntiVm,
+        // Home family: Sandboxie / Cuckoo sandbox artifacts.
+        patterns: &["SbieDll.dll", "Sandboxie", "cuckoo"],
+        min_matches: 1,
+        // Foreign families: VirtualBox / VMware / QEMU.
+        optional_patterns: &["VBoxService", "VBoxTray", "VBoxMiniRdDN",
+                             "Oracle\\VirtualBox Guest Additions",
+                             "vmware", "vmtoolsd", "qemu"],
     },
 ];
 

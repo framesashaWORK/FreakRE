@@ -7,12 +7,120 @@
 //! - Function signatures from call sites
 
 use crate::ast::*;
-use freakre_ir::Ty;
-use std::collections::{BTreeMap, HashMap};
+use freakre_ir::{IrFunction, Ty, Value};
+use freakre_type_propagation::TypePropagator;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+/// Inferred variable types keyed by AST-level variable name
+/// (`v{id}` for SSA temporaries, register names otherwise).
+pub type InferredTypes = BTreeMap<String, Ty>;
+
+/// Run `freakre-type-propagation` on a lifted IR function and project its
+/// post-fix results onto AST variable names.
+///
+/// The propagation crate owns constraint generation and solving (including
+/// pointer typing through Load/Store address usage); this only consumes its
+/// fixed-point output. Analysis failures degrade to an empty map — never a
+/// panic. Iteration over blocks/instructions is in definition order and the
+/// result is sorted by name, so the output is deterministic.
+pub fn propagated_var_types(func: &IrFunction) -> InferredTypes {
+    let mut out = BTreeMap::new();
+
+    let mut propagator = TypePropagator::new();
+    if propagator.analyze(func).is_err() {
+        return out;
+    }
+
+    let mut values: BTreeSet<Value> = BTreeSet::new();
+    for block in &func.blocks {
+        for inst in &block.insts {
+            if let Some(dst) = inst.dst() {
+                values.insert(dst.clone());
+            }
+            for src in inst.sources() {
+                values.insert(src.clone());
+            }
+        }
+    }
+
+    for value in values {
+        let Some(name) = ast_local_name(&value) else {
+            continue;
+        };
+        if let Some(ty) = propagator.get_type(&value) {
+            if ty != Ty::Unknown && ty != Ty::Void {
+                out.insert(name, ty);
+            }
+        }
+    }
+
+    out
+}
+
+/// Apply propagated types to an AST function's params and locals.
+///
+/// Upgrades are conservative: unresolved (`Unknown`/`Void`) declarations take
+/// any inferred type; concrete scalars yield only to pointers ("pointer wins",
+/// matching the propagation solver's own merge policy). Everything else keeps
+/// its declared type.
+pub fn apply_propagated_types(func: &mut AstFunction, inferred: &InferredTypes) {
+    for param in &mut func.params {
+        if matches!(param.ty, Ty::Unknown | Ty::Void) {
+            if let Some(ty) = inferred.get(&param.name) {
+                param.ty = ty.clone();
+            }
+        }
+    }
+    for local in &mut func.locals {
+        let upgraded = match inferred.get(&local.name) {
+            Some(ty) => match (&local.ty, ty) {
+                (Ty::Unknown | Ty::Void, _) => true,
+                (current, Ty::Ptr(_)) => !current.is_pointer(),
+                _ => false,
+            },
+            None => false,
+        };
+        if upgraded {
+            local.ty = inferred[&local.name].clone();
+        }
+    }
+}
+
+/// AST-level name for an IR value, mirroring `ir_to_ast`'s naming exactly:
+/// SSA variables become `v{id}`; registers keep their names except stack
+/// pointer/flag pseudo-variables, which never become declarations.
+fn ast_local_name(value: &Value) -> Option<String> {
+    match value {
+        Value::Var { id, .. } => Some(format!("v{}", id)),
+        Value::Register { name, .. } => {
+            if name.starts_with("flag_") || name == "rsp" || name == "esp" {
+                None
+            } else {
+                Some(name.clone())
+            }
+        }
+        _ => None,
+    }
+}
 
 /// Run type reconstruction on an AST function (in-place).
 pub fn reconstruct_types(func: &mut AstFunction) {
     let mut engine = TypeEngine::new();
+
+    // Phase 0: Seed with everything already known (lifter annotations plus
+    // propagation-backed upgrades applied by `ir_to_ast`), so constraint
+    // solving and struct-field recovery build on real types instead of
+    // rediscovering them from usage alone.
+    for param in &func.params {
+        if param.ty != Ty::Unknown {
+            engine.var_types.insert(param.name.clone(), param.ty.clone());
+        }
+    }
+    for local in &func.locals {
+        if local.ty != Ty::Unknown {
+            engine.var_types.insert(local.name.clone(), local.ty.clone());
+        }
+    }
 
     // Phase 1: Collect constraints from all statements
     engine.collect_from_stmts(&func.body);
@@ -23,10 +131,19 @@ pub fn reconstruct_types(func: &mut AstFunction) {
     // Phase 3: Recover structures from offset patterns
     let structs = engine.recover_structures();
 
-    // Phase 4: Apply inferred types back to locals
+    // Phase 4: Apply inferred types back to locals. Never clobber a concrete
+    // declaration: fill unresolved ones, and let pointers win over scalars
+    // (a variable dereferenced somewhere is a pointer regardless of what an
+    // integer annotation claimed). Same-kind width guesses from literals do
+    // not overwrite lifter/propagation facts.
     for local in func.locals.iter_mut() {
         if let Some(inferred) = engine.get_type(&local.name) {
-            if inferred != &Ty::Unknown && inferred != &local.ty {
+            if inferred == &Ty::Unknown || inferred == &local.ty {
+                continue;
+            }
+            let upgrade = matches!(local.ty, Ty::Unknown | Ty::Void)
+                || (!local.ty.is_pointer() && inferred.is_pointer());
+            if upgrade {
                 local.ty = inferred.clone();
             }
         }
@@ -67,8 +184,10 @@ struct TypeEngine {
     var_types: HashMap<String, Ty>,
     /// Collected constraints
     constraints: Vec<TypeConstraint>,
-    /// Struct access patterns: var_name → { offset → field_type }
-    struct_accesses: HashMap<String, BTreeMap<u64, Ty>>,
+    /// Struct access patterns: base var → { offset → name of the variable
+    /// that received the loaded value }. Field types are resolved from the
+    /// receiver's solved type in `recover_structures`.
+    struct_accesses: HashMap<String, BTreeMap<u64, String>>,
 }
 
 impl TypeEngine {
@@ -254,14 +373,13 @@ impl TypeEngine {
         }
 
         // Detect struct access pattern: var = *(base + offset)
-        if let Expr::Var(_target_name) = target {
+        if let Expr::Var(target_name) = target {
             if let Expr::Deref(addr_expr) = value {
                 if let Some((base_name, offset)) = extract_base_offset(addr_expr) {
-                    let field_ty = target.ty_from_expr();
                     self.struct_accesses
                         .entry(base_name)
                         .or_default()
-                        .insert(offset, field_ty);
+                        .insert(offset, target_name.clone());
                 }
             }
         }
@@ -362,22 +480,27 @@ impl TypeEngine {
             let mut fields: Vec<(String, Ty)> = Vec::new();
             let mut prev_offset = 0u64;
 
-            for (&offset, field_ty) in offsets {
-                // Add padding field if there's a gap
-                if offset > prev_offset {
-                    let gap = offset - prev_offset;
-                    if gap > 0 && !fields.is_empty() {
-                        // Only add explicit padding for large gaps
-                        if gap > 8 {
-                            fields.push((format!("_pad_0x{:X}", prev_offset), Ty::Array(gap as u32, Box::new(Ty::u8()))));
-                        }
+        for (&offset, receiver) in offsets {
+            // Add padding field if there's a gap
+            if offset > prev_offset {
+                let gap = offset - prev_offset;
+                if gap > 0 && !fields.is_empty() {
+                    // Only add explicit padding for large gaps
+                    if gap > 8 {
+                        fields.push((format!("_pad_0x{:X}", prev_offset), Ty::Array(gap as u32, Box::new(Ty::u8()))));
                     }
                 }
-
-                let field_name = format!("field_0x{:X}", offset);
-                fields.push((field_name, field_ty.clone()));
-                prev_offset = offset + field_ty.size_bytes().unwrap_or(4) as u64;
             }
+
+            // The field's type is whatever the receiving variable ended up as
+            // (seeded declaration + solved constraints); unresolved receivers
+            // stay Unknown and print with the `int` fallback.
+            let field_ty = self.var_types.get(receiver).cloned().unwrap_or(Ty::Unknown);
+            let field_name = format!("field_0x{:X}", offset);
+            let field_size = field_ty.size_bytes().unwrap_or(4) as u64;
+            fields.push((field_name, field_ty));
+            prev_offset = offset + field_size;
+        }
 
             if fields.len() >= 2 {
                 let struct_ty = Ty::Struct(fields);

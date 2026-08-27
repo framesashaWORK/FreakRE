@@ -8,6 +8,9 @@
 //!   with PE sections, overlays, and resource entries)
 //! - **ASCII + UTF-16LE + UTF-16BE** extraction in a single pass
 //! - **Configurable minimum length** to filter noise
+//! - **Payload-blob detection** — embedded Base64 / hex blobs decoded and
+//!   classified (URL / PE / shellcode / PowerShell) via
+//!   [`extract_strings_with_blobs`]
 //! - **Zero-copy** where possible вЂ" strings reference the original buffer
 //! - **Iterator API** вЂ" no intermediate allocations
 //!
@@ -16,6 +19,10 @@
 //! - Correlate string offsets with PE section boundaries
 //! - Detect embedded scripts / payloads by string density patterns
 //! - Feed extracted strings into YARA-like matching pipelines
+
+mod blob;
+
+pub use blob::{BlobFinding, BlobKind};
 
 /// Minimum printable ASCII code (inclusive).
 const ASCII_PRINTABLE_MIN: u8 = 0x20;
@@ -77,6 +84,15 @@ pub struct ExtractConfig {
     pub utf16le: bool,
     /// Whether to extract UTF-16BE strings.
     pub utf16be: bool,
+    /// Minimum length of a contiguous Base64 run (`[A-Za-z0-9+/=]`) that
+    /// triggers payload-blob detection. Default 24.
+    pub min_blob_base64_len: usize,
+    /// Minimum length of a contiguous hex-digit run that triggers blob
+    /// detection. Default 64.
+    pub min_blob_hex_len: usize,
+    /// Whether to run Base64 / hex payload-blob detection at all.
+    /// Default true; results are returned separately from the strings.
+    pub detect_blobs: bool,
 }
 
 impl Default for ExtractConfig {
@@ -86,6 +102,9 @@ impl Default for ExtractConfig {
             ascii: true,
             utf16le: true,
             utf16be: true,
+            min_blob_base64_len: 24,
+            min_blob_hex_len: 64,
+            detect_blobs: true,
         }
     }
 }
@@ -98,6 +117,7 @@ impl ExtractConfig {
             ascii: true,
             utf16le: false,
             utf16be: false,
+            ..Default::default()
         }
     }
 
@@ -108,6 +128,7 @@ impl ExtractConfig {
             ascii: true,
             utf16le: true,
             utf16be: false,
+            ..Default::default()
         }
     }
 }
@@ -118,11 +139,49 @@ fn is_ascii_printable(b: u8) -> bool {
     (ASCII_PRINTABLE_MIN..=ASCII_PRINTABLE_MAX).contains(&b)
 }
 
+/// Extract strings **and** payload blobs from a binary buffer.
+///
+/// Returns extracted [`ExtractedString`]s (identical to what
+/// [`extract_strings`] yields) plus a `Vec` of [`BlobFinding`]s for embedded
+/// Base64 / hex payloads, decoded and classified (URL / PE / shellcode /
+/// PowerShell markers, entropy-based payload-likeness).
+///
+/// Blob detection honours `config.min_blob_base64_len` (default 24),
+/// `config.min_blob_hex_len` (default 64), the UTF-16 toggles for wide-char
+/// wrapped Base64, and can be disabled via `config.detect_blobs`.
+///
+/// # Examples
+/// ```
+/// use str_extract::{extract_strings_with_blobs, ExtractConfig};
+///
+/// // Hex run decoding to an MZ-prefixed payload.
+/// let data = b"\x00\x114d5a4d5a4d5a4d5a4d5a4d5a4d5a4d5a4d5a4d5a4d5a4d5a\
+///              4d5a4d5a4d5a4d5a4d5a\x00";
+/// let config = ExtractConfig::default();
+/// let (_strings, blobs) = extract_strings_with_blobs(data, &config);
+/// assert!(blobs.iter().any(|b| b.looks_like_pe));
+/// ```
+pub fn extract_strings_with_blobs<'a>(
+    data: &'a [u8],
+    config: &ExtractConfig,
+) -> (Vec<ExtractedString<'a>>, Vec<BlobFinding>) {
+    let strings = run_string_passes(data, config);
+    let blobs = if config.detect_blobs {
+        blob::detect_blobs(data, config)
+    } else {
+        Vec::new()
+    };
+    (strings, blobs)
+}
+
 /// Extract all strings from a binary buffer using the given configuration.
 ///
 /// Returns a `Vec` of [`ExtractedString`] sorted by offset.
 /// Strings from different encodings may overlap in the buffer вЂ" this is
 /// intentional, as malware sometimes embeds the same data in multiple encodings.
+///
+/// This is the classic string-only API; use [`extract_strings_with_blobs`]
+/// to additionally receive classified Base64 / hex payload findings.
 ///
 /// # Examples
 /// ```
@@ -135,6 +194,10 @@ fn is_ascii_printable(b: u8) -> bool {
 /// assert!(strings.iter().any(|s| s.value == "World!"));
 /// ```
 pub fn extract_strings<'a>(data: &'a [u8], config: &ExtractConfig) -> Vec<ExtractedString<'a>> {
+    extract_strings_with_blobs(data, config).0
+}
+
+fn run_string_passes<'a>(data: &'a [u8], config: &ExtractConfig) -> Vec<ExtractedString<'a>> {
     let mut results = Vec::new();
 
     if config.ascii {
@@ -168,14 +231,14 @@ pub fn extract_strings<'a>(data: &'a [u8], config: &ExtractConfig) -> Vec<Extrac
         // Runs arrive in ascending offset order and kept runs of one encoding
         // are pairwise non-overlapping, so runs ending at or before this
         // offset can never conflict with this or any later candidate.
-        while queue.front().map_or(false, |&(_, ke)| ke <= s.offset) {
+        while queue.front().is_some_and(|&(_, ke)| ke <= s.offset) {
             queue.pop_front();
         }
 
         // After eviction, the front run is the only possible overlapper.
         let overlaps = queue
             .front()
-            .map_or(false, |&(ko, ke)| ko < end && s.offset < ke);
+            .is_some_and(|&(ko, ke)| ko < end && s.offset < ke);
 
         if !overlaps {
             queue.push_back((s.offset, end));
@@ -374,6 +437,7 @@ mod tests {
             ascii: false,
             utf16le: true,
             utf16be: false,
+            ..Default::default()
         };
         let results = extract_strings(&data, &config);
         assert!(
@@ -392,6 +456,7 @@ mod tests {
             ascii: false,
             utf16le: false,
             utf16be: true,
+            ..Default::default()
         };
         let results = extract_strings(&data, &config);
         assert!(
@@ -414,6 +479,7 @@ mod tests {
             ascii: true,
             utf16le: true,
             utf16be: false,
+            ..Default::default()
         };
         let results = extract_strings(&data, &config);
         assert!(results.len() >= 2);
@@ -502,6 +568,7 @@ mod tests {
             ascii: false,
             utf16le: true,
             utf16be: false,
+            ..Default::default()
         };
         let results = extract_strings(&data, &config);
         assert_eq!(
@@ -528,6 +595,7 @@ mod tests {
             ascii: false,
             utf16le: true,
             utf16be: false,
+            ..Default::default()
         };
         let results = extract_strings(&data, &config);
         assert_eq!(results.len(), 1);
@@ -548,6 +616,7 @@ mod tests {
             ascii: false,
             utf16le: true,
             utf16be: false,
+            ..Default::default()
         };
         let results = extract_strings(&data, &config);
         assert_eq!(

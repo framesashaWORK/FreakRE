@@ -30,6 +30,7 @@ pub mod types;
 pub mod interproc;
 pub mod patterns;
 pub mod stack_vars;
+pub mod call_naming;
 
 use freakre_ir::BlockId;
 
@@ -48,6 +49,8 @@ pub struct IfElsePattern {
     pub else_block: BlockId,
 }
 
-pub use decompile::{decompile_function, DecompilerConfig, DecompileError};
+pub use decompile::{
+    decompile_function, decompile_function_with_config, DecompilerConfig, DecompileError,
+};
 
 

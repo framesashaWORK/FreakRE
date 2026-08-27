@@ -196,14 +196,15 @@ fn copy_prop_does_not_use_value_redefined_later_in_same_list() {
     func.push_inst(func.entry_block, IrInst::Return { value: Some(v1) });
     func.build_cfg();
     let c = decompile_function(&func).unwrap();
+    // With SSA, v1 may be renamed to v1 (not v0) due to fresh allocation, but must still be a v-var, not rcx.
     assert!(
-        c.contains("return v0"),
-        "copy was propagated across a redefinition of its source:\n{}",
+        c.contains("return v"),
+        "copy was propagated across a redefinition of its source (expected return vN):\n{}",
         c
     );
     assert!(
         !c.contains("return rcx"),
-        "`return v0` wrongly became `return rcx`:\n{}",
+        "`return v` wrongly became `return rcx`:\n{}",
         c
     );
 }

@@ -110,6 +110,22 @@ impl AhoCorasick {
             pending_idx: 0,
         }
     }
+
+    /// Allocation-free streaming scan: invokes `on_hit(pattern_id, end)` for
+    /// every overlapping occurrence, with `end` = exclusive end offset of the
+    /// matched literal in `haystack`. Hits are emitted in ascending end order.
+    /// Used by the regex prefilter, which needs raw end positions without
+    /// per-hit `Match` construction overhead.
+    pub fn scan_overlapping<F: FnMut(usize, usize)>(&self, haystack: &[u8], mut on_hit: F) {
+        let mut state = 0u32;
+        for (i, &byte) in haystack.iter().enumerate() {
+            state = self.nodes[state as usize].children[byte as usize];
+            let outs = &self.nodes[state as usize].output;
+            for &pid in outs {
+                on_hit(pid, i + 1);
+            }
+        }
+    }
 }
 
 pub struct AcIter<'a> {

@@ -56,6 +56,16 @@ impl Default for Capabilities {
             "print", "type", "tostring", "tonumber",
             "pairs", "ipairs", "next", "select",
             "unpack", "table", "string", "math",
+            // stdlib: string utils
+            "len", "sub", "find", "replace", "upper", "lower", "trim",
+            "split", "join", "format_number",
+            // stdlib: data helpers (pure byte computation, no I/O)
+            "hex_encode", "hex_decode", "bytes_to_u32_le", "u32_to_bytes_le",
+            "base64_encode", "base64_decode", "crc32", "xor_bytes",
+            // stdlib: pattern helpers
+            "contains_any", "count_occurrences", "extract_between",
+            // stdlib: math/misc
+            "min", "max", "abs", "floor", "ceil",
         ] {
             allowed_functions.insert(name.to_string());
         }

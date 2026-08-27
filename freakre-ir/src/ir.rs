@@ -319,6 +319,24 @@ pub enum IrInst {
         value: Value,
         size: u32,
     },
+    /// `dst = a + b + carry_in` — x86 `adc` (carry-in is a first-class SSA
+    /// value, *not* the global `flag_cf` register). Modeling the carry
+    /// explicitly lets the decompiler substitute it with the comparison that
+    /// produced it and eliminate the dead `flag_cf` definition.
+    Adc {
+        dst: Value,
+        a: Value,
+        b: Value,
+        carry: Value,
+    },
+    /// `dst = a - b - carry_in` — x86 `sbb` (carry-in is the borrow, again a
+    /// first-class SSA value).
+    Sbb {
+        dst: Value,
+        a: Value,
+        b: Value,
+        carry: Value,
+    },
     /// Unconditional branch to a block.
     Branch {
         target: BlockId,
@@ -365,6 +383,8 @@ impl IrInst {
             IrInst::Unary { dst, .. } => Some(dst),
             IrInst::Load { dst, .. } => Some(dst),
             IrInst::Phi { dst, .. } => Some(dst),
+            IrInst::Adc { dst, .. } => Some(dst),
+            IrInst::Sbb { dst, .. } => Some(dst),
             IrInst::Call { dst, .. } => dst.as_ref(),
             _ => None,
         }
@@ -377,6 +397,8 @@ impl IrInst {
             IrInst::Unary { src, .. } => vec![src],
             IrInst::Load { addr, .. } => vec![addr],
             IrInst::Store { addr, value, .. } => vec![addr, value],
+            IrInst::Adc { a, b, carry, .. } => vec![a, b, carry],
+            IrInst::Sbb { a, b, carry, .. } => vec![a, b, carry],
             IrInst::CBranch { cond, .. } => vec![cond],
             IrInst::Call { target, args, .. } => {
                 let mut v = vec![target];
@@ -419,6 +441,12 @@ impl IrInst {
         match self {
             IrInst::Binary { dst, op, lhs, rhs } => {
                 format!("{} = {} {}, {}", dst, op, lhs, rhs)
+            }
+            IrInst::Adc { dst, a, b, carry } => {
+                format!("{} = ADC {}, {}, {}", dst, a, b, carry)
+            }
+            IrInst::Sbb { dst, a, b, carry } => {
+                format!("{} = SBB {}, {}, {}", dst, a, b, carry)
             }
             IrInst::Unary { dst, op, src } => {
                 format!("{} = {} {}", dst, op, src)
@@ -959,6 +987,38 @@ mod tests {
         assert!(!OpCode::Sub.is_commutative());
         assert!(OpCode::Eq.is_comparison());
         assert!(OpCode::Not.is_unary());
+    }
+
+    /// `Adc`/`Sbb` are first-class IR instructions carrying their carry-in as a
+    /// concrete SSA value (not the global `flag_cf` register). Their `sources`
+    /// must surface `a`, `b` and `carry`, and `dst` must be the destination.
+    #[test]
+    fn test_adc_sbb_are_first_class() {
+        let dst = Value::var(0, Ty::i64());
+        let a = Value::reg("rax", Ty::i64());
+        let b = Value::reg("rbx", Ty::i64());
+        let cf = Value::reg("flag_cf", Ty::Bool);
+
+        let adc = IrInst::Adc {
+            dst: dst.clone(),
+            a: a.clone(),
+            b: b.clone(),
+            carry: cf.clone(),
+        };
+        assert_eq!(adc.dst(), Some(&dst));
+        assert!(adc.sources().iter().any(|s| *s == &a));
+        assert!(adc.sources().iter().any(|s| *s == &b));
+        assert!(adc.sources().iter().any(|s| *s == &cf));
+        assert!(adc.display().contains("ADC"));
+
+        let sbb = IrInst::Sbb {
+            dst: dst.clone(),
+            a: a.clone(),
+            b: b.clone(),
+            carry: cf.clone(),
+        };
+        assert_eq!(sbb.dst(), Some(&dst));
+        assert!(sbb.display().contains("SBB"));
     }
 
     #[test]

@@ -38,6 +38,7 @@ backdoor-analyzer = { path = "../backdoor-analyzer" }
 shellcode-analyzer = { path = "../shellcode-analyzer" }
 xrefs = { path = "../xrefs" }
 cfg-builder = { path = "../cfg-builder" }
+func-finder = { path = "../func-finder" }
 func-sigs = { path = "../func-sigs" }
 ml-detection = { path = "../ml-detection" }
 freakre-x86 = { path = "../freakre-x86" }
@@ -50,5 +51,11 @@ freakre-config = { path = "../freakre-config" }
 
 
 
+[[bench]]
+name = "scan_bench"
+harness = false
+
 [dev-dependencies]
 tempfile = "3"
+# html_reports/plotters/rayon disabled to keep the bench build light
+criterion = { version = "0.5", default-features = false }

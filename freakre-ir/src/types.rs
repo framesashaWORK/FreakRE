@@ -30,11 +30,14 @@ pub enum Ty {
 
 impl Ty {
     /// Size of this type in bits, or None if unknown / variable.
+    ///
+    /// For `Ptr`, this returns the default 64-bit size for backwards compatibility.
+    /// Use `size_bits_with_arch()` for arch-aware pointer sizes.
     pub fn size_bits(&self) -> Option<u32> {
         match self {
             Ty::Bool => Some(1),
             Ty::UInt(n) | Ty::Int(n) | Ty::Float(n) => Some(*n),
-            Ty::Ptr(_) => Some(64), // Assume 64-bit pointers
+            Ty::Ptr(_) => Some(64), // Default 64-bit; use size_bits_with_arch for accuracy
             Ty::Array(n, inner) => inner.size_bits().map(|s| s * n),
             Ty::Struct(fields) => {
                 let mut total = 0u32;
@@ -47,9 +50,28 @@ impl Ty {
         }
     }
 
+    /// Arch-aware size in bits. For `Ptr`, uses `arch.pointer_size()`.
+    pub fn size_bits_with_arch(&self, arch: crate::arch::Arch) -> Option<u32> {
+        match self {
+            Ty::Ptr(_) => Some(arch.pointer_size() as u32 * 8),
+            _ => self.size_bits(),
+        }
+    }
+
     /// Size of this type in bytes, rounded up.
     pub fn size_bytes(&self) -> Option<u32> {
         self.size_bits().map(|b| b.div_ceil(8))
+    }
+
+    /// Arch-aware size in bytes.
+    pub fn size_bytes_with_arch(&self, arch: crate::arch::Arch) -> Option<u32> {
+        self.size_bits_with_arch(arch).map(|b| b.div_ceil(8))
+    }
+
+    /// Create a pointer type with arch-appropriate size hint (stored as Ty::Ptr, size via with_arch).
+    pub fn ptr_for_arch(arch: crate::arch::Arch) -> Self {
+        let _ = arch;
+        Ty::Ptr(Box::new(Ty::UInt(8)))
     }
 
     /// Whether this is an integer type (signed or unsigned).
@@ -167,6 +189,16 @@ mod tests {
         assert_eq!(Ty::i32().size_bits(), Some(32));
         assert_eq!(Ty::i64().size_bits(), Some(64));
         assert_eq!(Ty::Ptr(Box::new(Ty::u8())).size_bits(), Some(64));
+    }
+
+    #[test]
+    fn test_size_bits_arch_aware() {
+        use crate::arch::Arch;
+        assert_eq!(Ty::Ptr(Box::new(Ty::u8())).size_bits_with_arch(Arch::X86), Some(32));
+        assert_eq!(Ty::Ptr(Box::new(Ty::u8())).size_bits_with_arch(Arch::X86_64), Some(64));
+        assert_eq!(Ty::Ptr(Box::new(Ty::u8())).size_bits_with_arch(Arch::Avr), Some(16));
+        assert_eq!(Ty::Ptr(Box::new(Ty::u8())).size_bytes_with_arch(Arch::X86), Some(4));
+        assert_eq!(Ty::Ptr(Box::new(Ty::u8())).size_bytes_with_arch(Arch::X86_64), Some(8));
     }
 
     #[test]

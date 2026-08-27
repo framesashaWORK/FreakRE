@@ -68,7 +68,11 @@ pub mod ssa;
 pub mod types;
 pub mod x86_lifter;
 pub mod arm_lifter;
+pub mod mips_lifter;
+pub mod riscv_lifter;
 pub mod arch;
+pub mod validator;
+pub mod optimize;
 
 pub use ir::*;
 pub use lifter::{Lifter, LifterError};

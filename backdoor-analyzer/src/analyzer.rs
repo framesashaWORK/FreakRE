@@ -1,6 +1,6 @@
 //! Core backdoor analysis engine.
 //! Combines import signatures, string signatures, and structural heuristics
-//! to detect 12 categories of backdoor behavior.
+//! to detect 27 categories of backdoor behavior.
 
 use crate::report::{BackdoorFinding, BackdoorReport, BackdoorSeverity};
 use crate::rules::{BackdoorRuleId, ImportSignatureLowered};
@@ -18,6 +18,13 @@ const CORROBORATION_REQUIRED: &[BackdoorRuleId] = &[
     BackdoorRuleId::NamedPipeBackdoor,
     BackdoorRuleId::ServiceBackdoor,
     BackdoorRuleId::RegistryPersistence,
+    // Ransomware/Cryptominer/UacBypass/LolbinAbuse markers are famous enough
+    // to appear in security write-ups and tooling embedded in large binaries;
+    // without matching API-level evidence they are discounted.
+    BackdoorRuleId::Ransomware,
+    BackdoorRuleId::Cryptominer,
+    BackdoorRuleId::UacBypass,
+    BackdoorRuleId::LolbinAbuse,
 ];
 
 /// Analyze a binary for backdoor indicators.
@@ -55,7 +62,7 @@ pub fn analyze_backdoors(
     check_string_signatures(strings, &mut findings);
 
     // Structural heuristics on raw data
-    check_structural_heuristics(data, &imports_lower, &mut findings);
+    check_structural_heuristics(data, &import_set, &imports_lower, &mut findings);
 
     // Discount uncorroborated string-only findings
     downgrade_uncorroborated(&mut findings, &import_backed);
@@ -253,6 +260,7 @@ fn check_string_signatures(strings: &[&str], findings: &mut Vec<BackdoorFinding>
 
 fn check_structural_heuristics(
     data: &[u8],
+    import_set: &HashSet<&str>,
     imports_lower: &[String],
     findings: &mut Vec<BackdoorFinding>,
 ) {
@@ -299,6 +307,140 @@ fn check_structural_heuristics(
             });
         }
     }
+
+    // DNS C2 anomaly: resolver APIs present while the binary carries no
+    // HTTP/socket stack at all. Deliberately Medium/low-confidence — pure DNS
+    // utilities (resolvers, ad blockers) share this exact shape.
+    let resolver_apis = ["dnsquery", "dnsquery_a", "dnsquery_w", "dnsqueryex"];
+    let matched_resolvers: Vec<&str> = resolver_apis
+        .iter()
+        .copied()
+        .filter(|api| import_set.contains(api))
+        .collect();
+    if !matched_resolvers.is_empty() && !has_net_imports {
+        findings.push(BackdoorFinding {
+            rule_id: BackdoorRuleId::DnsC2Anomaly,
+            severity: BackdoorRuleId::DnsC2Anomaly.default_severity(),
+            confidence: BackdoorRuleId::DnsC2Anomaly.default_confidence(),
+            description: BackdoorRuleId::DnsC2Anomaly.description().to_string(),
+            evidence: vec![format!(
+                "DNS resolver APIs ({}) without any HTTP/socket import",
+                matched_resolvers.join(", ")
+            )],
+            mitre_ids: BackdoorRuleId::DnsC2Anomaly
+                .mitre_ids()
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        });
+    }
+
+    // Direct syscall stubs (byte-level): repeated mov-eax/syscall/ret
+    // sequences in executable-looking regions indicate ntdll-hook-evading
+    // direct system calls. High-entropy regions look packed rather than
+    // executable and are skipped by the scanner's entropy gate.
+    let stub_count = count_direct_syscall_stubs(data);
+    if stub_count >= MIN_DIRECT_SYSCALL_STUBS {
+        findings.push(BackdoorFinding {
+            rule_id: BackdoorRuleId::DirectSyscalls,
+            severity: BackdoorRuleId::DirectSyscalls.default_severity(),
+            confidence: BackdoorRuleId::DirectSyscalls.default_confidence(),
+            description: BackdoorRuleId::DirectSyscalls.description().to_string(),
+            evidence: vec![format!(
+                "{} mov-eax/syscall/ret stub sequences found",
+                stub_count
+            )],
+            mitre_ids: BackdoorRuleId::DirectSyscalls
+                .mitre_ids()
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        });
+    }
+}
+
+/// Minimum repeated syscall stub sequences required to fire DirectSyscalls.
+/// A single stub can occur in ordinary low-level code; two or more distinct
+/// numbered stubs is a hand-rolled syscall table.
+const MIN_DIRECT_SYSCALL_STUBS: usize = 2;
+
+/// Regions whose neighborhood entropy exceeds this look packed/encrypted
+/// rather than executable code, so syscall-stub scanning skips them.
+const CODE_ENTROPY_CEILING: f64 = 6.9;
+
+/// Maximum bytes allowed between the `mov eax, imm32` opcode and the `syscall`
+/// instruction (small register setups like `xor ecx, ecx` are common).
+const MAX_MOV_SYSCALL_GAP: usize = 6;
+
+/// Maximum bytes allowed between `syscall` and the closing `ret`.
+const MAX_SYSCALL_RET_GAP: usize = 3;
+
+/// Count direct-syscall stub shapes: `B8 xx xx xx xx` (`mov eax, imm32`)
+/// followed within [`MAX_MOV_SYSCALL_GAP`] bytes by `0F 05` (`syscall`) and
+/// then within [`MAX_SYSCALL_RET_GAP`] bytes by `C3` (`ret`). Only regions
+/// whose neighborhood entropy looks like code (≤[`CODE_ENTROPY_CEILING`]) are
+/// scanned, so packed/encrypted blobs cannot produce spurious matches.
+fn count_direct_syscall_stubs(data: &[u8]) -> usize {
+    let mut count = 0usize;
+    let mut i = 0usize;
+    // Outer bound guarantees room for the immediate operand plus one
+    // potential `0F 05` pair right after the `mov`.
+    while i + 7 < data.len() {
+        if data[i] != 0xB8 {
+            i += 1;
+            continue;
+        }
+
+        // Entropy gate: only scan executable-looking neighborhoods.
+        let ctx_start = i.saturating_sub(32);
+        let ctx_end = (i + 96).min(data.len());
+        if entropy_rs::calculate_entropy(&data[ctx_start..ctx_end]).entropy > CODE_ENTROPY_CEILING {
+            i += 1;
+            continue;
+        }
+
+        // Locate `0F 05` within the gap after the mov's immediate operand.
+        let scan_end = (i + 5 + MAX_MOV_SYSCALL_GAP).min(data.len() - 2);
+        let mut syscall_at = None;
+        let mut j = i + 5;
+        while j <= scan_end {
+            if data[j] == 0x0F && data[j + 1] == 0x05 {
+                syscall_at = Some(j);
+                break;
+            }
+            j += 1;
+        }
+        let sys = match syscall_at {
+            Some(s) => s,
+            None => {
+                i += 1;
+                continue;
+            }
+        };
+
+        // Locate the closing `ret` shortly after `syscall`.
+        let ret_end = (sys + 2 + MAX_SYSCALL_RET_GAP).min(data.len() - 1);
+        let mut ret_at = None;
+        let mut k = sys + 2;
+        while k <= ret_end {
+            if data[k] == 0xC3 {
+                ret_at = Some(k);
+                break;
+            }
+            k += 1;
+        }
+
+        match ret_at {
+            Some(r) => {
+                count += 1;
+                // Resume after this stub so overlapping candidates never
+                // double-count a single sequence.
+                i = r + 1;
+            }
+            None => i += 1,
+        }
+    }
+    count
 }
 
 fn deduplicate_findings(findings: &mut Vec<BackdoorFinding>) {
@@ -728,5 +870,488 @@ mod tests {
                 report.findings.iter().map(|f| f.rule_id.to_string()).collect();
             assert_eq!(ids, expected, "equal-severity findings must have stable order");
         }
+    }
+
+    // ── Common malware pack ──────────────────────────────────────────
+
+    fn finding<'a>(report: &'a BackdoorReport, rule: BackdoorRuleId) -> &'a BackdoorFinding {
+        report
+            .findings
+            .iter()
+            .find(|f| f.rule_id == rule)
+            .unwrap_or_else(|| panic!("expected {:?} to fire", rule))
+    }
+
+    #[test]
+    fn keylogger_hook_with_network_fires() {
+        let imports = vec![
+            "SetWindowsHookExW".to_string(),
+            "GetAsyncKeyState".to_string(),
+            "send".to_string(),
+        ];
+        let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
+        let f = finding(&report, BackdoorRuleId::Keylogger);
+        assert_eq!(f.severity, BackdoorSeverity::High);
+        assert!(f.mitre_ids.iter().any(|m| m == "T1056.001"));
+    }
+
+    #[test]
+    fn getasynkeystate_without_network_is_not_keylogger() {
+        // Game input loop: raw key polling with zero network capability.
+        let imports = vec![
+            "GetAsyncKeyState".to_string(),
+            "GetKeyState".to_string(),
+            "GetKeyboardState".to_string(),
+        ];
+        let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
+        assert!(
+            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::Keylogger),
+            "offline key polling is ordinary game/IME behavior"
+        );
+    }
+
+    #[test]
+    fn clipboard_hijack_chain_fires_but_read_only_does_not() {
+        // Full read-modify-write chain + network outlet → clipper.
+        let clipper = vec![
+            "OpenClipboard".to_string(),
+            "GetClipboardData".to_string(),
+            "SetClipboardData".to_string(),
+            "connect".to_string(),
+        ];
+        let r1 = analyze_backdoors(&[0u8; 64], &clipper, &[]);
+        let f = finding(&r1, BackdoorRuleId::ClipboardHijack);
+        assert_eq!(f.mitre_ids, vec!["T1115"]);
+
+        // Read-only pair without SetClipboardData/network → clipboard manager.
+        let reader = vec![
+            "OpenClipboard".to_string(),
+            "GetClipboardData".to_string(),
+        ];
+        let r2 = analyze_backdoors(&[0u8; 64], &reader, &[]);
+        assert!(
+            !r2.findings.iter().any(|f| f.rule_id == BackdoorRuleId::ClipboardHijack),
+            "clipboard read without replacement/outlet is benign"
+        );
+    }
+
+    #[test]
+    fn screen_capture_requires_network_outlet() {
+        // Capture primitives WITH network → surveillance-grade.
+        let exfil = vec![
+            "BitBlt".to_string(),
+            "GetDC".to_string(),
+            "WSAStartup".to_string(),
+            "connect".to_string(),
+        ];
+        let r1 = analyze_backdoors(&[0u8; 64], &exfil, &[]);
+        finding(&r1, BackdoorRuleId::ScreenCapture);
+
+        // GDI+ encoder variant.
+        let gdiplus = vec![
+            "GdiplusStartup".to_string(),
+            "GetDC".to_string(),
+            "socket".to_string(),
+        ];
+        let r2 = analyze_backdoors(&[0u8; 64], &gdiplus, &[]);
+        finding(&r2, BackdoorRuleId::ScreenCapture);
+
+        // Local screenshot utility: identical GDI primitives, no outlet.
+        let local = vec![
+            "BitBlt".to_string(),
+            "GetDC".to_string(),
+            "CreateCompatibleBitmap".to_string(),
+            "GetDIBits".to_string(),
+        ];
+        let r3 = analyze_backdoors(&[0u8; 64], &local, &[]);
+        assert!(
+            !r3.findings.iter().any(|f| f.rule_id == BackdoorRuleId::ScreenCapture),
+            "screen capture without any network capability must not fire"
+        );
+    }
+
+    #[test]
+    fn cryptominer_strings_fire_and_are_downgraded_without_imports() {
+        let strings = vec![
+            "stratum+tcp://eu.mining.example:3333",
+            "mining.subscribe",
+            "xmrig 6.19",
+        ];
+        let report = analyze_backdoors(&[0u8; 64], &[], &strings);
+        let f = finding(&report, BackdoorRuleId::Cryptominer);
+        assert_eq!(f.severity, BackdoorSeverity::Medium);
+        assert!(
+            f.confidence <= 0.5,
+            "strings-only miner hit must be corroborated-downgraded, got {}",
+            f.confidence
+        );
+    }
+
+    #[test]
+    fn cryptominer_cryptoapi_bulk_scale_fires() {
+        let imports = vec![
+            "CryptAcquireContextW".to_string(),
+            "CryptHashData".to_string(),
+            "CryptDeriveKey".to_string(),
+            "CryptCreateHash".to_string(),
+            "CryptEncrypt".to_string(),
+        ];
+        let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
+        finding(&report, BackdoorRuleId::Cryptominer);
+
+        // Single hash call is ordinary software — 1 of 4 bulk ops is not enough.
+        let ordinary = vec![
+            "CryptAcquireContextW".to_string(),
+            "CryptHashData".to_string(),
+        ];
+        let r2 = analyze_backdoors(&[0u8; 64], &ordinary, &[]);
+        assert!(
+            !r2.findings.iter().any(|f| f.rule_id == BackdoorRuleId::Cryptominer),
+            "single CryptoAPI use must not look like mining"
+        );
+    }
+
+    #[test]
+    fn ransomware_imports_fire_at_full_strength() {
+        let imports = vec![
+            "FindFirstFileW".to_string(),
+            "BCryptEncrypt".to_string(),
+            "FindNextFileW".to_string(),
+            "BCryptOpenAlgorithmProvider".to_string(),
+        ];
+        let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
+        let f = finding(&report, BackdoorRuleId::Ransomware);
+        assert_eq!(f.severity, BackdoorSeverity::Critical, "import-backed hit stays critical");
+        assert!(f.mitre_ids.contains(&"T1486".to_string()));
+    }
+
+    #[test]
+    fn ransomware_strings_only_is_downgraded() {
+        let strings = vec![".locked", "vssadmin delete shadows"];
+        let report = analyze_backdoors(&[0u8; 64], &[], &strings);
+        let f = finding(&report, BackdoorRuleId::Ransomware);
+        assert_ne!(
+            f.severity, BackdoorSeverity::Critical,
+            "strings-only ransomware evidence must be downgraded"
+        );
+        assert!(f.confidence <= 0.5);
+    }
+
+    // ── Rare TTP pack ────────────────────────────────────────────────
+
+    #[test]
+    fn process_hollowing_classic_path_fires() {
+        let imports = vec![
+            "WriteProcessMemory".to_string(),
+            "SetThreadContext".to_string(),
+            "ResumeThread".to_string(),
+        ];
+        let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
+        let f = finding(&report, BackdoorRuleId::ProcessHollowing);
+        assert_eq!(f.mitre_ids, vec!["T1055.012"]);
+    }
+
+    #[test]
+    fn process_hollowing_section_mapping_path_fires() {
+        // Section mapping plus a thread-execution primitive (the signature
+        // requires one so bare section plumbing never fires).
+        let imports = vec![
+            "NtCreateSection".to_string(),
+            "NtMapViewOfSection".to_string(),
+            "WriteProcessMemory".to_string(),
+        ];
+        let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
+        finding(&report, BackdoorRuleId::ProcessHollowing);
+    }
+
+    #[test]
+    fn bare_section_apis_do_not_fire_hollowing() {
+        let imports = vec![
+            "NtCreateSection".to_string(),
+            "NtMapViewOfSection".to_string(),
+            "NtUnmapViewOfSection".to_string(),
+        ];
+        let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
+        assert!(
+            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::ProcessHollowing),
+            "section manipulation without an execution primitive is not hollowing"
+        );
+    }
+
+    #[test]
+    fn writeprocessmemory_alone_does_not_fire_hollowing() {
+        // Debuggers and legit installers patch remote memory too.
+        let imports = vec![
+            "WriteProcessMemory".to_string(),
+            "ReadProcessMemory".to_string(),
+        ];
+        let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
+        assert!(
+            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::ProcessHollowing),
+            "remote memory write alone is not hollowing"
+        );
+    }
+
+    #[test]
+    fn callback_injection_rwx_combo_fires_but_gui_pair_does_not() {
+        let injected = vec![
+            "VirtualAlloc".to_string(),
+            "EnumWindows".to_string(),
+            "SetTimer".to_string(),
+            "VirtualProtect".to_string(),
+        ];
+        let r1 = analyze_backdoors(&[0u8; 64], &injected, &[]);
+        finding(&r1, BackdoorRuleId::CallbackInjection);
+
+        // Ordinary GUI code pairs VirtualAlloc with EnumWindows all the time.
+        let gui = vec!["VirtualAlloc".to_string(), "EnumWindows".to_string()];
+        let r2 = analyze_backdoors(&[0u8; 64], &gui, &[]);
+        assert!(
+            !r2.findings.iter().any(|f| f.rule_id == BackdoorRuleId::CallbackInjection),
+            "bare VirtualAlloc+EnumWindows is every windowed app"
+        );
+    }
+
+    #[test]
+    fn uac_bypass_strings_fire_and_are_downgraded_without_imports() {
+        let strings = vec![
+            "{3AD05575-8857-4850-9277-11b85BDB8E09}", // ICMLuaUtil elevator GUID context
+            "ICMLuaUtil",
+            "fodhelper.exe",
+        ];
+        let report = analyze_backdoors(&[0u8; 64], &[], &strings);
+        let f = finding(&report, BackdoorRuleId::UacBypass);
+        assert!(f.mitre_ids.contains(&"T1548.002".to_string()));
+        assert!(
+            f.confidence <= 0.5 && f.severity != BackdoorSeverity::High,
+            "strings-only UAC bypass must be downgraded"
+        );
+
+        // One handler token alone is documentation noise.
+        let single = analyze_backdoors(&[0u8; 64], &[], &["eventvwr.exe"]);
+        assert!(
+            !single.findings.iter().any(|f| f.rule_id == BackdoorRuleId::UacBypass),
+            "a single auto-elevate token must not fire"
+        );
+    }
+
+    #[test]
+    fn lolbin_command_lines_fire_downgraded() {
+        let strings = vec![
+            "certutil -urlcache -f http://x/y http://x/y",
+            "bitsadmin /transfer job /download /priority high",
+        ];
+        let report = analyze_backdoors(&[0u8; 64], &[], &strings);
+        let f = finding(&report, BackdoorRuleId::LolbinAbuse);
+        assert!(
+            f.confidence <= 0.5,
+            "LOLBin strings without matching imports are downgraded"
+        );
+
+        let benign_docs = analyze_backdoors(&[0u8; 64], &[], &["regsvr32"]);
+        assert!(
+            !benign_docs.findings.iter().any(|f| f.rule_id == BackdoorRuleId::LolbinAbuse),
+            "bare tool names are not abuse command lines"
+        );
+    }
+
+    #[test]
+    fn dns_c2_anomaly_fires_only_without_http_socket_stack() {
+        let dns_only = vec!["DnsQueryEx".to_string(), "DnsQuery_W".to_string()];
+        let r1 = analyze_backdoors(&[0u8; 64], &dns_only, &[]);
+        let f = finding(&r1, BackdoorRuleId::DnsC2Anomaly);
+        assert_eq!(f.severity, BackdoorSeverity::Medium);
+        assert_eq!(f.confidence, 0.5);
+        assert!(f.mitre_ids.contains(&"T1071.004".to_string()));
+
+        // Same resolver plus a wininet stack → normal DNS-backed HTTP client.
+        let with_net = vec![
+            "DnsQueryEx".to_string(),
+            "InternetOpenA".to_string(),
+            "HttpSendRequestA".to_string(),
+        ];
+        let r2 = analyze_backdoors(&[0u8; 64], &with_net, &[]);
+        assert!(
+            !r2.findings.iter().any(|f| f.rule_id == BackdoorRuleId::DnsC2Anomaly),
+            "resolver + HTTP stack is an ordinary networked app"
+        );
+    }
+
+    // ── Anti-debug / anti-VM / sandbox-evasion pack ──────────────────
+
+    #[test]
+    fn anti_debug_combos_fire_singles_do_not() {
+        // Canonical check + companion probe.
+        let combo = vec![
+            "IsDebuggerPresent".to_string(),
+            "CheckRemoteDebuggerPresent".to_string(),
+        ];
+        let r1 = analyze_backdoors(&[0u8; 64], &combo, &[]);
+        let f = finding(&r1, BackdoorRuleId::AntiDebug);
+        assert_eq!(f.mitre_ids, vec!["T1622"]);
+
+        // ProcessDebugPort proxy: NtQueryInformationProcess + OutputDebugString trick.
+        let port_proxy = vec![
+            "NtQueryInformationProcess".to_string(),
+            "OutputDebugStringW".to_string(),
+        ];
+        let r2 = analyze_backdoors(&[0u8; 64], &port_proxy, &[]);
+        finding(&r2, BackdoorRuleId::AntiDebug);
+
+        // Cross-process debug probe alone is already tool-grade.
+        let solo_remote = vec!["CheckRemoteDebuggerPresent".to_string()];
+        let r3 = analyze_backdoors(&[0u8; 64], &solo_remote, &[]);
+        finding(&r3, BackdoorRuleId::AntiDebug);
+
+        // IsDebuggerPresent or NtQueryInformationProcess alone: CRT/telemetry noise.
+        for solo in [
+            vec!["IsDebuggerPresent".to_string()],
+            vec!["NtQueryInformationProcess".to_string()],
+        ] {
+            let r = analyze_backdoors(&[0u8; 64], &solo, &[]);
+            assert!(
+                !r.findings.iter().any(|f| f.rule_id == BackdoorRuleId::AntiDebug),
+                "single ambiguous debugger API must not fire ({:?})",
+                solo
+            );
+        }
+    }
+
+    #[test]
+    fn anti_vm_cross_family_probe_fires() {
+        // VBox pipe probe + VMware marker: hunting two hypervisor families.
+        let strings = vec!["\\\\.\\pipe\\VBoxMiniRdDN", "vmware"];
+        let report = analyze_backdoors(&[0u8; 64], &[], &strings);
+        let f = finding(&report, BackdoorRuleId::AntiVm);
+        assert_eq!(f.severity, BackdoorSeverity::Medium);
+
+        // Sandboxie DLL reference alongside a VirtualBox registry key.
+        let sandbox_probe = vec![
+            "SOFTWARE\\Oracle\\VirtualBox Guest Additions",
+            "SbieDll.dll",
+        ];
+        let r2 = analyze_backdoors(&[0u8; 64], &[], &sandbox_probe);
+        finding(&r2, BackdoorRuleId::AntiVm);
+    }
+
+    #[test]
+    fn vmware_installer_strings_without_net_do_not_fire_anti_vm() {
+        // A vendor's own installer legitimately embeds every marker of its
+        // OWN family — and carries no probe-style cross-family references.
+        let strings = vec![
+            "VMware Workstation Pro Setup",
+            "vmtoolsd.exe",
+            "C:\\Program Files\\VMware\\VMware Tools",
+        ];
+        let report = analyze_backdoors(&[0u8; 64], &[], &strings);
+        assert!(
+            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::AntiVm),
+            "same-family vendor markers must never trigger AntiVm"
+        );
+    }
+
+    #[test]
+    fn single_foreign_vm_marker_does_not_fire() {
+        let report = analyze_backdoors(&[0u8; 64], &[], &["cuckoo"]);
+        assert!(
+            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::AntiVm),
+            "one foreign-family mention (e.g. security docs) is not a probe"
+        );
+    }
+
+    #[test]
+    fn sleep_evasion_fires_only_with_network_gate() {
+        let netted = vec![
+            "Sleep".to_string(),
+            "GetTickCount".to_string(),
+            "WSAStartup".to_string(),
+            "connect".to_string(),
+        ];
+        let r1 = analyze_backdoors(&[0u8; 64], &netted, &[]);
+        let f = finding(&r1, BackdoorRuleId::SleepEvasion);
+        assert_eq!(f.severity, BackdoorSeverity::Medium);
+        assert_eq!(f.confidence, 0.4, "deliberately weak static proxy");
+
+        // High-resolution counter variant also fires under the gate.
+        let qpc = vec![
+            "Sleep".to_string(),
+            "QueryPerformanceCounter".to_string(),
+            "send".to_string(),
+        ];
+        let r2 = analyze_backdoors(&[0u8; 64], &qpc, &[]);
+        finding(&r2, BackdoorRuleId::SleepEvasion);
+
+        // Sleep+tick without any network import = every UI timer app.
+        let offline_timer = vec!["Sleep".to_string(), "GetTickCount".to_string()];
+        let r3 = analyze_backdoors(&[0u8; 64], &offline_timer, &[]);
+        assert!(
+            !r3.findings.iter().any(|f| f.rule_id == BackdoorRuleId::SleepEvasion),
+            "timing APIs without network capability are ubiquitous"
+        );
+    }
+
+    #[test]
+    fn mouse_activity_check_is_low_confidence_medium() {
+        let imports = vec!["GetCursorPos".to_string(), "GetAsyncKeyState".to_string()];
+        let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
+        let f = finding(&report, BackdoorRuleId::MouseActivityCheck);
+        assert_eq!(f.severity, BackdoorSeverity::Medium);
+        assert_eq!(f.confidence, 0.4);
+        assert!(f.mitre_ids.contains(&"T1497.001".to_string()));
+    }
+
+    // ── Byte-level pack: direct syscall stubs ────────────────────────
+
+    /// `mov eax, 41 ; syscall ; ret` — NtAllocateVirtualNumber-shaped stub.
+    const SYSCALL_STUB: [u8; 8] = [0xB8, 0x29, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xC3];
+
+    #[test]
+    fn repeated_direct_syscall_stubs_fire() {
+        let mut data = vec![0x90u8; 16]; // nop padding
+        data.extend_from_slice(&SYSCALL_STUB);
+        data.extend_from_slice(&[0x90u8; 12]);
+        data.extend_from_slice(&SYSCALL_STUB); // distinct second stub
+        data.extend_from_slice(&[0x90u8; 32]);
+
+        let report = analyze_backdoors(&data, &[], &[]);
+        let f = finding(&report, BackdoorRuleId::DirectSyscalls);
+        assert_eq!(f.mitre_ids, vec!["T1106"]);
+        assert!(f.evidence[0].starts_with("2 "), "evidence should count stubs");
+    }
+
+    #[test]
+    fn single_direct_syscall_stub_does_not_fire() {
+        let mut data = vec![0x90u8; 32];
+        data.extend_from_slice(&SYSCALL_STUB);
+        data.extend_from_slice(&[0x90u8; 32]);
+
+        let report = analyze_backdoors(&data, &[], &[]);
+        assert!(
+            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::DirectSyscalls),
+            "one stub can occur in ordinary low-level code"
+        );
+    }
+
+    #[test]
+    fn high_entropy_regions_are_skipped_by_syscall_scan() {
+        // Uniform pseudo-random bytes look packed/encrypted; a stub buried
+        // inside them must not be counted.
+        let mut state: u64 = 0x243F_6A88_85A3_08D3;
+        let mut data = Vec::with_capacity(256);
+        for _ in 0..120 {
+            xorshift64(&mut state);
+            data.push((state >> 33) as u8);
+        }
+        data.extend_from_slice(&SYSCALL_STUB);
+        for _ in 0..120 {
+            xorshift64(&mut state);
+            data.push((state >> 33) as u8);
+        }
+
+        let report = analyze_backdoors(&data, &[], &[]);
+        assert!(
+            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::DirectSyscalls),
+            "packed-looking regions must not produce syscall-stub matches"
+        );
     }
 }

@@ -257,8 +257,7 @@ mod tests {
         assert!(scan.self_call);
 
         // classify_function should report Recursive for it.
-        let mut func = FunctionEntry::default();
-        func.address = 0x1000;
+        let mut func = FunctionEntry { address: 0x1000, ..Default::default() };
         func.code_bytes = Some(code.to_vec());
         assert_eq!(classify_function(&func), FuncClass::Recursive);
     }
@@ -274,8 +273,8 @@ mod tests {
     fn test_leaf_classification_uses_decoded_calls() {
         // >6 bytes containing only an embedded 0xE8 immediate and no real
         // call → leaf, not "has calls".
-        let mut func = FunctionEntry::default();
-        func.address = 0x2000;
+        let mut func =
+            FunctionEntry { address: 0x2000, ..Default::default() };
         func.code_bytes = Some(vec![0xB8, 0xE8, 0x90, 0x90, 0x90, 0x90, 0x90, 0xC3]);
         assert_eq!(classify_function(&func), FuncClass::Leaf);
     }

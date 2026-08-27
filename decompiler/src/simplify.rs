@@ -1,4 +1,4 @@
-﻿//! Expression simplification pass for decompiled AST.
+//! Expression simplification pass for decompiled AST.
 //!
 //! Applies algebraic identities, constant folding, dead assignment elimination,
 //! copy propagation, and condition merging to produce cleaner pseudocode.
@@ -8,6 +8,43 @@ use std::collections::{HashMap, HashSet};
 
 /// Run all simplification passes on an AST function (in-place).
 pub fn simplify_function(func: &mut AstFunction) {
+    let _ = simplify_function_with_stats(func);
+}
+
+/// Tallies for the output-quality transforms applied by
+/// [`simplify_function_with_stats`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SimplifyStats {
+    pub conditions_merged_and: usize,
+    pub conditions_merged_or: usize,
+    pub ternaries_collapsed: usize,
+    pub gotos_removed: usize,
+    pub labels_inlined: usize,
+    pub unused_labels_removed: usize,
+    pub unreachable_dropped: usize,
+}
+
+impl SimplifyStats {
+    pub fn tally(&self) -> String {
+        format!(
+            "conditions_merged_and={} conditions_merged_or={} ternaries_collapsed={} \
+             gotos_removed={} labels_inlined={} unused_labels_removed={} unreachable_dropped={}",
+            self.conditions_merged_and,
+            self.conditions_merged_or,
+            self.ternaries_collapsed,
+            self.gotos_removed,
+            self.labels_inlined,
+            self.unused_labels_removed,
+            self.unreachable_dropped
+        )
+    }
+}
+
+/// Like [`simplify_function`], but reports how often each output-quality
+/// transform fired.
+pub fn simplify_function_with_stats(func: &mut AstFunction) -> SimplifyStats {
+    let mut stats = SimplifyStats::default();
+
     // Pass 0: strip prologue/epilogue noise (rsp adjustments, frame-setup
     // copies) and dead `flag_*` assignments before they can feed copy
     // propagation.
@@ -23,17 +60,32 @@ pub fn simplify_function(func: &mut AstFunction) {
     // Pass 3: Copy propagation (single-use variables)
     propagate_copies(&mut func.body);
 
-    // Pass 4: Condition merging (nested if without else)
-    merge_conditions(&mut func.body);
+    // Pass 3.5: Fuse `a = *base; b = a OP x; *base = b` into `*base OP= x`,
+    // keeping any intervening `flag_*` assignments (substituting the fused
+    // operands into them). This collapses the dominant load/add/store noise
+    // emitted by the x86 lifter for mem-op arithmetic.
+    fuse_memory_updates(&mut func.body);
 
-    // Pass 5: Second round of constant folding after propagation
+    // Pass 4: Condition merging (nested ifs sharing a merge point)
+    merge_conditions(&mut func.body, &mut stats);
+
+    // Pass 4b: Ternary collapse (`if (c) {v=a} else {v=b}` → `v = c ? a : b`)
+    collapse_ternaries(&mut func.body, &mut stats);
+
+    // Pass 5: Second round of constant folding after restructuring
     simplify_stmts(&mut func.body);
+
+    // Pass 5b: Goto/label cleanup (drop unreachable tails, remove redundant
+    // gotos, inline single-predecessor labels)
+    cleanup_gotos(&mut func.body, &mut stats);
 
     // Pass 6: Final cleanup — copy propagation may turn `rsp = v12` copies
     // into plain `rsp = rsp - 8` adjustments, and pattern transforms may
     // surface further dead flag assignments.
     strip_stack_noise(&mut func.body);
     strip_dead_flag_assignments(&mut func.body);
+
+    stats
 }
 
 // в”Ђв”Ђв”Ђ Prologue / Epilogue Noise Removal в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
@@ -510,7 +562,7 @@ fn remove_dead_stmts(stmts: &mut Vec<Stmt>, used_vars: &HashSet<String>) {
             }
             Stmt::Decl { name, init, .. } => {
                 used_vars.contains(name)
-                    || init.as_ref().is_some_and(|e| expr_may_side_effect(e))
+                    || init.as_ref().is_some_and(expr_may_side_effect)
             }
             _ => true,
         }
@@ -731,9 +783,10 @@ fn apply_pending_to_own_exprs(stmt: &mut Stmt, pending: &HashMap<String, Expr>) 
         Stmt::Decl { init: Some(e), .. } => substitute_vars_expr(e, pending),
         Stmt::If { cond, .. } => substitute_vars_expr(cond, pending),
         Stmt::While { cond, .. } | Stmt::DoWhile { cond, .. } => substitute_vars_expr(cond, pending),
-        Stmt::For { cond, .. } => {
-            if let Some(c) = cond { substitute_vars_expr(c, pending); }
+        Stmt::For { cond: Some(c), .. } => {
+            substitute_vars_expr(c, pending);
         }
+        Stmt::For { cond: None, .. } => {}
         Stmt::Switch { expr, cases, .. } => {
             substitute_vars_expr(expr, pending);
             for c in cases.iter_mut() { substitute_vars_expr(&mut c.value, pending); }
@@ -916,18 +969,21 @@ fn substitute_vars_expr(expr: &mut Expr, defs: &HashMap<String, Expr>) {
 // в”Ђв”Ђв”Ђ Condition Merging в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 /// Merge nested if-without-else: `if (a) { if (b) { ... } }` в†’ `if (a && b) { ... }`
-fn merge_conditions(stmts: &mut [Stmt]) {
+/// Merge nested if-without-else into a single conjunction.
+/// Counts each AND-merged condition in `stats.conditions_merged_and`.
+#[allow(clippy::ptr_arg)]
+fn merge_conditions(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
     for stmt in stmts.iter_mut() {
-        merge_conditions_stmt(stmt);
+        merge_conditions_stmt(stmt, stats);
     }
 }
 
-fn merge_conditions_stmt(stmt: &mut Stmt) {
+fn merge_conditions_stmt(stmt: &mut Stmt, stats: &mut SimplifyStats) {
     match stmt {
         Stmt::If { cond, then_body, else_body } => {
             // Recurse first
-            merge_conditions_stmts(then_body);
-            if let Some(eb) = else_body { merge_conditions_stmts(eb); }
+            merge_conditions_stmts(then_body, stats);
+            if let Some(eb) = else_body { merge_conditions_stmts(eb, stats); }
 
             // Merge: if outer has no else, and then_body is a single if with no else
             if else_body.is_none() && then_body.len() == 1 {
@@ -944,28 +1000,418 @@ fn merge_conditions_stmt(stmt: &mut Stmt) {
                     };
                     *cond = merged_cond;
                     *then_body = inner_then.clone();
+                    stats.conditions_merged_and += 1;
                 }
             }
         }
         Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
-            merge_conditions_stmts(body);
+            merge_conditions_stmts(body, stats);
         }
-        Stmt::For { body, .. } => { merge_conditions_stmts(body); }
-        Stmt::Block(inner) => { merge_conditions_stmts(inner); }
+        Stmt::For { body, .. } => { merge_conditions_stmts(body, stats); }
+        Stmt::Block(inner) => { merge_conditions_stmts(inner, stats); }
         Stmt::Switch { cases, default, .. } => {
-            for c in cases.iter_mut() { merge_conditions_stmts(&mut c.body); }
-            if let Some(d) = default { merge_conditions_stmts(d); }
+            for c in cases.iter_mut() { merge_conditions_stmts(&mut c.body, stats); }
+            if let Some(d) = default { merge_conditions_stmts(d, stats); }
         }
         Stmt::TryCatch { try_body, catch_body, .. } => {
-            merge_conditions_stmts(try_body);
-            merge_conditions_stmts(catch_body);
+            merge_conditions_stmts(try_body, stats);
+            merge_conditions_stmts(catch_body, stats);
         }
         _ => {}
     }
 }
 
-fn merge_conditions_stmts(stmts: &mut [Stmt]) {
-    merge_conditions(stmts);
+fn merge_conditions_stmts(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
+    merge_conditions(stmts, stats);
+}
+
+/// Collapse `if (c) { v = a } else { v = b }` into `v = c ? a : b`
+/// when both branches assign the same target. Counts each collapse in
+/// `stats.ternaries_collapsed`.
+#[allow(clippy::ptr_arg)]
+fn collapse_ternaries(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            Stmt::If { then_body, else_body, .. } => {
+                collapse_ternaries(then_body, stats);
+                if let Some(eb) = else_body { collapse_ternaries(eb, stats); }
+            }
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+                collapse_ternaries(body, stats);
+            }
+            Stmt::For { body, .. } => { collapse_ternaries(body, stats); }
+            Stmt::Block(inner) => { collapse_ternaries(inner, stats); }
+            Stmt::Switch { cases, default, .. } => {
+                for c in cases.iter_mut() { collapse_ternaries(&mut c.body, stats); }
+                if let Some(d) = default { collapse_ternaries(d, stats); }
+            }
+            Stmt::TryCatch { try_body, catch_body, .. } => {
+                collapse_ternaries(try_body, stats);
+                collapse_ternaries(catch_body, stats);
+            }
+            _ => {}
+        }
+    }
+
+    let mut i = 0;
+    while i < stmts.len() {
+        let transformed = if let Stmt::If { cond, then_body, else_body } = &stmts[i] {
+            if then_body.len() == 1 && else_body.as_ref().is_some_and(|e| e.len() == 1) {
+                if let (Stmt::Assign { target: t1, value: v1 }, Stmt::Assign { target: t2, value: v2 }) =
+                    (&then_body[0], &else_body.as_ref().unwrap()[0])
+                {
+                    if t1 == t2 {
+                        Some((cond.clone(), t1.clone(), v1.clone(), v2.clone()))
+                    } else { None }
+                } else { None }
+            } else { None }
+        } else { None };
+
+        if let Some((cond, target, v1, v2)) = transformed {
+            stmts[i] = Stmt::Assign {
+                target,
+                value: Expr::Ternary {
+                    cond: Box::new(cond),
+                    then_expr: Box::new(v1),
+                    else_expr: Box::new(v2),
+                },
+            };
+            stats.ternaries_collapsed += 1;
+        }
+        i += 1;
+    }
+}
+
+/// Drop unreachable tails, remove redundant gotos, and inline single-predecessor
+/// labels. Tallies the corresponding `SimplifyStats` counters.
+fn cleanup_gotos(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            Stmt::If { then_body, else_body, .. } => {
+                cleanup_gotos(then_body, stats);
+                if let Some(eb) = else_body { cleanup_gotos(eb, stats); }
+            }
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => cleanup_gotos(body, stats),
+            Stmt::For { body, .. } => cleanup_gotos(body, stats),
+            Stmt::Block(inner) => cleanup_gotos(inner, stats),
+            Stmt::Switch { cases, default, .. } => {
+                for c in cases.iter_mut() { cleanup_gotos(&mut c.body, stats); }
+                if let Some(d) = default { cleanup_gotos(d, stats); }
+            }
+            Stmt::TryCatch { try_body, catch_body, .. } => {
+                cleanup_gotos(try_body, stats);
+                cleanup_gotos(catch_body, stats);
+            }
+            _ => {}
+        }
+    }
+
+    // Drop unreachable tail after a terminating statement.
+    let mut drop_from: Option<usize> = None;
+    for (idx, s) in stmts.iter().enumerate() {
+        if matches!(s, Stmt::Goto { .. } | Stmt::Return { .. } | Stmt::Break | Stmt::Continue) {
+            drop_from = Some(idx + 1);
+            break;
+        }
+    }
+    if let Some(start) = drop_from {
+        if start < stmts.len() {
+            stats.unreachable_dropped += stmts.len() - start;
+            stmts.truncate(start);
+        }
+    }
+
+    // Remove a `goto X` immediately followed by `label X` (redundant jump),
+    // and inline the label if nothing else references it.
+    let mut j = 0;
+    while j + 1 < stmts.len() {
+        let redundant = matches!(&stmts[j], Stmt::Goto { label }
+            if matches!(&stmts[j + 1], Stmt::Label { name } if name == label));
+        if redundant {
+            stmts.remove(j);
+            stats.gotos_removed += 1;
+            if let Stmt::Label { name } = &stmts[j] {
+                let name = name.clone();
+                let still_referenced = stmts
+                    .iter()
+                    .any(|s| matches!(s, Stmt::Goto { label } if label == &name));
+                if !still_referenced {
+                    stmts.remove(j);
+                    stats.labels_inlined += 1;
+                }
+            }
+            continue;
+        }
+        j += 1;
+    }
+
+    // Remove labels that are never targeted by a `goto` in this list.
+    let referenced: HashSet<String> = stmts
+        .iter()
+        .filter_map(|s| if let Stmt::Goto { label } = s { Some(label.clone()) } else { None })
+        .collect();
+    let before = stmts.len();
+    stmts.retain(|s| !matches!(s, Stmt::Label { name } if !referenced.contains(name)));
+    stats.unused_labels_removed += before - stmts.len();
+}
+
+// ─── Memory Update Fusion ───────────────────────────────────────────────
+//
+// Collapses the common lifter pattern for arithmetic on a memory operand:
+//
+//     a = *base;          // load
+//     b = a OP x;         // arithmetic on the loaded value
+//     flag_zf = ...;      // (optional, intervening flag assignment)
+//     *base = b;          // store back
+//
+// into a single `(*base) OP= x` update. The intervening `flag_*` assignment
+// (if any) is preserved with `a`/`b` substituted by their fused expressions,
+// so carry/overflow flag consumers keep reading the correct value. This is
+// the single biggest noise reducer for x86 mem-op (add/sub/and/or/xor [mem]).
+
+fn deref_inner(expr: &Expr) -> Option<Expr> {
+    match expr {
+        Expr::Deref(inner) => match inner.as_ref() {
+            Expr::Cast { expr, .. } => Some((**expr).clone()),
+            other => Some(other.clone()),
+        },
+        _ => None,
+    }
+}
+
+fn is_fusable_op(op: BinOp) -> bool {
+    matches!(
+        op,
+        BinOp::Add | BinOp::Sub | BinOp::And | BinOp::Or | BinOp::Xor
+    )
+}
+
+/// If `stmt` is `name = *base` (a plain load), return `(name, base)`.
+fn load_of(stmt: &Stmt) -> Option<(String, Expr)> {
+    if let Stmt::Assign {
+        target: Expr::Var(name),
+        value,
+    } = stmt
+    {
+        if let Some(base) = deref_inner(value) {
+            return Some((name.clone(), base));
+        }
+    }
+    None
+}
+
+/// Substitute `Var` references from `map` throughout an expression.
+fn subst_expr(expr: &Expr, map: &HashMap<String, Expr>) -> Expr {
+    match expr {
+        Expr::Var(n) => map.get(n).cloned().unwrap_or_else(|| expr.clone()),
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op: *op,
+            lhs: Box::new(subst_expr(lhs, map)),
+            rhs: Box::new(subst_expr(rhs, map)),
+        },
+        Expr::Unary { op, operand } => Expr::Unary {
+            op: *op,
+            operand: Box::new(subst_expr(operand, map)),
+        },
+        Expr::Deref(x) => Expr::Deref(Box::new(subst_expr(x, map))),
+        Expr::AddrOf(x) => Expr::AddrOf(Box::new(subst_expr(x, map))),
+        Expr::Cast { ty, expr } => Expr::Cast {
+            ty: ty.clone(),
+            expr: Box::new(subst_expr(expr, map)),
+        },
+        Expr::Index { base, index } => Expr::Index {
+            base: Box::new(subst_expr(base, map)),
+            index: Box::new(subst_expr(index, map)),
+        },
+        Expr::Member { base, field } => Expr::Member {
+            base: Box::new(subst_expr(base, map)),
+            field: field.clone(),
+        },
+        Expr::Call { func, args } => Expr::Call {
+            func: func.clone(),
+            args: args.iter().map(|a| subst_expr(a, map)).collect(),
+        },
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => Expr::Ternary {
+            cond: Box::new(subst_expr(cond, map)),
+            then_expr: Box::new(subst_expr(then_expr, map)),
+            else_expr: Box::new(subst_expr(else_expr, map)),
+        },
+        other => other.clone(),
+    }
+}
+
+fn subst_stmt(stmt: &Stmt, map: &HashMap<String, Expr>) -> Stmt {
+    match stmt {
+        Stmt::Assign { target, value } => Stmt::Assign {
+            target: subst_expr(target, map),
+            value: subst_expr(value, map),
+        },
+        _ => stmt.clone(),
+    }
+}
+
+/// Fuse memory load/op/store triples in `stmts` and all nested bodies.
+pub fn fuse_memory_updates(stmts: &mut Vec<Stmt>) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            Stmt::If { then_body, else_body, .. } => {
+                fuse_memory_updates(then_body);
+                if let Some(eb) = else_body {
+                    fuse_memory_updates(eb);
+                }
+            }
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+                fuse_memory_updates(body)
+            }
+            Stmt::For { body, .. } => {
+                fuse_memory_updates(body);
+            }
+            Stmt::Switch { cases, default, .. } => {
+                for c in cases.iter_mut() {
+                    fuse_memory_updates(&mut c.body);
+                }
+                if let Some(d) = default {
+                    fuse_memory_updates(d);
+                }
+            }
+            Stmt::Block(inner) => fuse_memory_updates(inner),
+            Stmt::TryCatch { try_body, catch_body, .. } => {
+                fuse_memory_updates(try_body);
+                fuse_memory_updates(catch_body);
+            }
+            _ => {}
+        }
+    }
+
+    fuse_memory_updates_level(stmts);
+}
+
+fn fuse_memory_updates_level(stmts: &mut Vec<Stmt>) {
+    let mut def_counts: HashMap<String, usize> = HashMap::new();
+    count_var_defs_stmts(stmts, &mut def_counts);
+    let mut use_counts: HashMap<String, usize> = HashMap::new();
+    count_var_uses_stmts(stmts, &mut use_counts);
+
+    let n = stmts.len();
+    let mut out: Vec<Stmt> = Vec::with_capacity(n);
+    let mut i = 0;
+    while i < n {
+        let mut fused = false;
+        if let Some((a, base)) = load_of(&stmts[i]) {
+            if def_counts.get(&a).copied().unwrap_or(0) == 1 {
+                // Locate the arithmetic op: b = a OP operand.
+                let mut j_op = None;
+                #[allow(clippy::needless_range_loop)]
+                for j in (i + 1)..n {
+                    if let Stmt::Assign {
+                        target: Expr::Var(b),
+                        value,
+                    } = &stmts[j]
+                    {
+                        if *b != a {
+                            if let Expr::Binary { op, lhs, rhs } = value {
+                                if is_fusable_op(*op) && **lhs == Expr::Var(a.clone())
+                                    && def_counts.get(b).copied().unwrap_or(0) == 1 {
+                                        j_op = Some((j, b.clone(), *op, (**rhs).clone()));
+                                        break;
+                                    }
+                            }
+                        }
+                    }
+                }
+                if let Some((j, b, op, operand)) = j_op {
+                    // Locate the store back to the same base: *base = b.
+                    let mut k_store = None;
+                    #[allow(clippy::needless_range_loop)]
+                    for k in (j + 1)..n {
+                        if let Stmt::Assign {
+                            target,
+                            value: Expr::Var(v),
+                        } = &stmts[k]
+                        {
+                            if *v == b && deref_inner(target) == Some(base.clone()) {
+                                k_store = Some(k);
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(k) = k_store {
+                        // Everything strictly between the op and the store must
+                        // be an intervening flag assignment, a comment, or empty.
+                        let mut ok = true;
+                        let mut mids: Vec<usize> = Vec::new();
+                        #[allow(clippy::needless_range_loop)]
+                        for m in (j + 1)..k {
+                            match &stmts[m] {
+                                Stmt::Comment(_) | Stmt::Empty => {}
+                                Stmt::Assign {
+                                    target: Expr::Var(fn_),
+                                    ..
+                                } if fn_.starts_with("flag_") => mids.push(m),
+                                _ => {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if ok {
+                            // Safety: `a` and `b` must not be referenced
+                            // anywhere outside the matched region.
+                            let mut a_region = 1usize; // op lhs reads `a`
+                            let mut b_region = 1usize; // store value reads `b`
+                            for &m in &mids {
+                                let mut tmp = HashSet::new();
+                                collect_used_vars_stmt(&stmts[m], &mut tmp);
+                                if tmp.contains(&a) {
+                                    a_region += 1;
+                                }
+                                if tmp.contains(&b) {
+                                    b_region += 1;
+                                }
+                            }
+                            let a_total = use_counts.get(&a).copied().unwrap_or(0);
+                            let b_total = use_counts.get(&b).copied().unwrap_or(0);
+                            if a_total == a_region && b_total == b_region {
+                                let mut map: HashMap<String, Expr> = HashMap::new();
+                                let load_expr = Expr::Deref(Box::new(base.clone()));
+                                map.insert(a.clone(), load_expr.clone());
+                                map.insert(
+                                    b.clone(),
+                                    Expr::Binary {
+                                        op,
+                                        lhs: Box::new(load_expr.clone()),
+                                        rhs: Box::new(operand.clone()),
+                                    },
+                                );
+                                for &m in &mids {
+                                    out.push(subst_stmt(&stmts[m], &map));
+                                }
+                                out.push(Stmt::Assign {
+                                    target: load_expr.clone(),
+                                    value: Expr::Binary {
+                                        op,
+                                        lhs: Box::new(load_expr),
+                                        rhs: Box::new(operand),
+                                    },
+                                });
+                                i = k + 1;
+                                fused = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !fused {
+            out.push(stmts[i].clone());
+            i += 1;
+        }
+    }
+    *stmts = out;
 }
 
 #[cfg(test)]
@@ -1342,5 +1788,85 @@ mod lognot_pipeline_probe {
             )
         });
         assert!(folded, "cond should be Binary Eq after pipeline");
+    }
+
+    #[test]
+    fn test_fuse_load_op_store_with_flag() {
+        let mut body = vec![
+            Stmt::Assign {
+                target: Expr::Var("a".to_string()),
+                value: Expr::Deref(Box::new(Expr::Var("rbx".to_string()))),
+            },
+            Stmt::Assign {
+                target: Expr::Var("b".to_string()),
+                value: Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(Expr::Var("a".to_string())),
+                    rhs: Box::new(Expr::Var("al".to_string())),
+                },
+            },
+            Stmt::Assign {
+                target: Expr::Var("flag_cf".to_string()),
+                value: Expr::Binary {
+                    op: BinOp::LtU,
+                    lhs: Box::new(Expr::Var("b".to_string())),
+                    rhs: Box::new(Expr::Var("a".to_string())),
+                },
+            },
+            Stmt::Assign {
+                target: Expr::Deref(Box::new(Expr::Var("rbx".to_string()))),
+                value: Expr::Var("b".to_string()),
+            },
+        ];
+        fuse_memory_updates(&mut body);
+
+        // load + op + flag + store → flag (substituted) + fused store
+        assert_eq!(body.len(), 2);
+        match &body[1] {
+            Stmt::Assign { target, value } => {
+                assert_eq!(
+                    target,
+                    &Expr::Deref(Box::new(Expr::Var("rbx".to_string())))
+                );
+                assert_eq!(
+                    value,
+                    &Expr::Binary {
+                        op: BinOp::Add,
+                        lhs: Box::new(Expr::Deref(Box::new(Expr::Var("rbx".to_string())))),
+                        rhs: Box::new(Expr::Var("al".to_string())),
+                    }
+                );
+            }
+            _ => panic!("expected fused store, got {:?}", body[1]),
+        }
+    }
+
+    #[test]
+    fn test_fuse_does_not_fire_on_external_use() {
+        // `b` is used after the store too, so fusion must NOT happen.
+        let mut body = vec![
+            Stmt::Assign {
+                target: Expr::Var("a".to_string()),
+                value: Expr::Deref(Box::new(Expr::Var("rbx".to_string()))),
+            },
+            Stmt::Assign {
+                target: Expr::Var("b".to_string()),
+                value: Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(Expr::Var("a".to_string())),
+                    rhs: Box::new(Expr::Var("al".to_string())),
+                },
+            },
+            Stmt::Assign {
+                target: Expr::Deref(Box::new(Expr::Var("rbx".to_string()))),
+                value: Expr::Var("b".to_string()),
+            },
+            Stmt::Assign {
+                target: Expr::Var("c".to_string()),
+                value: Expr::Var("b".to_string()),
+            },
+        ];
+        fuse_memory_updates(&mut body);
+        assert_eq!(body.len(), 4, "fusion must not drop externally-used temps");
     }
 }

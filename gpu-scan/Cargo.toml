@@ -1,0 +1,11 @@
+[package]
+name = "gpu-scan"
+version = "0.1.0"
+edition = "2021"
+description = "wgpu compute-shader stage for mass byte operations — windowed entropy map + literal needle scan with automatic CPU fallback"
+
+[dependencies]
+wgpu = "24"
+pollster = "0.4"
+entropy-rs = { path = "../entropy-rs" }
+log = "0.4"

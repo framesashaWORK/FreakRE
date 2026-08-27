@@ -205,6 +205,81 @@ fn match_combined_cond(inst: &IrInst) -> Option<(u32, OpCode, u32, u32)> {
     }
 }
 
+/// Rewrite the carry operand of `adc`/`sbb` into the unsigned-carry
+/// comparison (`a <u b`) that produced it.
+///
+/// The x86 lifter emits `adc` with `carry = flag_cf`, i.e. it reads the
+/// global carry flag. That single read keeps every `flag_cf = (...)` write
+/// in the function "live" (the dead-flag pass keys on the flag *name*), which
+/// is the root of the thousands of `flag_cf = ...` lines in decompiled C.
+///
+/// Replacing the carry with the concrete `(a <u b)` comparison makes `adc`
+/// stop reading `flag_cf`; once nothing else reads it either, the defs are
+/// removed by `eliminate_dead_flag_defs`.
+pub fn fold_adc_carries(func: &mut IrFunction) -> usize {
+    let flag_defs = collect_flag_defs(func);
+    let ranks = rpo_ranks(func);
+    let cf_defs = match flag_defs.get("flag_cf") {
+        Some(d) if !d.is_empty() => d,
+        _ => return 0,
+    };
+
+    let mut rewritten = 0usize;
+    for bi in 0..func.blocks.len() {
+        let bid = func.blocks[bi].id;
+        let mut new_insts: Vec<IrInst> = Vec::with_capacity(func.blocks[bi].insts.len());
+        for ii in 0..func.blocks[bi].insts.len() {
+            // Clone the instruction so we don't hold an immutable borrow of
+            // `func` across the `func.alloc_var` call below.
+            let inst = func.blocks[bi].insts[ii].clone();
+            let (dst, a, b, carry, is_adc) = match inst {
+                IrInst::Adc { ref dst, ref a, ref b, ref carry } => (dst, a, b, carry, true),
+                IrInst::Sbb { ref dst, ref a, ref b, ref carry } => (dst, a, b, carry, false),
+                _ => {
+                    new_insts.push(inst.clone());
+                    continue;
+                }
+            };
+            // Only rewrite the global-flag carry form; already-folded carries
+            // (a SSA var) are left untouched.
+            let is_cf = matches!(carry, Value::Register { name, .. } if name == "flag_cf");
+            if !is_cf {
+                new_insts.push(inst.clone());
+                continue;
+            }
+            let Some(def) = resolve_flag_def(func, cf_defs, bid, ii, &ranks) else {
+                new_insts.push(inst.clone());
+                continue;
+            };
+            let c = func.alloc_var(Ty::Bool);
+            new_insts.push(IrInst::Binary {
+                dst: c.clone(),
+                op: OpCode::LtU,
+                lhs: def.lhs.clone(),
+                rhs: def.rhs.clone(),
+            });
+            if is_adc {
+                new_insts.push(IrInst::Adc {
+                    dst: dst.clone(),
+                    a: a.clone(),
+                    b: b.clone(),
+                    carry: c.clone(),
+                });
+            } else {
+                new_insts.push(IrInst::Sbb {
+                    dst: dst.clone(),
+                    a: a.clone(),
+                    b: b.clone(),
+                    carry: c.clone(),
+                });
+            }
+            rewritten += 1;
+        }
+        func.blocks[bi].insts = new_insts;
+    }
+    rewritten
+}
+
 pub fn fold_flag_comparisons(func: &mut IrFunction) -> usize {
     let flag_defs = collect_flag_defs(func);
     let ranks = rpo_ranks(func);
@@ -437,9 +512,7 @@ pub fn eliminate_dead_flag_defs(func: &mut IrFunction) -> usize {
                     i2.sources().iter().any(|s| var_id(s) == Some(vid))
                 })
             });
-            // Note: usage by later-removed candidates in this same batch keeps
-            // them alive for one extra outer iteration — still converges.
-            if !still_used || used_only_by_batch(&candidates, func, bi, ii, vid) {
+            if !still_used {
                 func.blocks[bi].insts.remove(ii);
                 removed += 1;
                 changed = true;
@@ -695,6 +768,8 @@ pub fn fuse_load_copies(func: &mut IrFunction) -> usize {
 fn mutable_sources(inst: &mut IrInst) -> Vec<&mut Value> {
     match inst {
         IrInst::Binary { lhs, rhs, .. } => vec![lhs, rhs],
+        IrInst::Adc { a, b, carry, .. } => vec![a, b, carry],
+        IrInst::Sbb { a, b, carry, .. } => vec![a, b, carry],
         IrInst::Unary { src, .. } => vec![src],
         IrInst::Load { addr, .. } => vec![addr],
         IrInst::Store { addr, value, .. } => vec![addr, value],
@@ -1170,6 +1245,76 @@ mod tests {
             ),
             "combined cond must become (rax <=u rbx): {:?}",
             next.insts[2]
+        );
+    }
+
+    /// The root cause of `flag_cf = ...` noise in decompiled C: every `add`
+    /// wrote the global carry flag, and every `adc` read it, so the dead-flag
+    /// pass (keyed on the flag *name*) kept all those writes alive. Once `adc`
+    /// is a first-class op whose carry is rewritten to the comparison that
+    /// produced it, `flag_cf` has no readers and is eliminated.
+    #[test]
+    fn test_adc_carry_fold_kills_flag_cf_noise() {
+        let mut func = IrFunction::new("adc_chain", 0x1000);
+        let rax = Value::reg("rax", Ty::i64());
+        let rbx = Value::reg("rbx", Ty::i64());
+        let rdx = Value::reg("rdx", Ty::i64());
+        let rcx = Value::reg("rcx", Ty::i64());
+
+        // add rax, rbx  →  writes flag_cf = (rax <u rbx)
+        func.push_inst(func.entry_block, IrInst::Binary {
+            dst: rax.clone(),
+            op: OpCode::Add,
+            lhs: rax.clone(),
+            rhs: rbx.clone(),
+        });
+        func.push_inst(func.entry_block, IrInst::Binary {
+            dst: Value::reg("flag_cf", Ty::Bool),
+            op: OpCode::LtU,
+            lhs: rax.clone(),
+            rhs: rbx.clone(),
+        });
+        // adc rdx, rcx  →  reads flag_cf
+        func.push_inst(func.entry_block, IrInst::Adc {
+            dst: rdx.clone(),
+            a: rdx.clone(),
+            b: rcx.clone(),
+            carry: Value::reg("flag_cf", Ty::Bool),
+        });
+        func.push_inst(func.entry_block, IrInst::Return { value: None });
+
+        // Before folding the carry, flag_cf is referenced by the adc.
+        let before = format!("{:?}", func);
+        assert!(
+            before.contains("flag_cf"),
+            "adc must reference flag_cf before folding:\n{}",
+            before
+        );
+
+        fold_adc_carries(&mut func);
+        eliminate_dead_flag_defs(&mut func);
+
+        // The adc's carry is now the concrete (rax <u rbx) comparison and the
+        // global flag_cf definition has been removed.
+        let after = format!("{:?}", func);
+        assert!(
+            !after.contains("flag_cf"),
+            "flag_cf must be gone after folding the adc carry:\n{}",
+            after
+        );
+        let rdx_b = &func.blocks[func.entry_block.0 as usize].insts;
+        let adc = rdx_b
+            .iter()
+            .find(|i| matches!(i, IrInst::Adc { .. }))
+            .expect("adc must still be present");
+        assert!(
+            matches!(
+                adc,
+                IrInst::Adc { carry, .. }
+                    if matches!(carry, Value::Var { .. })
+            ),
+            "adc carry must be a folded SSA var, not flag_cf: {:?}",
+            adc
         );
     }
 }

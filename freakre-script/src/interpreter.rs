@@ -123,7 +123,24 @@ type Env = HashMap<String, Value>;
 /// Host builtins dispatchable by bare name when no user binding shadows them.
 /// The capability whitelist applies ONLY to these (fix: previously it ran on
 /// every callee name before env lookup, breaking all user-defined calls).
-const HOST_BUILTINS: [&str; 4] = ["print", "type", "read_bytes", "write_bytes"];
+///
+/// `print`/`type`/`read_bytes`/`write_bytes` are dispatched inline below; the
+/// remaining pure-computation stdlib lives in [`crate::stdlib`] and reaches
+/// the interpreter through the `_` catch-all arm of the builtin dispatch.
+/// Every name here is gated by `Capabilities::can_call`.
+const HOST_BUILTINS: &[&str] = &[
+    "print", "type", "tostring", "read_bytes", "write_bytes",
+    // String utils
+    "len", "sub", "find", "replace", "upper", "lower", "trim",
+    "split", "join", "format_number",
+    // Data helpers (strings as bytes)
+    "hex_encode", "hex_decode", "bytes_to_u32_le", "u32_to_bytes_le",
+    "base64_encode", "base64_decode", "crc32", "xor_bytes",
+    // Pattern helpers
+    "contains_any", "count_occurrences", "extract_between",
+    // Math/misc
+    "min", "max", "abs", "floor", "ceil",
+];
 
 /// One segment of a compound assignment target (`t.a[i].b`).
 enum PathSeg {
@@ -185,6 +202,23 @@ impl Interpreter {
         } else {
             Ok(())
         }
+    }
+
+    /// Enforce sandbox limits on a value produced by a host builtin and
+    /// charge its footprint against the memory quota. Mirrors the checks
+    /// applied to script-authored strings and tables.
+    fn account_result(&mut self, v: Value) -> Result<Value, ScriptError> {
+        match &v {
+            Value::Str(s) if s.len() > self.config.max_string_len => {
+                return Err(ScriptError::StringLengthLimit);
+            }
+            Value::Table(t) if t.len() > self.config.max_table_entries => {
+                return Err(ScriptError::TableSizeLimit);
+            }
+            _ => {}
+        }
+        self.alloc(value_mem(&v))?;
+        Ok(v)
     }
 
     // ── Scope-chain helpers ────────────────────────────────────────
@@ -463,12 +497,11 @@ impl Interpreter {
                             if !self.caps.can_call(name) {
                                 return Err(ScriptError::CapabilityDenied(name.clone()));
                             }
-                            Callee::Builtin(match name.as_str() {
-                                "print" => "print",
-                                "type" => "type",
-                                "read_bytes" => "read_bytes",
-                                _ => "write_bytes",
-                            })
+                            let idx = HOST_BUILTINS
+                                .iter()
+                                .position(|b| *b == name.as_str())
+                                .expect("name verified against HOST_BUILTINS above");
+                            Callee::Builtin(HOST_BUILTINS[idx])
                         }
                         None => {
                             return Err(ScriptError::UndefinedVariable(name.clone()));
@@ -548,7 +581,13 @@ impl Interpreter {
                             };
                             self.builtin_write_bytes(&path, &data)
                         }
-                        _ => unreachable!("HOST_BUILTINS covers all builtin names"),
+                        _ => {
+                            // Pure stdlib builtin: compute, then enforce
+                            // string-length/table-entry limits and charge the
+                            // memory quota for the returned value.
+                            let result = crate::stdlib::call(name, &evaluated_args)?;
+                            self.account_result(result)
+                        }
                     },
                     Callee::Func(fdef) => {
                         self.call_depth += 1;
@@ -873,7 +912,7 @@ fn compare_values(a: &Value, b: &Value) -> Result<Option<core::cmp::Ordering>, S
     }
 }
 
-fn value_to_string(v: &Value) -> String {
+pub(crate) fn value_to_string(v: &Value) -> String {
     match v {
         Value::Str(s) => s.clone(),
         other => format!("{}", other),

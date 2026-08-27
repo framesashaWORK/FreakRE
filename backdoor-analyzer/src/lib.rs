@@ -3,7 +3,7 @@
 //!
 //! Dedicated backdoor detection engine for the bibleteks scanner.
 //! Analyzes PE imports, strings, entropy patterns, and structural indicators
-//! to identify 12 categories of backdoor behavior.
+//! to identify 27 categories of backdoor behavior.
 
 pub mod rules;
 pub mod report;

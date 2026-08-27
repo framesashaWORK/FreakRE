@@ -85,17 +85,19 @@ impl LifterRegistry {
             "arm" | "arm32" | "armv7" => Some(Box::new(crate::arm_lifter::ArmLifter::new(false, false))),
             "arm32_thumb" | "thumb" => Some(Box::new(crate::arm_lifter::ArmLifter::new(false, true))),
             "arm64" | "aarch64" | "armv8" => Some(Box::new(crate::arm_lifter::ArmLifter::new(true, false))),
-            // Architectures with prologue detection only (no IR lifter yet):
-            // mips32le, mips32be, mips64le, mips64be,
-            // riscv32, riscv64, ppc32, ppc64, ppc64le,
-            // sparc32, sparc64, arm32_thumb, arm64be
+            "mips" | "mips32" | "mips32le" => Some(Box::new(crate::mips_lifter::MipsLifter::new(false))),
+            "mips64" | "mips64le" => Some(Box::new(crate::mips_lifter::MipsLifter::new(true))),
+            "mips32be" => Some(Box::new(crate::mips_lifter::MipsLifter::new(false))),
+            "mips64be" => Some(Box::new(crate::mips_lifter::MipsLifter::new(true))),
+            "riscv32" | "riscv" => Some(Box::new(crate::riscv_lifter::RiscvLifter::new(false))),
+            "riscv64" => Some(Box::new(crate::riscv_lifter::RiscvLifter::new(true))),
             _ => None,
         }
     }
 
     /// List architectures with implemented IR lifters.
     pub fn supported_architectures() -> Vec<&'static str> {
-        vec!["x86", "x86_64", "arm32", "arm32_thumb", "arm64"]
+        vec!["x86", "x86_64", "arm32", "arm32_thumb", "arm64", "mips32", "mips64", "riscv32", "riscv64"]
     }
 
     /// List all architectures with at least prologue detection.

@@ -390,17 +390,29 @@ impl X86Lifter {
     ) -> Value {
         match kind {
             AluKind::Adc => {
-                let t = func.alloc_var(int_ty(bits));
-                push_bin(func, block, t.clone(), OpCode::Add, a, b);
                 let r = func.alloc_var(int_ty(bits));
-                push_bin(func, block, r.clone(), OpCode::Add, t, self.flag("cf"));
+                func.push_inst(
+                    block,
+                    IrInst::Adc {
+                        dst: r.clone(),
+                        a: a.clone(),
+                        b: b.clone(),
+                        carry: self.flag("cf"),
+                    },
+                );
                 r
             }
             AluKind::Sbb => {
-                let t = func.alloc_var(int_ty(bits));
-                push_bin(func, block, t.clone(), OpCode::Sub, a, b);
                 let r = func.alloc_var(int_ty(bits));
-                push_bin(func, block, r.clone(), OpCode::Sub, t, self.flag("cf"));
+                func.push_inst(
+                    block,
+                    IrInst::Sbb {
+                        dst: r.clone(),
+                        a: a.clone(),
+                        b: b.clone(),
+                        carry: self.flag("cf"),
+                    },
+                );
                 r
             }
             AluKind::Add => {

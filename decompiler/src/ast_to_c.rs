@@ -2,6 +2,7 @@
 
 use crate::ast::*;
 use freakre_ir::Ty;
+use std::collections::HashMap;
 
 fn unsigned_cmp_str(op: &BinOp) -> Option<&'static str> {
     match op {
@@ -33,6 +34,10 @@ pub fn ast_to_c(func: &AstFunction) -> String {
 struct CEmitter {
     output: String,
     indent: usize,
+    /// Declared types for params and locals, used for cast hygiene and
+    /// struct-field access printing. Lookups only — emission order never
+    /// depends on map iteration, so output stays deterministic.
+    var_types: HashMap<String, Ty>,
 }
 
 impl CEmitter {
@@ -40,10 +45,21 @@ impl CEmitter {
         CEmitter {
             output: String::new(),
             indent: 0,
+            var_types: HashMap::new(),
         }
     }
-    
+
     fn emit_function(&mut self, func: &AstFunction) {
+        self.var_types.clear();
+        for param in &func.params {
+            self.var_types.insert(param.name.clone(), param.ty.clone());
+        }
+        for local in &func.locals {
+            self.var_types
+                .entry(local.name.clone())
+                .or_insert_with(|| local.ty.clone());
+        }
+
         // Function signature
         self.emit_indent();
         self.output.push_str(&self.type_to_c(&func.return_type));
@@ -104,7 +120,22 @@ impl CEmitter {
                 self.emit_indent();
                 self.emit_expr(target, 0);
                 self.output.push_str(" = ");
-                self.emit_expr(value, 0);
+                // Cast hygiene: a cast is redundant only when it is a true
+                // no-op — its target type matches the *source* value's
+                // declared type (the assignment itself performs any needed
+                // width/signedness conversion to the destination). Width-
+                // changing casts (e.g. int32 → int64) are kept explicit.
+                match (target, value) {
+                    (Expr::Var(_), Expr::Cast { ty, expr })
+                        if matches!(
+                            expr.as_ref(),
+                            Expr::Var(inner) if self.declared_type_is(inner, ty)
+                        ) =>
+                    {
+                        self.emit_expr(expr, 0);
+                    }
+                    _ => self.emit_expr(value, 0),
+                }
                 self.output.push_str(";\n");
             }
             
@@ -297,7 +328,12 @@ impl CEmitter {
                 self.output.push_str(name);
                 if let Some(init_expr) = init {
                     self.output.push_str(" = ");
-                    self.emit_expr(init_expr, 0);
+                    match init_expr {
+                        Expr::Cast { ty: cast_ty, expr } if cast_ty == ty => {
+                            self.emit_expr(expr, 0);
+                        }
+                        other => self.emit_expr(other, 0),
+                    }
                 }
                 self.output.push_str(";\n");
             }
@@ -497,6 +533,13 @@ impl CEmitter {
             }
             
             Expr::Deref(expr) => {
+                // Memory access through base±constant: print a named struct
+                // field when the base's recovered struct layout resolves the
+                // offset, else a width-correct cast with the raw hex offset
+                // as a comment.
+                if self.emit_mem_access(expr) {
+                    return;
+                }
                 self.output.push('*');
                 self.emit_expr(expr, 15);
             }
@@ -563,7 +606,9 @@ impl CEmitter {
                 format!("struct {{ {} }}", field_strs.join("; "))
             }
             Ty::Void => "void".to_string(),
-            Ty::Unknown => "uint64_t".to_string(),
+            // Unknown widths fall back to plain int — never invent a width
+            // the analysis did not establish.
+            Ty::Unknown => "int".to_string(),
             Ty::Int(n) => format!("int{}_t", n),
             Ty::UInt(n) => format!("uint{}_t", n),
             Ty::Float(n) => format!("float{}_t", n),
@@ -584,6 +629,76 @@ impl CEmitter {
         }
     }
 
+    /// Whether `name` is declared with exactly type `ty` (params win over
+    /// locals on collision, matching declaration emission).
+    fn declared_type_is(&self, name: &str, ty: &Ty) -> bool {
+        self.var_types.get(name).map(|t| t == ty).unwrap_or(false)
+    }
+
+    /// Emit `*(base ± const)` as either `(base)->field` (offset resolved in
+    /// the base's recovered struct layout) or a cast dereference with the
+    /// hex offset preserved in a trailing comment. Returns `false` when
+    /// `expr` is not a base±constant shape (caller prints plain `*expr`).
+    fn emit_mem_access(&mut self, expr: &Expr) -> bool {
+        let (op, base, lit) = match expr {
+            Expr::Binary {
+                op: bin_op @ (BinOp::Add | BinOp::Sub),
+                lhs,
+                rhs,
+            } => match (lhs.as_ref(), rhs.as_ref()) {
+                (Expr::Var(name), Expr::IntLit(off)) => (*bin_op, name, *off),
+                (Expr::IntLit(off), Expr::Var(name)) if *bin_op == BinOp::Add => (*bin_op, name, *off),
+                _ => return false,
+            },
+            _ => return false,
+        };
+
+        // Only sane constant offsets; anything else keeps the plain form.
+        let offset = match op {
+            BinOp::Add if lit >= 0 => lit as u64,
+            BinOp::Sub if lit > 0 => lit.unsigned_abs(),
+            _ => return false,
+        };
+        let base_ty = self.var_types.get(base).cloned();
+
+        if let Some(Ty::Struct(fields)) = base_ty.as_ref().and_then(|t| match t {
+            Ty::Ptr(inner) => Some(inner.as_ref()),
+            _ => None,
+        }) {
+            if let Some(field) = field_at_offset(fields, offset) {
+                self.output.push('(');
+                self.output.push_str(base);
+                self.output.push_str(")->");
+                self.output.push_str(field);
+                return true;
+            }
+        }
+
+        // Fallback: width-correct pointee when the base is a typed pointer,
+        // 32-bit int otherwise. The dereference casts the integer address to
+        // a *pointer* to that pointee, so render `*(T *)(base ± 0xOFF)`.
+        let pointee = match base_ty.as_ref() {
+            Some(Ty::Ptr(inner))
+                if matches!(inner.as_ref(), Ty::Int(_) | Ty::UInt(_) | Ty::Float(_) | Ty::Bool) =>
+            {
+                inner.as_ref().clone()
+            }
+            _ => Ty::i32(),
+        };
+        let sign = if op == BinOp::Sub { "-" } else { "" };
+        let ptr_ty = format!("{} *", self.type_to_c(&pointee));
+        self.output.push_str(&format!(
+            "*({})({} {} 0x{:X}) /* {}0x{:X} */",
+            ptr_ty,
+            base,
+            op.as_str(),
+            offset,
+            sign,
+            offset
+        ));
+        true
+    }
+
     fn emit_indent(&mut self) {
         for _ in 0..self.indent {
             self.output.push_str("    ");
@@ -591,6 +706,22 @@ impl CEmitter {
     }
 }
 
+
+/// Resolve a byte offset to a field name in a recovered layout. Recovered
+/// fields are named `field_0x<HEX>`; offsets are read from the names so no
+/// side table is needed. First match wins (deterministic).
+fn field_at_offset(fields: &[(String, Ty)], offset: u64) -> Option<&str> {
+    for (name, _) in fields {
+        if let Some(hex) = name.strip_prefix("field_0x") {
+            if let Ok(off) = u64::from_str_radix(hex, 16) {
+                if off == offset {
+                    return Some(name.as_str());
+                }
+            }
+        }
+    }
+    None
+}
 
 fn collect_expr_names(e: &Expr, out: &mut std::collections::HashSet<String>) {
     match e {
@@ -705,6 +836,90 @@ mod tests {
 
     #[test]
     fn test_unknown_type_is_valid_c() {
-        assert_eq!(CEmitter::new().type_to_c(&Ty::Unknown), "uint64_t");
+        assert_eq!(CEmitter::new().type_to_c(&Ty::Unknown), "int");
+    }
+
+    #[test]
+    fn test_redundant_cast_dropped_on_matching_declared_width() {
+        let mut func = AstFunction::new("casty");
+        func.locals.push(LocalVar {
+            name: "x".to_string(),
+            ty: Ty::i32(),
+            is_used: true,
+        });
+        func.body.push(Stmt::Assign {
+            target: Expr::Var("x".to_string()),
+            value: Expr::Cast {
+                ty: Ty::i32(),
+                expr: Box::new(Expr::Var("x".to_string())),
+            },
+        });
+        let c = ast_to_c(&func);
+        assert!(c.contains("x = x;"), "{}", c);
+    }
+
+    #[test]
+    fn test_width_changing_cast_kept() {
+        let mut func = AstFunction::new("widen");
+        func.locals.push(LocalVar {
+            name: "x".to_string(),
+            ty: Ty::i32(),
+            is_used: true,
+        });
+        func.locals.push(LocalVar {
+            name: "y".to_string(),
+            ty: Ty::i64(),
+            is_used: true,
+        });
+        func.body.push(Stmt::Assign {
+            target: Expr::Var("y".to_string()),
+            value: Expr::Cast {
+                ty: Ty::i64(),
+                expr: Box::new(Expr::Var("x".to_string())),
+            },
+        });
+        let c = ast_to_c(&func);
+        assert!(c.contains("(int64_t)x"), "{}", c);
+    }
+
+    #[test]
+    fn test_struct_field_and_fallback_rendering() {
+        let struct_fields = vec![
+            ("field_0x10".to_string(), Ty::i32()),
+            ("field_0x14".to_string(), Ty::i32()),
+        ];
+        let mut func = AstFunction::new("structy");
+        func.locals.push(LocalVar {
+            name: "s".to_string(),
+            ty: Ty::Ptr(Box::new(Ty::Struct(struct_fields))),
+            is_used: true,
+        });
+        // Resolved offset → named field.
+        func.body.push(Stmt::Assign {
+            target: Expr::Var("v1".to_string()),
+            value: Expr::Deref(Box::new(Expr::Binary {
+                op: BinOp::Add,
+                lhs: Box::new(Expr::Var("s".to_string())),
+                rhs: Box::new(Expr::IntLit(0x10)),
+            })),
+        });
+        let c = ast_to_c(&func);
+        assert!(c.contains("(s)->field_0x10"), "{}", c);
+
+        // Unresolved offset on an untyped base → cast + hex comment.
+        let c = {
+            let mut emitter = CEmitter::new();
+            emitter.emit_expr(
+                &Expr::Deref(Box::new(Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(Expr::Var("a".to_string())),
+                    rhs: Box::new(Expr::IntLit(0xC)),
+                })),
+                0,
+            );
+            emitter.output
+        };
+        assert!(c.contains("*(int32_t *)(a + 0xC)"), "{}", c);
+        assert!(c.contains("/* 0xC */"), "{}", c);
     }
 }

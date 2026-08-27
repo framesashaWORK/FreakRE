@@ -42,6 +42,31 @@ impl BackdoorRuleId {
             Self::DllHijacking => BackdoorSeverity::Medium,
 
             Self::EncryptedConfig => BackdoorSeverity::Medium,
+
+            // Injection/destruction primitives (hollowing, ransomware) are
+            // critical when fully corroborated; weaker evidence is downgraded
+            // downstream by the corroboration gate.
+            Self::ProcessHollowing
+            | Self::Ransomware => BackdoorSeverity::Critical,
+
+            // Behavioral malware indicators from the common/rare TTP packs:
+            // high by default, string-only evidence is downgraded downstream.
+            Self::Keylogger
+            | Self::ClipboardHijack
+            | Self::ScreenCapture
+            | Self::CallbackInjection
+            | Self::UacBypass
+            | Self::LolbinAbuse
+            | Self::AntiDebug
+            | Self::DirectSyscalls => BackdoorSeverity::High,
+
+            // Contextual/ambiguous indicators: mining infra, DNS-only shapes,
+            // evasion proxies. Real, but never damning on their own.
+            Self::Cryptominer
+            | Self::DnsC2Anomaly
+            | Self::AntiVm
+            | Self::SleepEvasion
+            | Self::MouseActivityCheck => BackdoorSeverity::Medium,
         }
     }
 
@@ -52,9 +77,21 @@ impl BackdoorRuleId {
         // EncryptedConfig is the weakest heuristic of all (entropy-only,
         // no semantic content), so it must not masquerade as high confidence.
         Self::DllHijacking | Self::EncryptedConfig => 0.4,
+            // Deliberately weak static proxies (see descriptions).
+            Self::SleepEvasion | Self::MouseActivityCheck => 0.4,
+            // Genuinely ambiguous: DNS-only stacks include benign resolvers.
+            Self::DnsC2Anomaly => 0.5,
             Self::RegistryPersistence => 0.6,
+            // GUI code legitimately pairs VirtualAlloc with EnumWindows;
+            // VM markers can appear in virtualization-adjacent software.
+            Self::CallbackInjection | Self::AntiVm => 0.6,
             Self::C2Beacon | Self::NamedPipeBackdoor => 0.75,
+            Self::Keylogger | Self::ScreenCapture
+            | Self::AntiDebug | Self::DirectSyscalls => 0.75,
             Self::WebShellIndicator => 0.8,
+            // Distinctive protocol/command tokens — but string-derived, so
+            // subject to corroboration downgrade.
+            Self::Cryptominer | Self::UacBypass | Self::LolbinAbuse => 0.8,
             _ => 0.9,
         }
     }

@@ -37,6 +37,9 @@ members = [
     "symbols",
     "capstone-ffi",
     "ml-detection",
+    "emulator-x86",
+    "gpu-scan",
+    "behavior-detect",
 ]
 exclude = ["fuzz"]
 resolver = "2"

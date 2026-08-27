@@ -29,8 +29,10 @@ decompiler = { path = "../decompiler" }
 dataflow = { path = "../dataflow" }
 xrefs = { path = "../xrefs" }
 func-sigs = { path = "../func-sigs" }
+func-finder = { path = "../func-finder" }
 diffing = { path = "../diffing" }
 ml-detection = { path = "../ml-detection" }
+freakre-symbols = { path = "../symbols" }
 
 # Runtime
 tokio = { version = "1", features = ["full"] }

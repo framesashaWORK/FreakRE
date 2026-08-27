@@ -31,7 +31,7 @@ impl core::fmt::Display for PatternError {
 impl std::error::Error for PatternError {}
 
 /// Compiled pattern (NFA represented as state machine).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Pattern {
     /// NFA states: each state has transitions on byte ranges.
     states: Vec<NfaState>,
@@ -507,6 +507,34 @@ impl Searcher for Pattern {
 }
 
 impl Pattern {
+    /// Shortest match end (absolute offset) for a match that STARTS exactly at
+    /// `start`, or `None`. Semantics are identical to the per-`start_pos` inner
+    /// loop of [`Searcher::find_all`] (epsilon closure at start, stop when the
+    /// active set drains, accept checked after each consumed byte), so the
+    /// prefilter can verify candidates without changing match semantics.
+    pub(crate) fn leftmost_shortest_from(&self, haystack: &[u8], start: usize) -> Option<usize> {
+        let mut active = self.epsilon_closure(&[self.start]);
+        for (i, &byte) in haystack.iter().enumerate().skip(start) {
+            let mut next_active = Vec::new();
+            for &state in &active {
+                for &(lo, hi, target) in &self.states[state].transitions {
+                    if byte >= lo && byte <= hi {
+                        next_active.push(target);
+                    }
+                }
+            }
+            next_active = self.epsilon_closure(&next_active);
+            if next_active.is_empty() {
+                return None;
+            }
+            if self.accept.iter().any(|a| next_active.contains(a)) {
+                return Some(i + 1);
+            }
+            active = next_active;
+        }
+        None
+    }
+
     fn epsilon_closure(&self, states: &[usize]) -> Vec<usize> {
         let mut result = states.to_vec();
         let mut visited = vec![false; self.states.len()];

@@ -38,7 +38,13 @@ impl<'a> IrToAstConverter<'a> {
         
         // Set return type (default to void if not inferred)
         ast_func.return_type = self.func.metadata.return_type.clone().unwrap_or(Ty::Void);
-        
+
+        // Consume freakre-type-propagation results: pointer typing through
+        // Load/Store address usage and integer widths from memory access
+        // sizes land on params/locals before any AST-level pass runs.
+        let inferred = crate::types::propagated_var_types(self.func);
+        crate::types::apply_propagated_types(&mut ast_func, &inferred);
+
         ast_func
     }
     
@@ -101,6 +107,42 @@ impl<'a> IrToAstConverter<'a> {
                     },
                 };
 
+                vec![Stmt::Assign { target, value }]
+            }
+            
+            IrInst::Adc { dst, a, b, carry } => {
+                let target = self.convert_value_to_expr(dst);
+                let a_expr = self.convert_value_to_expr(a);
+                let b_expr = self.convert_value_to_expr(b);
+                let c_expr = self.convert_value_to_expr(carry);
+                let sum = Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(a_expr),
+                    rhs: Box::new(b_expr),
+                };
+                let value = Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(sum),
+                    rhs: Box::new(c_expr),
+                };
+                vec![Stmt::Assign { target, value }]
+            }
+            
+            IrInst::Sbb { dst, a, b, carry } => {
+                let target = self.convert_value_to_expr(dst);
+                let a_expr = self.convert_value_to_expr(a);
+                let b_expr = self.convert_value_to_expr(b);
+                let c_expr = self.convert_value_to_expr(carry);
+                let diff = Expr::Binary {
+                    op: BinOp::Sub,
+                    lhs: Box::new(a_expr),
+                    rhs: Box::new(b_expr),
+                };
+                let value = Expr::Binary {
+                    op: BinOp::Sub,
+                    lhs: Box::new(diff),
+                    rhs: Box::new(c_expr),
+                };
                 vec![Stmt::Assign { target, value }]
             }
             

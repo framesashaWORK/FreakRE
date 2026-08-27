@@ -12,6 +12,37 @@
 //! 3. **Mnemonic-based**: Compare instruction mnemonics decoded from
 //!    stored `code_bytes` (MD-index like Diaphora); when raw bytes are
 //!    unavailable, falls back to a combined size/name score
+//! 4. **Topology-based** (`structural_matches`): refine an intra-binary
+//!    callgraph similarity iteratively (small-subgraph-matching style) and
+//!    match leftover functions whose neighborhoods agree even when names,
+//!    sizes and mnemonics do not.
+//!
+//! ## Topology algorithm (Phase 4, deterministic)
+//!
+//! Inputs are the address-sorted function slices plus their undirected
+//! callgraphs (callees ∪ callers, sorted/deduped, hub-capped at 32
+//! neighbors). Pairs already matched by phases 1–3 are *pinned* at their
+//! existing similarity and never updated.
+//!
+//! * **Initialization**: for every pair (a, b), `sim(a,b)` is the pinned
+//!   similarity when phases 1–3 agreed on the pair, otherwise a damped
+//!   content prior `0.5 · (0.7·size_sim + 0.3·name_sim)` — the same content
+//!   signal used today, weakened because these pairs failed earlier phases.
+//! * **Refinement** (K = 3 fixed rounds, so cycles always terminate):
+//!   `sim(A,B) ← 0.5·sim(A,B) + 0.5·neighbor_affinity`, where
+//!   `neighbor_affinity` greedily best-matches the two sorted neighbor
+//!   lists under used-sets (Hungarian is deliberately overkill), sums the
+//!   chosen pair scores, clamps to `[0,1]`, and normalizes by
+//!   `min(32, max(|N(A)|, |N(B)|))` — the cap keeps huge fan-out hubs from
+//!   crushing or dominating the term.
+//! * **Assignment**: pairs with `sim ≥ 0.65` whose endpoints are still
+//!   unmatched are taken greedily by score descending (ties broken by lower
+//!   A-index then B-index); each function is consumed once.
+//!
+//! All scoring walks index-ordered vectors only; no HashMap iteration order
+//! participates in any comparison, so results are fully reproducible.
+
+mod callgraph;
 
 use project_db::{ProjectDatabase, FunctionEntry};
 use thiserror::Error;
@@ -19,8 +50,33 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+use crate::callgraph::CallGraph;
+
 const MAX_DECODED_INSTRUCTIONS: usize = 65536;
 const MAX_CONSECUTIVE_DECODE_FAILURES: usize = 32;
+
+/// Fixed number of similarity-propagation rounds (small-subgraph-matching
+/// style). Bounded up front so cyclic graphs cannot loop forever.
+const STRUCTURAL_REFINEMENT_ROUNDS: usize = 3;
+
+/// Minimum refined similarity for a pair to be eligible as a structural match.
+const STRUCTURAL_MATCH_THRESHOLD: f64 = 0.65;
+
+/// Weight of the neighbor term vs. the current similarity during refinement:
+/// `new = 0.5·old + 0.5·neighbor_affinity`.
+const STRUCTURAL_NEIGHBOR_WEIGHT: f64 = 0.5;
+
+/// Damping applied to the content prior for pairs not matched by phases 1–3.
+const STRUCTURAL_PRIOR_DAMPING: f64 = 0.5;
+
+/// Content-prior blend inside the initialization prior (matches the
+/// Combined fallback used by the mnemonic phase).
+const STRUCTURAL_CONTENT_SIZE_WEIGHT: f64 = 0.7;
+const STRUCTURAL_CONTENT_NAME_WEIGHT: f64 = 0.3;
+
+/// Cap on how many neighbor pairs contribute to one node-pair comparison
+/// (hub guard on top of [`callgraph::MAX_STORED_NEIGHBORS`]).
+const MAX_NEIGHBOR_PAIRS_PER_COMPARISON: usize = 32;
 
 #[derive(Error, Debug)]
 pub enum DiffError {
@@ -44,6 +100,51 @@ pub struct FunctionMatch {
     pub similarity: f64,  // 0.0 - 1.0
     pub match_type: MatchType,
     pub details: MatchDetails,
+}
+
+/// A topology-only match produced by Phase 4.
+///
+/// These pairs never appear in `DiffResult::matches`; existing match
+/// categories stay untouched for backwards compatibility. The extended
+/// input struct is additive: `callees` defaults to `None`, so callers that
+/// do not track call targets compile and behave unchanged (Phase 4 then
+/// degrades to the content prior and matches nothing).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MatchPair {
+    pub address_a: u64,
+    pub address_b: u64,
+    pub name_a: String,
+    pub name_b: String,
+    /// Refined structural similarity at assignment time (≥ 0.65).
+    pub similarity: f64,
+}
+
+/// Diffing-side function descriptor: the subset of `FunctionEntry` used by
+/// the matcher, extended additively with optional intra-binary call
+/// targets. Constructing this from a `FunctionEntry` leaves `callees`
+/// empty; populating it from xrefs is wired by callers, not here.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct DiffFunction {
+    pub address: u64,
+    pub name: String,
+    pub size: usize,
+    #[serde(default)]
+    pub code_bytes: Option<Vec<u8>>,
+    /// Callee addresses (intra-binary call targets), when known.
+    #[serde(default)]
+    pub callees: Option<Vec<u64>>,
+}
+
+impl From<&FunctionEntry> for DiffFunction {
+    fn from(f: &FunctionEntry) -> Self {
+        Self {
+            address: f.address,
+            name: f.name.clone(),
+            size: f.size,
+            code_bytes: f.code_bytes.clone(),
+            callees: None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -90,6 +191,10 @@ pub struct DiffResult {
     pub unmatched_a: Vec<UnmatchedFunction>,
     pub unmatched_b: Vec<UnmatchedFunction>,
     pub stats: DiffStats,
+    /// Topology-only matches from Phase 4 (functions not matched by the
+    /// content phases). Empty unless callees were supplied via
+    /// [`DiffFunction`].
+    pub structural_matches: Vec<MatchPair>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -104,6 +209,11 @@ pub struct DiffStats {
     pub average_similarity: f64,
     /// Matches with similarity >= 0.99, excluding pure SizeMatch pairs.
     pub perfect_matches: usize,
+    /// Number of Phase 4 topology matches (subset of functions left
+    /// unmatched by phases 1–3).
+    pub matched_by_structure: usize,
+    /// Mean similarity across `structural_matches` (0.0 when none).
+    pub average_structural_score: f64,
 }
 
 /// Binary differ
@@ -112,6 +222,7 @@ pub struct BinaryDiffer {
     use_name_matching: bool,
     use_size_matching: bool,
     use_mnemonic_matching: bool,
+    use_structural_matching: bool,
     timeout: Option<Duration>,
 }
 
@@ -122,6 +233,7 @@ impl BinaryDiffer {
             use_name_matching: true,
             use_size_matching: true,
             use_mnemonic_matching: true,
+            use_structural_matching: true,
             timeout: None,
         }
     }
@@ -151,12 +263,41 @@ impl BinaryDiffer {
         self
     }
 
-    /// Compare two project databases
+    pub fn disable_structural_matching(mut self) -> Self {
+        self.use_structural_matching = false;
+        self
+    }
+
+    /// Compare two project databases.
+    ///
+    /// `FunctionEntry` carries no call-target information, so the topology
+    /// phase sees callee-less graphs here; use [`BinaryDiffer::diff_functions`]
+    /// with populated [`DiffFunction::callees`] to enable structural matching.
     pub fn diff(&self, db_a: &ProjectDatabase, db_b: &ProjectDatabase) -> Result<DiffResult> {
+        let funcs_a: Vec<DiffFunction> =
+            db_a.list_functions()?.iter().map(DiffFunction::from).collect();
+        let funcs_b: Vec<DiffFunction> =
+            db_b.list_functions()?.iter().map(DiffFunction::from).collect();
+        self.diff_functions(&funcs_a, &funcs_b)
+    }
+
+    /// Compare two already-extracted function lists. Slices are sorted by
+    /// address internally so all downstream indexing is deterministic.
+    ///
+    /// Runs phases 1–3 (name → size → mnemonic) and then, for functions
+    /// still unmatched, Phase 4 callgraph refinement whose pairs are
+    /// reported separately in [`DiffResult::structural_matches`].
+    pub fn diff_functions(
+        &self,
+        funcs_a: &[DiffFunction],
+        funcs_b: &[DiffFunction],
+    ) -> Result<DiffResult> {
         let deadline = self.timeout.map(|t| Instant::now() + t);
 
-        let funcs_a = db_a.list_functions()?;
-        let funcs_b = db_b.list_functions()?;
+        let mut funcs_a: Vec<DiffFunction> = funcs_a.to_vec();
+        let mut funcs_b: Vec<DiffFunction> = funcs_b.to_vec();
+        funcs_a.sort_by_key(|f| f.address);
+        funcs_b.sort_by_key(|f| f.address);
 
         if funcs_a.is_empty() || funcs_b.is_empty() {
             return Err(DiffError::NoFunctions);
@@ -164,7 +305,7 @@ impl BinaryDiffer {
 
         self.check_deadline(deadline)?;
 
-        let mut matches = Vec::new();
+        let mut matches: Vec<FunctionMatch> = Vec::new();
         let mut matched_a = HashSet::new();
         let mut matched_b = HashSet::new();
 
@@ -218,6 +359,50 @@ impl BinaryDiffer {
             }
         }
 
+        self.check_deadline(deadline)?;
+
+        // Phase 4: Callgraph / topology matching over leftovers
+        let structural_matches = if self.use_structural_matching {
+            let cg_a = CallGraph::build(&funcs_a);
+            let cg_b = CallGraph::build(&funcs_b);
+
+            let idx_a: HashMap<u64, usize> = funcs_a
+                .iter()
+                .enumerate()
+                .map(|(i, f)| (f.address, i))
+                .collect();
+            let idx_b: HashMap<u64, usize> = funcs_b
+                .iter()
+                .enumerate()
+                .map(|(j, f)| (f.address, j))
+                .collect();
+
+            // Pairs agreed on by phases 1–3 are pinned at their similarity:
+            // they act as fixed anchors during propagation and are excluded
+            // from re-assignment.
+            let pinned: HashMap<(usize, usize), f64> = matches
+                .iter()
+                .filter_map(|m| {
+                    let i = idx_a.get(&m.address_a)?;
+                    let j = idx_b.get(&m.address_b)?;
+                    Some(((*i, *j), m.similarity))
+                })
+                .collect();
+
+            self.match_by_structure(
+                &funcs_a,
+                &funcs_b,
+                &cg_a,
+                &cg_b,
+                &matched_a,
+                &matched_b,
+                &pinned,
+                deadline,
+            )?
+        } else {
+            Vec::new()
+        };
+
         // Collect unmatched functions
         let unmatched_a: Vec<_> = funcs_a.iter()
             .filter(|f| !matched_a.contains(&f.address))
@@ -257,6 +442,14 @@ impl BinaryDiffer {
             .filter(|m| m.similarity >= 0.99 && m.match_type != MatchType::SizeMatch)
             .count();
 
+        let matched_by_structure = structural_matches.len();
+        let average_structural_score = if structural_matches.is_empty() {
+            0.0
+        } else {
+            structural_matches.iter().map(|m| m.similarity).sum::<f64>()
+                / structural_matches.len() as f64
+        };
+
         let stats = DiffStats {
             total_functions_a: funcs_a.len(),
             total_functions_b: funcs_b.len(),
@@ -265,6 +458,8 @@ impl BinaryDiffer {
             unmatched_b_count: unmatched_b.len(),
             average_similarity: avg_similarity,
             perfect_matches,
+            matched_by_structure,
+            average_structural_score,
         };
 
         Ok(DiffResult {
@@ -272,6 +467,7 @@ impl BinaryDiffer {
             unmatched_a,
             unmatched_b,
             stats,
+            structural_matches,
         })
     }
 
@@ -280,14 +476,14 @@ impl BinaryDiffer {
     /// (ties broken by lowest B then A address), so duplicate names on
     /// either side resolve deterministically instead of first-come or
     /// last-write-wins.
-    fn match_by_name(&self, funcs_a: &[FunctionEntry], funcs_b: &[FunctionEntry]) -> Vec<FunctionMatch> {
-        let mut b_by_name: HashMap<&str, Vec<&FunctionEntry>> = HashMap::new();
+    fn match_by_name(&self, funcs_a: &[DiffFunction], funcs_b: &[DiffFunction]) -> Vec<FunctionMatch> {
+        let mut b_by_name: HashMap<&str, Vec<&DiffFunction>> = HashMap::new();
 
         for f in funcs_b {
             b_by_name.entry(&f.name).or_default().push(f);
         }
 
-        let mut pairs: Vec<(usize, u64, u64, &FunctionEntry, &FunctionEntry)> = Vec::new();
+        let mut pairs: Vec<(usize, u64, u64, &DiffFunction, &DiffFunction)> = Vec::new();
         for fa in funcs_a {
             if let Some(candidates) = b_by_name.get(fa.name.as_str()) {
                 for fb in candidates {
@@ -334,8 +530,8 @@ impl BinaryDiffer {
     /// Match functions by size
     fn match_by_size(
         &self,
-        funcs_a: &[&FunctionEntry],
-        funcs_b: &[&FunctionEntry],
+        funcs_a: &[&DiffFunction],
+        funcs_b: &[&DiffFunction],
         deadline: Option<Instant>,
     ) -> Result<Vec<FunctionMatch>> {
         let mut matches = Vec::new();
@@ -343,7 +539,7 @@ impl BinaryDiffer {
 
         for fa in funcs_a {
             self.check_deadline(deadline)?;
-            let mut best_match: Option<(&FunctionEntry, f64)> = None;
+            let mut best_match: Option<(&DiffFunction, f64)> = None;
 
             for fb in funcs_b {
                 if matched_b.contains(&fb.address) {
@@ -389,8 +585,8 @@ impl BinaryDiffer {
     /// back to a combined size/name score and are reported as `Combined`.
     fn match_by_mnemonics(
         &self,
-        funcs_a: &[&FunctionEntry],
-        funcs_b: &[&FunctionEntry],
+        funcs_a: &[&DiffFunction],
+        funcs_b: &[&DiffFunction],
         deadline: Option<Instant>,
     ) -> Result<Vec<FunctionMatch>> {
         let mut matches = Vec::new();
@@ -402,7 +598,7 @@ impl BinaryDiffer {
         for fa in funcs_a {
             self.check_deadline(deadline)?;
             let stream_a = streams_a.get(&fa.address);
-            let mut best_match: Option<(&FunctionEntry, f64, f64, usize, usize, usize)> = None;
+            let mut best_match: Option<(&DiffFunction, f64, f64, usize, usize, usize)> = None;
 
             for fb in funcs_b {
                 self.check_deadline(deadline)?;
@@ -485,11 +681,165 @@ impl BinaryDiffer {
         Ok(matches)
     }
 
+    /// Phase 4: callgraph similarity refinement and greedy assignment.
+    ///
+    /// See the module-level documentation for the algorithm. Parameters:
+    /// pinned pairs (agreed by phases 1–3) hold their similarity constant
+    /// and are excluded from assignment; `matched_a`/`matched_b` keep
+    /// already-consumed functions out of the structural output so existing
+    /// match categories remain untouched.
+    #[allow(clippy::too_many_arguments)]
+    fn match_by_structure(
+        &self,
+        funcs_a: &[DiffFunction],
+        funcs_b: &[DiffFunction],
+        cg_a: &CallGraph,
+        cg_b: &CallGraph,
+        matched_a: &HashSet<u64>,
+        matched_b: &HashSet<u64>,
+        pinned: &HashMap<(usize, usize), f64>,
+        deadline: Option<Instant>,
+    ) -> Result<Vec<MatchPair>> {
+        // Edge case: empty graphs (or fully consumed sides) — nothing to do.
+        if funcs_a.is_empty() || funcs_b.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let n_a = funcs_a.len();
+        let n_b = funcs_b.len();
+
+        // --- Initialization -------------------------------------------------
+        let mut sim: Vec<Vec<f64>> = vec![vec![0.0; n_b]; n_a];
+        for (i, fa) in funcs_a.iter().enumerate() {
+            for (j, fb) in funcs_b.iter().enumerate() {
+                sim[i][j] = if let Some(s) = pinned.get(&(i, j)) {
+                    *s
+                } else {
+                    // Damped content prior for pairs that earlier phases did
+                    // NOT match together. Note a pair where a is matched to
+                    // some other b' still gets the prior here — only exact
+                    // pinned agreements are anchors.
+                    let content = self.size_similarity(fa.size, fb.size)
+                        * STRUCTURAL_CONTENT_SIZE_WEIGHT
+                        + self.name_similarity(&fa.name, &fb.name)
+                            * STRUCTURAL_CONTENT_NAME_WEIGHT;
+                    content * STRUCTURAL_PRIOR_DAMPING
+                };
+            }
+        }
+
+        // --- Iterative refinement (K fixed rounds; cycles terminate) -------
+        for _ in 0..STRUCTURAL_REFINEMENT_ROUNDS {
+            self.check_deadline(deadline)?;
+            let mut next = vec![vec![0.0; n_b]; n_a];
+            for i in 0..n_a {
+                for j in 0..n_b {
+                    next[i][j] = if let Some(s) = pinned.get(&(i, j)) {
+                        *s
+                    } else {
+                        let neighbor_term = Self::neighbor_affinity(
+                            &sim,
+                            &cg_a.neighbors[i],
+                            &cg_b.neighbors[j],
+                        );
+                        (1.0 - STRUCTURAL_NEIGHBOR_WEIGHT) * sim[i][j]
+                            + STRUCTURAL_NEIGHBOR_WEIGHT * neighbor_term
+                    };
+                }
+            }
+            sim = next;
+        }
+
+        // --- Assignment: greedy by score desc, endpoints used once ----------
+        let mut candidates: Vec<(usize, usize)> = (0..n_a)
+            .flat_map(|i| (0..n_b).map(move |j| (i, j)))
+            .filter(|&(i, j)| {
+                sim[i][j] >= STRUCTURAL_MATCH_THRESHOLD
+                    && !matched_a.contains(&funcs_a[i].address)
+                    && !matched_b.contains(&funcs_b[j].address)
+            })
+            .collect();
+
+        candidates.sort_by(|&(i1, j1), &(i2, j2)| {
+            let ord = sim[i2][j2]
+                .partial_cmp(&sim[i1][j1])
+                .unwrap_or(std::cmp::Ordering::Equal);
+            ord.then(i1.cmp(&i2)).then(j1.cmp(&j2))
+        });
+
+        let mut used_a: HashSet<usize> = HashSet::new();
+        let mut used_b: HashSet<usize> = HashSet::new();
+        let mut out = Vec::new();
+
+        for (i, j) in candidates {
+            if !used_a.insert(i) || !used_b.insert(j) {
+                continue;
+            }
+            out.push(MatchPair {
+                address_a: funcs_a[i].address,
+                address_b: funcs_b[j].address,
+                name_a: funcs_a[i].name.clone(),
+                name_b: funcs_b[j].name.clone(),
+                similarity: sim[i][j],
+            });
+        }
+
+        Ok(out)
+    }
+
+    /// Greedy best-match between two sorted neighbor lists against the
+    /// current similarity matrix.
+    ///
+    /// Repeatedly takes the highest-similarity unused (u, v) combination
+    /// (strict-improvement comparison makes ties resolve to the first pair
+    /// in index order — deterministic), marks both used, and accumulates.
+    /// The sum is normalized by `min(MAX, max(|N_i|, |N_j|))` with MAX =
+    /// [`MAX_NEIGHBOR_PAIRS_PER_COMPARISON`]: without the cap a 500-fan-out
+    /// hub paired against a 3-callee function would dilute its score toward
+    /// zero, and a hub pairing would otherwise also dominate runtime. An
+    /// empty neighborhood contributes 0 (neutral-negative), which lets
+    /// content evidence decide leaf-only comparisons.
+    fn neighbor_affinity(sim: &[Vec<f64>], ni: &[usize], nj: &[usize]) -> f64 {
+        if ni.is_empty() || nj.is_empty() {
+            return 0.0;
+        }
+
+        let wanted = ni.len().min(nj.len());
+        let mut used_i = vec![false; ni.len()];
+        let mut used_j = vec![false; nj.len()];
+        let mut total = 0.0f64;
+
+        for _ in 0..wanted {
+            let mut best: Option<(f64, usize, usize)> = None;
+            for (ui, &u) in ni.iter().enumerate() {
+                if used_i[ui] {
+                    continue;
+                }
+                for (vj, &v) in nj.iter().enumerate() {
+                    if used_j[vj] {
+                        continue;
+                    }
+                    let s = sim[u][v];
+                    if best.is_none_or(|(bs, _, _)| s > bs) {
+                        best = Some((s, ui, vj));
+                    }
+                }
+            }
+            let Some((s, ui, vj)) = best else { break };
+            used_i[ui] = true;
+            used_j[vj] = true;
+            total += s.min(1.0);
+        }
+
+        let denom = ni.len().max(nj.len()).clamp(1, MAX_NEIGHBOR_PAIRS_PER_COMPARISON);
+        (total / denom as f64).clamp(0.0, 1.0)
+    }
+
     /// Decode mnemonic streams once per function, recording the width mode
     /// (64- or 32-bit) each stream was decoded with so pairs are only
     /// compared when both sides used the same mode.
     fn mnemonic_streams(
-        funcs: &[&FunctionEntry],
+        funcs: &[&DiffFunction],
     ) -> HashMap<u64, (bool, Vec<freakre_x86::Mnemonic>)> {
         funcs
             .iter()
@@ -692,7 +1042,12 @@ pub fn generate_report(result: &DiffResult) -> String {
     report.push_str(&format!("Unmatched in A: {}\n", result.stats.unmatched_a_count));
     report.push_str(&format!("Unmatched in B: {}\n", result.stats.unmatched_b_count));
     report.push_str(&format!("Average similarity: {:.1}%\n", result.stats.average_similarity * 100.0));
-    report.push_str(&format!("Perfect matches: {}\n\n", result.stats.perfect_matches));
+    report.push_str(&format!("Perfect matches: {}\n", result.stats.perfect_matches));
+    report.push_str(&format!(
+        "Structural (topology) matches: {} (avg {:.1}%)\n\n",
+        result.stats.matched_by_structure,
+        result.stats.average_structural_score * 100.0
+    ));
 
     report.push_str("=== Matched Functions ===\n");
     for m in &result.matches {
@@ -703,6 +1058,18 @@ pub fn generate_report(result: &DiffResult) -> String {
             m.similarity * 100.0,
             m.match_type
         ));
+    }
+
+    if !result.structural_matches.is_empty() {
+        report.push_str("\n=== Structural (Topology) Matches ===\n");
+        for m in &result.structural_matches {
+            report.push_str(&format!(
+                "  0x{:X} ({}) <-> 0x{:X} ({}) [{:.1}%]\n",
+                m.address_a, m.name_a,
+                m.address_b, m.name_b,
+                m.similarity * 100.0
+            ));
+        }
     }
 
     if !result.unmatched_a.is_empty() {
@@ -725,6 +1092,7 @@ pub fn generate_report(result: &DiffResult) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::callgraph::MAX_STORED_NEIGHBORS;
 
     fn make_db(base: &std::path::Path, tag: &str, funcs: Vec<FunctionEntry>) -> ProjectDatabase {
         let dir = base.join(tag);
@@ -918,6 +1286,279 @@ mod tests {
         assert_eq!(name_matches.len(), 1);
         assert_eq!(name_matches[0].address_b, 0x502000);
         assert_eq!(result.unmatched_b.len(), 1);
+    }
+
+    /// Helper: build a renamed-but-topologically-identical diamond
+    ///
+    /// ```text
+    ///     root          root'
+    ///    /     \       /     \
+    ///  left   right  left'  right'
+    ///    \     /       \    /
+    ///     sink          sink'
+    /// ```
+    ///
+    /// `root` and `sink` keep their names (they become pinned anchors via the
+    /// name phase); the two mid nodes are renamed and resized so phases 1-3
+    /// cannot pair them.
+    fn diamond_funcs() -> (Vec<DiffFunction>, Vec<DiffFunction>) {
+        let mk = |address: u64, name: &str, size: usize, callees: Vec<u64>| DiffFunction {
+            address,
+            name: name.to_string(),
+            size,
+            code_bytes: None,
+            callees: Some(callees),
+        };
+
+        let (ra, la, ra2, sa) = (0x401000u64, 0x401100u64, 0x401200u64, 0x401300u64);
+        let (rb, lb, rb2, sb) = (0x501000u64, 0x501100u64, 0x501200u64, 0x501300u64);
+
+        let a = vec![
+            mk(ra, "diamond_source_root", 900, vec![la, ra2]),
+            mk(la, "onyx_harbor_lane", 200, vec![sa]),
+            mk(ra2, "cobalt_metal_work", 480, vec![sa]),
+            mk(sa, "shared_diamond_sink", 600, vec![]),
+        ];
+        let b = vec![
+            mk(rb, "diamond_source_root", 850, vec![lb, rb2]),
+            mk(lb, "marble_quartz_run", 190, vec![sb]),
+            mk(rb2, "pewter_glass_owl", 460, vec![sb]),
+            mk(sb, "shared_diamond_sink", 680, vec![]),
+        ];
+        (a, b)
+    }
+
+    /// Phase 4 must recover the renamed mid nodes of an isomorphic diamond
+    /// callgraph even though their names and sizes differ. The shared-name
+    /// root/sink act as pinned anchors; content phases 2/3 are disabled so
+    /// the structural phase is exercised in isolation.
+    #[test]
+    fn test_structural_diamond_renamed_funcs_matched() {
+        let (funcs_a, funcs_b) = diamond_funcs();
+
+        let differ = BinaryDiffer::new()
+            .disable_size_matching()
+            .disable_mnemonic_matching();
+
+        let result = differ.diff_functions(&funcs_a, &funcs_b).unwrap();
+
+        // Anchors matched by name only; nothing else leaked into old categories.
+        assert_eq!(result.matches.len(), 2);
+        assert!(result
+            .matches
+            .iter()
+            .all(|m| m.match_type == MatchType::NameMatch));
+
+        // Both renamed mid nodes recovered structurally, in the correct
+        // orientation (left->left', right->right').
+        assert_eq!(result.structural_matches.len(), 2);
+        let by_a: HashMap<u64, &MatchPair> = result
+            .structural_matches
+            .iter()
+            .map(|m| (m.address_a, m))
+            .collect();
+        assert_eq!(by_a[&0x401100].address_b, 0x501100); // left <-> left'
+        assert_eq!(by_a[&0x401200].address_b, 0x501200); // right <-> right'
+        for m in &result.structural_matches {
+            assert!(
+                m.similarity >= STRUCTURAL_MATCH_THRESHOLD && m.similarity <= 1.0,
+                "similarity {} outside [{}, 1.0]",
+                m.similarity,
+                STRUCTURAL_MATCH_THRESHOLD
+            );
+        }
+        // Names carried through for reporting.
+        assert_eq!(by_a[&0x401100].name_a, "onyx_harbor_lane");
+        assert_eq!(by_a[&0x401100].name_b, "marble_quartz_run");
+
+        // Stats reflect topology matches additively; legacy fields untouched.
+        assert_eq!(result.stats.matched_by_structure, 2);
+        assert!(result.stats.average_structural_score >= STRUCTURAL_MATCH_THRESHOLD);
+        // Structural matches do not consume functions from the legacy
+        // unmatched lists (back-compat).
+        assert_eq!(result.stats.unmatched_a_count, 2);
+        assert_eq!(result.stats.unmatched_b_count, 2);
+
+        // Determinism: a second run yields bit-identical pairs.
+        let again = differ.diff_functions(&funcs_a, &funcs_b).unwrap();
+        assert_eq!(again.structural_matches, result.structural_matches);
+        assert_eq!(again.stats.matched_by_structure, 2);
+    }
+
+    /// A hub with fan-out beyond [`callgraph::MAX_STORED_NEIGHBORS`] plus a
+    /// leaf cycle must terminate (fixed K rounds) and stay deterministic;
+    /// the truncation cap keeps refinement work bounded.
+    #[test]
+    fn test_hub_graph_termination_and_determinism() {
+        const LEAVES: usize = 40; // > MAX_STORED_NEIGHBORS (32)
+
+        let mut funcs_a = Vec::new();
+        let mut funcs_b = Vec::new();
+
+        let hub_a = 0x401000u64;
+        let hub_b = 0x501000u64;
+        let leaves_a: Vec<u64> = (0..LEAVES).map(|i| 0x401100 + i as u64 * 0x10).collect();
+        let leaves_b: Vec<u64> = (0..LEAVES).map(|i| 0x501100 + i as u64 * 0x10).collect();
+
+        // Hub -> every leaf; triangle cycle among the first three leaves.
+        let mut hub_callees_a = leaves_a.clone();
+        hub_callees_a.push(leaves_a[1]);
+        funcs_a.push(DiffFunction {
+            address: hub_a,
+            name: "hub_a_central_dispatch".to_string(),
+            size: 5000,
+            code_bytes: None,
+            callees: Some(hub_callees_a),
+        });
+        for (i, &la) in leaves_a.iter().enumerate() {
+            // Undirected edges are recorded from callees alone; give each
+            // leaf its own callee back into the cycle to close the loop.
+            let callee = match i {
+                0 => leaves_a[1],
+                1 => leaves_a[2],
+                2 => leaves_a[0],
+                _ => hub_a,
+            };
+            let mut c = vec![callee];
+            if i < 3 {
+                c.push(hub_a);
+            }
+            funcs_a.push(DiffFunction {
+                address: la,
+                name: format!("spoke_alpha_routine_{:02}", i),
+                size: 64 + i,
+                code_bytes: None,
+                callees: Some(c),
+            });
+        }
+
+        let mut hub_callees_b = leaves_b.clone();
+        hub_callees_b.push(leaves_b[1]);
+        funcs_b.push(DiffFunction {
+            address: hub_b,
+            name: "hub_b_central_dispatch".to_string(),
+            size: 4600,
+            code_bytes: None,
+            callees: Some(hub_callees_b),
+        });
+        for (i, &lb) in leaves_b.iter().enumerate() {
+            let callee = match i {
+                0 => leaves_b[1],
+                1 => leaves_b[2],
+                2 => leaves_b[0],
+                _ => hub_b,
+            };
+            let mut c = vec![callee];
+            if i < 3 {
+                c.push(hub_b);
+            }
+            funcs_b.push(DiffFunction {
+                address: lb,
+                name: format!("spoke_omega_kernel_{:02}", i),
+                size: 58 + i,
+                code_bytes: None,
+                callees: Some(c),
+            });
+        }
+
+        // All names are distinct across sides, so no content phase can
+        // pre-match anything; the bounded timeout proves termination of the
+        // fixed-round refinement on a cyclic, high-fan-out graph.
+        let differ =
+            BinaryDiffer::new()
+                .disable_size_matching()
+                .disable_mnemonic_matching()
+                .with_timeout(Duration::from_secs(30));
+
+        let first = differ.diff_functions(&funcs_a, &funcs_b).unwrap();
+        let second = differ.diff_functions(&funcs_a, &funcs_b).unwrap();
+
+        assert_eq!(first.structural_matches, second.structural_matches);
+        assert_eq!(
+            first.stats.matched_by_structure,
+            second.stats.matched_by_structure
+        );
+        assert_eq!(
+            first.stats.average_structural_score,
+            second.stats.average_structural_score
+        );
+
+        // Graph sanity: the hub's adjacency was truncated to the cap.
+        let cg = CallGraph::build(&funcs_a);
+        assert_eq!(cg.neighbors[0].len(), MAX_STORED_NEIGHBORS);
+    }
+
+    /// Empty inputs must be safe (graceful error at the API boundary, empty
+    /// output inside Phase 4), and callee-less descriptors must degrade to
+    /// zero structural matches. Also pins the serde back-compat guarantee:
+    /// legacy JSON without the `callees` field still deserializes.
+    #[test]
+    fn test_empty_inputs_and_calleeless_degradation() {
+        let differ = BinaryDiffer::new();
+
+        // Empty sides never panic; they surface NoFunctions.
+        assert!(matches!(
+            differ.diff_functions(&[], &[]),
+            Err(DiffError::NoFunctions)
+        ));
+        let solo = DiffFunction {
+            address: 1,
+            name: "solo".to_string(),
+            size: 16,
+            code_bytes: None,
+            callees: Some(vec![]),
+        };
+        assert!(matches!(
+            differ.diff_functions(&[solo], &[]),
+            Err(DiffError::NoFunctions)
+        ));
+
+        // Phase 4 internals on empty graphs return an empty match set.
+        let cg = CallGraph::build(&[]);
+        assert!(cg.neighbors.is_empty());
+        let out = differ.match_by_structure(
+            &[],
+            &[],
+            &cg,
+            &cg,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            None,
+        );
+        assert!(out.unwrap().is_empty());
+
+        // Callee-less functions: topology phase degrades to the content
+        // prior and reports nothing structural.
+        let a = DiffFunction {
+            address: 0x10,
+            name: "aaa_legacy_one".to_string(),
+            size: 100,
+            code_bytes: None,
+            callees: None,
+        };
+        let b = DiffFunction {
+            address: 0x20,
+            name: "bbb_modern_two".to_string(),
+            size: 100,
+            code_bytes: None,
+            callees: None,
+        };
+        let res = BinaryDiffer::new()
+            .disable_size_matching()
+            .disable_mnemonic_matching()
+            .diff_functions(std::slice::from_ref(&a), std::slice::from_ref(&b))
+            .unwrap();
+        assert!(res.structural_matches.is_empty());
+        assert_eq!(res.stats.matched_by_structure, 0);
+        assert_eq!(res.stats.average_structural_score, 0.0);
+
+        // Legacy serialized descriptors (no `callees` key) deserialize fine.
+        let legacy: DiffFunction = serde_json::from_str(
+            r#"{"address": 7, "name": "old_func", "size": 32, "code_bytes": null}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.callees, None);
     }
 }
 

@@ -981,35 +981,32 @@ impl DominatorTree {
         mut finger1: usize,
         mut finger2: usize,
     ) -> usize {
-        while finger1 != finger2 {
-            let mut stuck = false;
-            while rpo_idx.get(&finger1).copied().unwrap_or(usize::MAX)
-                > rpo_idx.get(&finger2).copied().unwrap_or(usize::MAX)
-            {
+        // Guard against malformed CFG (missing idom) and irreducible loops.
+        let mut iterations = 0usize;
+        const LIMIT: usize = 1_000;
+        while finger1 != finger2 && iterations < LIMIT {
+            iterations += 1;
+            let r1 = rpo_idx.get(&finger1).copied().unwrap_or(usize::MAX);
+            let r2 = rpo_idx.get(&finger2).copied().unwrap_or(usize::MAX);
+            if r1 > r2 {
                 match idom[finger1] {
                     Some(up) if up != finger1 => finger1 = up,
-                    _ => {
-                        stuck = true;
-                        break;
-                    }
+                    _ => break,
                 }
-            }
-            if stuck {
-                break;
-            }
-            while rpo_idx.get(&finger2).copied().unwrap_or(usize::MAX)
-                > rpo_idx.get(&finger1).copied().unwrap_or(usize::MAX)
-            {
+            } else if r2 > r1 {
                 match idom[finger2] {
                     Some(up) if up != finger2 => finger2 = up,
-                    _ => {
-                        stuck = true;
-                        break;
-                    }
+                    _ => break,
                 }
-            }
-            if stuck {
-                break;
+            } else {
+                // Equal rank but different nodes (irreducible) — step both.
+                let up1 = idom[finger1].unwrap_or(finger1);
+                let up2 = idom[finger2].unwrap_or(finger2);
+                if up1 == finger1 && up2 == finger2 {
+                    break;
+                }
+                finger1 = up1;
+                finger2 = up2;
             }
         }
         finger1
@@ -1358,7 +1355,7 @@ mod tests {
                 // A Return terminates the block without any outgoing edge;
                 // no dangling EdgeType::Return may exist.
                 assert!(
-                    !b.edge_types.iter().any(|t| *t == EdgeType::Return),
+                    !b.edge_types.contains(&EdgeType::Return),
                     "dangling Return edge type in block at {}",
                     b.start_offset
                 );

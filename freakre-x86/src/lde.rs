@@ -71,11 +71,20 @@ pub fn decode_len(code: &[u8], mode: Mode) -> Result<usize, DecodeError> {
         (opcode, false)
     };
 
-    // VEX prefix in 64-bit mode (C4/C5 are not LES/LDS there)
-    if is_64 && (opcode == 0xC4 || opcode == 0xC5) {
-        let len = vex_len(code, pos - 1, opcode)?;
+    // VEX/EVEX prefix in 64-bit mode (C4/C5 are not LES/LDS there, 62 is EVEX)
+    if is_64 && (opcode == 0xC4 || opcode == 0xC5 || opcode == 0x62) {
+        let len = if opcode == 0x62 {
+            evex_len(code, pos - 1)?
+        } else {
+            vex_len(code, pos - 1, opcode)?
+        };
         if len > code.len() { return Err(DecodeError::TooShort); }
         return Ok(len);
+    }
+
+    // FPU D8-DF: all have ModR/M, no immediate (except D8-DF with mod==3 may be FPU reg)
+    if (0xD8..=0xDF).contains(&opcode) {
+        return read_modrm_and_disp(code, pos, is_64, has_rex_w).map(|mr| pos + mr);
     }
 
     // One-byte opcodes
@@ -199,6 +208,34 @@ fn vex_len(code: &[u8], vex_pos: usize, vex_byte: u8) -> Result<usize, DecodeErr
                     .map(|mr| vex_pos + 5 + mr)
             }
         }
+    }
+}
+
+/// EVEX-encoded instruction length (62 + P0 P1 P2 + opcode).
+fn evex_len(code: &[u8], evex_pos: usize) -> Result<usize, DecodeError> {
+    const TOO_SHORT: DecodeError = DecodeError::TooShort;
+    let _p0 = *code.get(evex_pos + 1).ok_or(TOO_SHORT)?;
+    let _p1 = *code.get(evex_pos + 2).ok_or(TOO_SHORT)?;
+    let p2 = *code.get(evex_pos + 3).ok_or(TOO_SHORT)?;
+    let op = *code.get(evex_pos + 4).ok_or(TOO_SHORT)?;
+    // EVEX map in P0[4:3] + P1[1:0], but we just need length: opcode + ModR/M + disp + imm
+    // For 0F38/0F3A maps, same as VEX. For 0F map, use two_byte_tail.
+    let map = ((p2 >> 0) & 0x03) | (((_p1 >> 1) & 0x03) << 2); // simplified
+    let _ = map;
+    // Most EVEX are 0F/0F38/0F3A with ModR/M
+    if op == 0x38 || op == 0x3A {
+        // Should not happen as EVEX op is after prefix, but handle
+        return Ok(evex_pos + 5);
+    }
+    // Use two_byte_tail for 0F map, else ModR/M
+    // For now, assume all EVEX have ModR/M
+    let tail = two_byte_tail_len(code, evex_pos + 5, op).unwrap_or(evex_pos + 5 + 1);
+    // two_byte_tail already includes ModR/M, but we need to ensure we don't double count
+    // Fallback to simple ModR/M
+    if tail > code.len() {
+        read_modrm_and_disp(code, evex_pos + 5, true, false).map(|mr| evex_pos + 5 + mr)
+    } else {
+        Ok(tail)
     }
 }
 

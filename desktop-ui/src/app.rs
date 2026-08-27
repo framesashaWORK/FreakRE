@@ -1,7 +1,7 @@
 ﻿use eframe::egui;
 use freakre_scanner::{scanner::Scanner, report::FileReport};
 use plugins::PluginManager;
-use capstone_ffi::{Disassembler, Arch, Mode};
+use capstone_ffi::{Disassembler, Arch};
 use cfg_builder::{build_cfg, CfgConfig, ControlFlowGraph};
 use xrefs::{XrefDatabase, build_import_xrefs};
 use freakre_ir::x86_lifter::X86Lifter;
@@ -11,12 +11,43 @@ use dataflow::DataFlowAnalysis;
 use func_sigs::{scan_signatures, SigScanConfig, SignatureScanResult};
 use ml_detection::{extract_features, EnsembleClassifier, BinaryInfo};
 use diffing::DiffResult;
+use freakre_symbols::SymbolDb;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::collections::HashMap;
+use std::time::Instant;
 
 use crate::theme::{self, AppSettings, ThemeColors, ToastManager, ToastKind};
 use crate::views;
+
+// ─── Top-level UI modes (mode strip above the classic views) ────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Classic IDA-style layout with the central tab bar (default).
+    Standard,
+    /// Split pseudocode + assembly for the same function.
+    Multi,
+    /// Scanner/ML verdict dashboard.
+    MalwareDetector,
+    /// Backdoor findings filtered by profile (Applications / Malware / Multi).
+    BackdoorAnalyzer,
+}
+
+impl Mode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Mode::Standard        => "Standard",
+            Mode::Multi           => "Multi",
+            Mode::MalwareDetector => "Malware Detector",
+            Mode::BackdoorAnalyzer=> "Backdoor Analyzer",
+        }
+    }
+
+    pub fn all() -> &'static [Mode] {
+        &[Mode::Standard, Mode::Multi, Mode::MalwareDetector, Mode::BackdoorAnalyzer]
+    }
+}
 
 // ─── Central Tabs (IDA-style: always visible in center panel) ───────
 
@@ -40,6 +71,7 @@ pub enum Tab {
     DataFlow,
     MlClassify,
     FuncSigs,
+    FullSource,
 }
 
 impl Tab {
@@ -63,6 +95,7 @@ impl Tab {
             Tab::DataFlow     => "DataFlow",
             Tab::MlClassify   => "ML Classify",
             Tab::FuncSigs     => "Func Sigs",
+            Tab::FullSource   => "Full Source",
         }
     }
 
@@ -86,10 +119,28 @@ impl Tab {
             Tab::DataFlow,
             Tab::MlClassify,
             Tab::FuncSigs,
+            Tab::FullSource,
             Tab::Settings,
         ]
     }
 }
+
+/// Incremental "Full Source" decompilation of every function in the file.
+/// Processed N functions per frame so the UI never freezes.
+#[derive(Default)]
+pub struct FullSourceState {
+    /// (start_offset, name, end_offset_exclusive)
+    pub funcs: Vec<(u64, String, u64)>,
+    pub next: usize,
+    pub done: usize,
+    pub failed: usize,
+    pub running: bool,
+    pub started_at: Option<Instant>,
+    /// Accumulated output: (function name, decompiled text)
+    pub chunks: Vec<(String, String)>,
+    pub truncated_note: Option<String>,
+}
+
 
 #[allow(clippy::large_enum_variant)]
 pub enum ScanMessage {
@@ -281,6 +332,31 @@ pub struct FreakREApp {
 
     /// Current file path (for project persistence)
     pub current_file_path: Option<PathBuf>,
+
+    /// Debug symbols loaded from PDB or DWARF for the current binary.
+    pub symbol_db: Option<SymbolDb>,
+
+    // ─── UI overhaul state ────────────────────────────────────────
+    /// Active top-level mode (Standard / Multi / Malware Detector / Backdoor).
+    pub active_mode: Mode,
+
+    /// Multi mode: selected instruction address + selected pseudocode line.
+    pub multi_cursor_addr: u64,
+    pub multi_selected_line: usize,
+
+    /// Backdoor Analyzer sub-tab index (0=Applications, 1=Malware, 2=Multi).
+    pub backdoor_subtab: usize,
+
+    /// When the current scan started (for the centered progress overlay).
+    pub scan_started_at: Option<Instant>,
+
+    /// Incremental full-source decompilation job.
+    pub full_source: FullSourceState,
+
+    /// One-shot focus latch for modal dialogs: request focus only on the
+    /// frame a dialog OPENS, not every frame (repeated request_focus steals
+    /// focus from other widgets and makes buttons feel dead).
+    pub dialog_focus_latch: bool,
 }
 
 impl FreakREApp {
@@ -403,6 +479,14 @@ impl FreakREApp {
             diffing_result: None,
             dataflow_result: None,
             current_file_path: None,
+            symbol_db: None,
+            active_mode: Mode::Standard,
+            multi_cursor_addr: 0,
+            multi_selected_line: 0,
+            backdoor_subtab: 0,
+            scan_started_at: None,
+            full_source: FullSourceState::default(),
+            dialog_focus_latch: false,
         }
     }
 
@@ -422,7 +506,11 @@ impl FreakREApp {
     /// Initialize disassembler for current architecture
     pub fn ensure_disasm(&mut self) {
         if self.disasm.is_none() {
-            let mode = if self.disasm_is_64bit { Mode::Mode64 } else { Mode::Mode32 };
+            let mode = if self.disasm_is_64bit {
+                capstone_ffi::Mode::Mode64
+            } else {
+                capstone_ffi::Mode::Mode32
+            };
             match Disassembler::new(Arch::X86, mode) {
                 Ok(d) => {
                     self.disasm = Some(d);
@@ -534,9 +622,11 @@ impl FreakREApp {
                 }
                 JobResult::Decompile { addr, text, dataflow, note } => {
                     if !self.finish_job(JobKey::Decompile(addr)) { continue; }
-                    // Bound the cache: each entry is a full pseudocode text.
+                    // Bound the cache: evict entries furthest from current
+                    // cursor instead of nuking everything (the old .clear()
+                    // caused re-decompilation storms on large binaries).
                     if self.decompile_cache.len() > 256 {
-                        self.decompile_cache.clear();
+                        evict_cache_by_distance(&mut self.decompile_cache, self.disasm_offset, 128);
                     }
                     self.decompile_cache.insert(addr, text);
                     if let Some(df) = dataflow {
@@ -549,16 +639,22 @@ impl FreakREApp {
                 JobResult::BuildCfg { addr, cfg } => {
                     if !self.finish_job(JobKey::BuildCfg(addr)) { continue; }
                     self.log(format!("CFG built: {} blocks, {} edges", cfg.blocks.len(), cfg.num_edges()));
-                    // CFGs for large functions are heavy — keep a bounded set.
+                    // CFGs for large functions are heavy — evict by distance.
                     if self.cfg_cache.len() > 64 {
-                        self.cfg_cache.clear();
+                        evict_cache_by_distance(&mut self.cfg_cache, self.disasm_offset, 32);
                     }
                     self.cfg_cache.insert(addr, cfg);
                 }
                 JobResult::XrefViewScan { key, hits } => {
                     if !self.finish_job(JobKey::XrefViewScan(key.0, key.1, key.2)) { continue; }
+                    // Xref view cache: drop oldest half when over limit.
                     if self.xref_view_cache.len() > 256 {
-                        self.xref_view_cache.clear();
+                        let target = 128;
+                        let keys: Vec<_> = self.xref_view_cache.keys().cloned().collect();
+                        let to_remove = keys.len().saturating_sub(target);
+                        for k in keys.into_iter().take(to_remove) {
+                            self.xref_view_cache.remove(&k);
+                        }
                     }
                     self.xref_view_cache.insert(key, hits);
                 }
@@ -640,6 +736,8 @@ impl FreakREApp {
         self.is_scanning = true;
         self.scan_total = paths.len();
         self.scan_done = 0;
+        // Drives the centered progress modal (spinner + elapsed clock).
+        self.scan_started_at = Some(Instant::now());
 
         for p in &paths {
             if let Some(s) = p.to_str() {
@@ -708,6 +806,9 @@ impl FreakREApp {
         self.data_read_error = None;
         self.disasm = None;
         self.last_cursor_func = None;
+        self.symbol_db = None;
+        // Full Source output belongs to the previous binary — drop it.
+        self.full_source = FullSourceState::default();
         // Jobs queued for the previous binary would return stale results;
         // drop them and bump the generation so in-flight ones are discarded.
         self.pending_jobs.clear();
@@ -785,8 +886,12 @@ impl FreakREApp {
         if finished {
             self.is_scanning = false;
             self.scan_rx = None;
+            self.scan_started_at = None;
             self.log("Scan completed.");
             self.toasts.add("Scan completed", ToastKind::Success);
+
+            // Auto-load debug symbols (PDB alongside PE, or DWARF from ELF bytes)
+            self.try_load_symbols();
 
             // Auto-build analysis (queued to background worker)
             self.ensure_disasm();
@@ -848,7 +953,20 @@ impl FreakREApp {
     }
 
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
+        // While scanning, all interaction is blocked by the progress overlay.
+        if self.is_scanning {
+            return;
+        }
+        // Must be read BEFORE ctx.input(): nesting another Context accessor
+        // inside the input() closure deadlocks (it holds the context write
+        // lock), and RawInput no longer carries this flag in egui 0.31.
+        let typing = ctx.wants_keyboard_input();
         ctx.input(|i| {
+            // Plain-letter shortcuts must NOT fire while a text field has
+            // keyboard focus, otherwise typing "g"/"n"/"x"/space in the
+            // filter/search boxes opens dialogs or switches views — this made
+            // controls feel unresponsive.
+
             // ── F5: Decompile (IDA signature shortcut) ────────────────
             if i.key_pressed(egui::Key::F5) {
                 self.active_tab = Tab::Decompiler;
@@ -860,32 +978,23 @@ impl FreakREApp {
             }
 
             // ── G: Go to address ──────────────────────────────────────
-            if !i.modifiers.any() && i.key_pressed(egui::Key::G) {
-                self.show_goto = true;
-                self.goto_input.clear();
+            if !typing && !i.modifiers.any() && i.key_pressed(egui::Key::G) {
+                self.open_goto();
             }
 
             // ── N: Rename function/symbol at cursor ───────────────────
-            if !i.modifiers.any() && i.key_pressed(egui::Key::N) {
-                self.show_rename = true;
-                self.rename_target_addr = Some(self.disasm_offset);
-                // Pre-fill with existing custom name or function name
-                self.rename_input = self.custom_names.get(&self.disasm_offset)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        self.current_function_name_at(self.disasm_offset)
-                            .unwrap_or_default()
-                    });
+            if !typing && !i.modifiers.any() && i.key_pressed(egui::Key::N) {
+                self.open_rename_at(self.disasm_offset);
             }
 
             // ── X: Show cross-references ──────────────────────────────
-            if !i.modifiers.any() && i.key_pressed(egui::Key::X) {
+            if !typing && !i.modifiers.any() && i.key_pressed(egui::Key::X) {
                 self.xref_query_addr = self.disasm_offset;
-                self.active_tab = Tab::Xrefs;
+                self.goto_tab(Tab::Xrefs);
             }
 
             // ── Space: Toggle Disassembly ↔ Graph ────────────────────
-            if !i.modifiers.any() && i.key_pressed(egui::Key::Space) {
+            if !typing && !i.modifiers.any() && i.key_pressed(egui::Key::Space) {
                 self.active_tab = match self.active_tab {
                     Tab::Disassembly => Tab::GraphView,
                     Tab::GraphView => Tab::Disassembly,
@@ -977,16 +1086,12 @@ impl FreakREApp {
             }
 
             // ── ; or : : Add/edit comment at cursor ──────────────────
-            if !i.modifiers.any() && (i.key_pressed(egui::Key::Semicolon) || i.key_pressed(egui::Key::Colon)) {
-                self.show_comment_edit = true;
-                self.comment_target_addr = Some(self.disasm_offset);
-                self.comment_input = self.comments.get(&self.disasm_offset)
-                    .cloned()
-                    .unwrap_or_default();
+            if !typing && !i.modifiers.any() && (i.key_pressed(egui::Key::Semicolon) || i.key_pressed(egui::Key::Colon)) {
+                self.open_comment_at(self.disasm_offset);
             }
 
             // ── Y: Set type (stub) ────────────────────────────────────
-            if !i.modifiers.any() && i.key_pressed(egui::Key::Y) {
+            if !typing && !i.modifiers.any() && i.key_pressed(egui::Key::Y) {
                 self.toasts.add("Set type: not yet implemented", ToastKind::Info);
             }
         });
@@ -1075,7 +1180,7 @@ impl FreakREApp {
             .unwrap_or_else(|| format!("sub_{:X}", addr));
 
         if self.decompile_cache.len() > 256 {
-            self.decompile_cache.clear();
+            evict_cache_by_distance(&mut self.decompile_cache, addr, 128);
         }
         self.decompile_cache.insert(addr, format!("// Decompiling {} @ {:08X}…", func_name, addr));
         self.enqueue_job(JobKey::Decompile(addr), Job::Decompile {
@@ -1084,6 +1189,236 @@ impl FreakREApp {
             func_name,
             is_64bit: self.disasm_is_64bit,
         });
+    }
+
+    // ─── UI-overhaul action helpers ──────────────────────────────
+    //
+    // Every menu entry / toolbar button / shortcut routes through these
+    // so dialogs reset the focus latch exactly once when they OPEN.
+    // (Calling request_focus() every frame steals keyboard focus from
+    // other widgets for as long as the dialog is open, which made
+    // buttons feel dead.)
+
+    /// Switch central tab; lazily kicks off Full Source generation.
+    pub fn goto_tab(&mut self, tab: Tab) {
+        self.active_tab = tab;
+        if tab == Tab::FullSource {
+            self.start_full_source();
+        }
+    }
+
+    pub fn open_goto(&mut self) {
+        self.show_goto = true;
+        self.goto_input.clear();
+        self.dialog_focus_latch = false;
+    }
+
+    pub fn open_rename_at(&mut self, addr: u64) {
+        self.show_rename = true;
+        self.rename_target_addr = Some(addr);
+        self.rename_input = self.custom_names.get(&addr)
+            .cloned()
+            .unwrap_or_else(|| self.current_function_name_at(addr).unwrap_or_default());
+        self.dialog_focus_latch = false;
+    }
+
+    pub fn open_comment_at(&mut self, addr: u64) {
+        self.show_comment_edit = true;
+        self.comment_target_addr = Some(addr);
+        self.comment_input = self.comments.get(&addr).cloned().unwrap_or_default();
+        self.dialog_focus_latch = false;
+    }
+
+    /// Quick-action "Scan": re-scan the current file, or open the picker
+    /// when nothing is loaded yet.
+    pub fn rescan_current_file(&mut self) {
+        if let Some(path) = self.current_file_path.clone() {
+            let path2 = path.clone();
+            self.scan_files(vec![path2]);
+        } else if let Some(path) = rfd::FileDialog::new().pick_file() {
+            self.scan_files(vec![path]);
+        }
+    }
+
+    /// Kick off incremental whole-file decompilation ("Full Source").
+    /// No-ops when already running/finished for the current file.
+    pub fn start_full_source(&mut self) {
+        if self.full_source.running {
+            return;
+        }
+        if !self.full_source.chunks.is_empty() && self.full_source.next >= self.full_source.funcs.len() {
+            return; // already complete for this file
+        }
+        let Some(idx) = self.selected_report
+            .or_else(|| if self.reports.is_empty() { None } else { Some(self.reports.len() - 1) })
+        else {
+            return;
+        };
+        let funcs: Vec<(u64, String, u64)> = match self.reports.get(idx) {
+            Some(report) => {
+                let mut list: Vec<(u64, String, u64)> = report.functions.iter()
+                    .filter(|f| f.size > 0)
+                    .map(|f| (f.address, f.name.clone(), f.address + f.size as u64))
+                    .collect();
+                list.sort_by_key(|(a, _, _)| *a);
+                list.dedup_by_key(|(a, _, _)| *a);
+                list
+            }
+            None => Vec::new(),
+        };
+
+        const MAX_FULL_SOURCE_FUNCS: usize = 4096;
+        let truncated_note = if funcs.len() > MAX_FULL_SOURCE_FUNCS {
+            Some(format!(
+                "// File contains {} functions — processing first {}.",
+                funcs.len(), MAX_FULL_SOURCE_FUNCS
+            ))
+        } else {
+            None
+        };
+
+        self.full_source = FullSourceState {
+            funcs: funcs.into_iter().take(MAX_FULL_SOURCE_FUNCS).collect(),
+            next: 0,
+            done: 0,
+            failed: 0,
+            running: true,
+            started_at: Some(Instant::now()),
+            chunks: Vec::new(),
+            truncated_note,
+        };
+        self.log(format!("Full Source: decompiling {} functions…", self.full_source.funcs.len()));
+    }
+
+    /// Per-frame incremental worker for "Full Source": decompiles a small,
+    /// time-budgeted batch of functions so the UI never freezes.
+    pub fn pump_full_source(&mut self, ctx: &egui::Context) {
+        if !self.full_source.running {
+            return;
+        }
+        let idx = match self.selected_report
+            .or_else(|| if self.reports.is_empty() { None } else { Some(self.reports.len() - 1) })
+        {
+            Some(i) => i,
+            None => {
+                self.full_source.running = false;
+                return;
+            }
+        };
+        let Some(data) = self.report_data.get(idx).cloned() else {
+            self.full_source.running = false;
+            return;
+        };
+        let is_64bit = self.disasm_is_64bit;
+
+        let deadline = Instant::now() + std::time::Duration::from_millis(8);
+        let mut processed = 0usize;
+        while self.full_source.next < self.full_source.funcs.len()
+            && processed < 8
+            && Instant::now() < deadline
+        {
+            let (start, name, end) = &self.full_source.funcs[self.full_source.next];
+            let text = decompile_range_sync(*start, name.as_str(), *end, &data, is_64bit);
+            if text.starts_with("// [FAILED]") {
+                self.full_source.failed += 1;
+            } else {
+                self.full_source.done += 1;
+            }
+            self.full_source.chunks.push((name.clone(), text));
+            self.full_source.next += 1;
+            processed += 1;
+        }
+
+        if self.full_source.next >= self.full_source.funcs.len() {
+            self.full_source.running = false;
+            let total = self.full_source.done + self.full_source.failed;
+            self.log(format!(
+                "Full Source finished: {} ok, {} failed, {} total",
+                self.full_source.done, self.full_source.failed, total
+            ));
+            self.toasts.add("Full Source ready", ToastKind::Success);
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+    }
+}
+
+/// Evict entries from a u64-keyed cache down to `target_len`, removing
+/// entries whose keys are furthest from `reference_addr` first.
+/// This keeps recently-viewed / nearby functions cached while discarding
+/// distant ones, avoiding the pathological full-clear behaviour that
+/// caused re-decompilation storms on large binaries.
+fn evict_cache_by_distance<V>(cache: &mut HashMap<u64, V>, reference_addr: u64, target_len: usize) {
+    if cache.len() <= target_len {
+        return;
+    }
+    let mut entries: Vec<(u64, u64)> = cache
+        .keys()
+        .map(|&k| (k, k.abs_diff(reference_addr)))
+        .collect();
+    // Sort by distance descending so we remove the FURTHEST entries first.
+    entries.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+    let to_remove = cache.len() - target_len;
+    for (key, _) in entries.into_iter().take(to_remove) {
+        cache.remove(&key);
+    }
+}
+
+/// Find the end offset of the function starting at `start` (file offset):
+/// scan forward to the first near RET (0xC3/0xCB), capped at `max` bytes.
+fn code_bounds(data: &[u8], start: usize, max: usize) -> usize {
+    if start >= data.len() {
+        return start;
+    }
+    let mut end = start;
+    let limit = start.saturating_add(max).min(data.len());
+    while end < limit {
+        if data[end] == 0xC3 || data[end] == 0xCB {
+            return end + 1;
+        }
+        end += 1;
+    }
+    end
+}
+
+/// Decompile `[start, end)` synchronously on the calling thread.
+/// Used by the background job runner AND by the incremental Full Source
+/// pump. Failures become placeholder comment blocks, never panics.
+fn decompile_range_sync(
+    start: u64,
+    name: &str,
+    end_hint: u64,
+    data: &[u8],
+    is_64bit: bool,
+) -> String {
+    let start_us = start as usize;
+    if start_us >= data.len() {
+        return format!("// [FAILED] {} @ {:08X}: address out of bounds\n", name, start);
+    }
+    let hinted = (end_hint.max(start + 16) as usize).min(data.len());
+    let end = code_bounds(data, start_us, hinted.saturating_sub(start_us).clamp(16, 0x2000));
+    let code = &data[start_us..end];
+
+    let lifter = X86Lifter::new(is_64bit);
+    match lifter.lift_function(code, start, name) {
+        Ok(ir_func) => match decompile_function(&ir_func) {
+            Ok(c_code) => {
+                let mut out = format!(
+                    "// Decompiled by FreakRE @ {:08X} — {} IR instructions, {} blocks\n",
+                    start, ir_func.total_instructions(), ir_func.blocks.len()
+                );
+                out.push_str(&c_code);
+                out
+            }
+            Err(e) => format!(
+                "// [FAILED] {} @ {:08X}: decompiler error: {}\n// Falling back to raw pseudocode is disabled in Full Source mode.\n",
+                name, start, e
+            ),
+        },
+        Err(e) => format!(
+            "// [FAILED] {} @ {:08X}: lifting failed ({})\n",
+            name, start, e
+        ),
     }
 }
 
@@ -1257,10 +1592,18 @@ fn run_job(job: Job) -> JobResult {
 }
 
 impl FreakREApp {
-    /// Get function name at address (custom name > report function name > generated)
+    /// Get function name at address (custom name > symbol DB > report function name > generated)
     fn current_function_name_at(&self, addr: u64) -> Option<String> {
         if let Some(name) = self.custom_names.get(&addr) {
             return Some(name.clone());
+        }
+        // Try debug symbols (PDB/DWARF) before falling back to scanner heuristics.
+        if let Some(ref db) = self.symbol_db {
+            if let Some(sym) = db.find_by_address(addr) {
+                if !sym.name.is_empty() {
+                    return Some(sym.name.clone());
+                }
+            }
         }
         let idx = self.selected_report
             .or_else(|| if self.reports.is_empty() { None } else { Some(self.reports.len() - 1) })?;
@@ -1268,6 +1611,63 @@ impl FreakREApp {
         report.functions.iter()
             .find(|f| addr >= f.address && addr < f.address + f.size as u64)
             .map(|f| f.name.clone())
+    }
+
+    /// Attempt to load debug symbols for the currently loaded binary.
+    /// Tries PDB file alongside the binary first, then DWARF from ELF bytes.
+    fn try_load_symbols(&mut self) {
+        let path = match self.current_file_path.as_ref() {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        // 1. Try PDB alongside the binary (same directory, .pdb extension)
+        let pdb_path = path.with_extension("pdb");
+        if pdb_path.exists() {
+            match SymbolDb::load_pdb(&pdb_path) {
+                Ok(db) => {
+                    let count = db.functions().len();
+                    self.symbol_db = Some(db);
+                    self.log(format!("Loaded {} symbols from {:?}", count, pdb_path));
+                    self.toasts.add(
+                        format!("Symbols: {} functions from PDB", count),
+                        ToastKind::Success,
+                    );
+                    return;
+                }
+                Err(e) => {
+                    self.log(format!("PDB load failed: {}", e));
+                }
+            }
+        }
+
+        // 2. Try DWARF from ELF binary bytes
+        let idx = self.selected_report
+            .or_else(|| if self.reports.is_empty() { None } else { Some(self.reports.len() - 1) });
+        if let Some(i) = idx {
+            if let Some(data) = self.report_data.get(i) {
+                if !data.is_empty() {
+                    match SymbolDb::load_dwarf_elf(data) {
+                        Ok(db) => {
+                            let count = db.functions().len();
+                            self.symbol_db = Some(db);
+                            self.log(format!("Loaded {} symbols from DWARF debug info", count));
+                            self.toasts.add(
+                                format!("Symbols: {} functions from DWARF", count),
+                                ToastKind::Success,
+                            );
+                            return;
+                        }
+                        Err(freakre_symbols::SymbolError::NoDebugInfo) => {
+                            // Not an error — just no debug info in this binary.
+                        }
+                        Err(e) => {
+                            self.log(format!("DWARF load failed: {}", e));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Execute script in REPL
@@ -1317,7 +1717,7 @@ impl FreakREApp {
 
 fn tab_category(tab: &Tab) -> &'static str {
     match tab {
-        Tab::Disassembly | Tab::Decompiler | Tab::GraphView => "analysis",
+        Tab::Disassembly | Tab::Decompiler | Tab::GraphView | Tab::FullSource => "analysis",
         Tab::HexView | Tab::Strings | Tab::Imports | Tab::Xrefs | Tab::Structures => "data",
         Tab::Report | Tab::Findings | Tab::Entropy | Tab::MlClassify
         | Tab::FuncSigs | Tab::Diffing | Tab::DataFlow => "report",
@@ -1334,6 +1734,69 @@ fn tab_accent(category: &str) -> egui::Color32 {
     }
 }
 
+/// Central IDA-style tab bar.
+///
+/// CLICK FIX: egui's `Frame::show` returns a response that only senses
+/// HOVER (`Frame::allocate_space` uses `Sense::hover()`), because its inner
+/// widgets here are plain labels which never sense clicks. Calling
+/// `.clicked()` on such a response ALWAYS returns false — the old code made
+/// every central tab (including "View"-adjacent ones) unclickable, forcing
+/// users through the menu repeatedly. `Response::interact(Sense::CLICK)`
+/// re-registers the exact same rect as click-sensitive, so one click on any
+/// part of the tab activates it.
+fn render_central_tab_strip(ui: &mut egui::Ui, app: &mut FreakREApp) {
+    let c = app.colors.clone();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let mut prev_category = "";
+        for tab in Tab::main_tabs() {
+            let is_active = app.active_tab == *tab;
+            let bg = if is_active { c.bg_tab_active } else { c.bg_tab_inactive };
+            let fg = if is_active { c.text_white } else { c.text_secondary };
+            let cat = tab_category(tab);
+
+            // Thin separator between tab categories
+            if !prev_category.is_empty() && prev_category != cat {
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(2.0);
+            }
+            prev_category = cat;
+
+            let frame = egui::Frame::new()
+                .fill(bg)
+                .stroke(egui::Stroke::new(1.0_f32, c.border))
+                .inner_margin(egui::Margin::symmetric(10, 4));
+
+            let resp = frame.show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(1.0);
+                    ui.label(egui::RichText::new("●").size(8.0).color(tab_accent(cat)));
+                    ui.label(egui::RichText::new(tab.label()).size(11.0).color(fg));
+                });
+            }).response.interact(egui::Sense::CLICK);
+
+            // Accent underline under the active tab
+            if is_active {
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(
+                        resp.rect.left_bottom() + egui::vec2(1.0, -2.0),
+                        egui::vec2(resp.rect.width() - 2.0, 2.0),
+                    ),
+                    0.0,
+                    tab_accent(cat),
+                );
+            }
+
+            if resp.clicked() {
+                app.goto_tab(*tab);
+            } else if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
+    });
+}
+
 /// Verdict chip color for the status bar.
 fn verdict_color(score: f64) -> egui::Color32 {
     if score < 0.15 {
@@ -1342,6 +1805,17 @@ fn verdict_color(score: f64) -> egui::Color32 {
         egui::Color32::from_rgb(0xE2, 0xA4, 0x3C)
     } else {
         egui::Color32::from_rgb(0xE5, 0x5B, 0x5B)
+    }
+}
+
+/// True when the current report carries at least one finding produced by
+/// the scanner's backdoor analyzer.
+fn current_report_has_backdoor_findings(app: &FreakREApp) -> bool {
+    let idx = app.selected_report
+        .or_else(|| if app.reports.is_empty() { None } else { Some(app.reports.len() - 1) });
+    match idx.and_then(|i| app.reports.get(i)) {
+        Some(report) => report.findings.iter().any(|f| f.module == "backdoor-analyzer"),
+        None => false,
     }
 }
 
@@ -1497,23 +1971,16 @@ impl eframe::App for FreakREApp {
                                 ui.close_menu();
                             }
                             if ui.button("Go to Address (G)").clicked() {
-                                self.show_goto = true;
-                                self.goto_input.clear();
+                                self.open_goto();
                                 ui.close_menu();
                             }
                             if ui.button("Rename (N)").clicked() {
-                                self.show_rename = true;
-                                self.rename_target_addr = Some(self.disasm_offset);
-                                self.rename_input = self.custom_names.get(&self.disasm_offset)
-                                    .cloned().unwrap_or_default();
+                                self.open_rename_at(self.disasm_offset);
                                 ui.close_menu();
                             }
                             ui.separator();
                             if ui.button("Add Comment (;)").clicked() {
-                                self.show_comment_edit = true;
-                                self.comment_target_addr = Some(self.disasm_offset);
-                                self.comment_input = self.comments.get(&self.disasm_offset)
-                                    .cloned().unwrap_or_default();
+                                self.open_comment_at(self.disasm_offset);
                                 ui.close_menu();
                             }
                         });
@@ -1550,9 +2017,16 @@ impl eframe::App for FreakREApp {
                         });
 
                         ui.menu_button("View", |ui| {
+                            for mode in Mode::all() {
+                                if ui.selectable_label(self.active_mode == *mode, format!("Mode: {}", mode.label())).clicked() {
+                                    self.active_mode = *mode;
+                                    ui.close_menu();
+                                }
+                            }
+                            ui.separator();
                             for tab in Tab::main_tabs() {
                                 if ui.selectable_label(self.active_tab == *tab, tab.label()).clicked() {
-                                    self.active_tab = *tab;
+                                    self.goto_tab(*tab);
                                     ui.close_menu();
                                 }
                             }
@@ -1564,14 +2038,36 @@ impl eframe::App for FreakREApp {
                                     } else {
                                         format!("{}: (empty)", i)
                                     };
-                                    if ui.button(&label).clicked() {
+                                    if ui.add_enabled(self.bookmarks[i as usize].is_some(), egui::Button::new(&label)).clicked() {
                                         if let Some(addr) = self.bookmarks[i as usize] {
                                             self.nav_push(self.disasm_offset);
                                             self.disasm_offset = addr;
-                                            self.active_tab = Tab::Disassembly;
+                                            self.goto_tab(Tab::Disassembly);
                                         }
                                         ui.close_menu();
                                     }
+                                }
+                            });
+                            ui.menu_button("Recent Files", |ui| {
+                                if self.settings.recent_files.is_empty() {
+                                    ui.label(egui::RichText::new("(none yet)").color(c.text_secondary).size(11.0));
+                                }
+                                let mut picked: Option<PathBuf> = None;
+                                for path in &self.settings.recent_files {
+                                    let name = std::path::Path::new(path)
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| path.clone());
+                                    if ui.button(name).clicked() {
+                                        picked = Some(PathBuf::from(path));
+                                    }
+                                }
+                                if let Some(p) = picked {
+                                    // Act AFTER the menu closes: opening a
+                                    // modal file scan while the popup still
+                                    // owns focus can swallow the click.
+                                    ui.close_menu();
+                                    self.scan_files(vec![p]);
                                 }
                             });
                         });
@@ -1579,10 +2075,47 @@ impl eframe::App for FreakREApp {
                         ui.menu_button("Help", |ui| {
                             ui.label(egui::RichText::new("FreakRE v0.2").monospace().size(11.0));
                             ui.separator();
+                            ui.label(egui::RichText::new("Modes: Standard / Multi / Malware Detector / Backdoor Analyzer").color(c.text_secondary).size(10.0));
                             if ui.button("About").clicked() {
+                                self.toasts.add(
+                                    "FreakRE v0.2 — reverse engineering framework",
+                                    ToastKind::Info,
+                                );
                                 ui.close_menu();
                             }
                         });
+                    });
+                });
+            });
+
+        // ─── Mode Strip (top-level modes ABOVE all other views) ─────
+        egui::TopBottomPanel::top("mode_strip")
+            .exact_height(26.0)
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("MODE").size(9.0).color(c.text_secondary).monospace().strong());
+                    for mode in Mode::all() {
+                        let active = self.active_mode == *mode;
+                        let text = egui::RichText::new(mode.label()).size(11.5);
+                        let resp = ui.add(
+                            egui::Button::new(if active { text.strong().color(c.text_white) } else { text.color(c.text_secondary) })
+                                .selected(active)
+                                .fill(if active { c.bg_selection } else { egui::Color32::TRANSPARENT })
+                                .min_size(egui::vec2(0.0, 20.0)),
+                        );
+                        if resp.clicked() {
+                            self.active_mode = *mode;
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let hint = match self.active_mode {
+                            Mode::Standard => "classic IDA-style workspace",
+                            Mode::Multi => "pseudocode ⇄ assembly, synchronized cursor",
+                            Mode::MalwareDetector => "scanner & ML verdict dashboard",
+                            Mode::BackdoorAnalyzer => "backdoor findings by profile",
+                        };
+                        ui.label(egui::RichText::new(hint).size(10.0).color(c.text_secondary).monospace());
                     });
                 });
             });
@@ -1593,12 +2126,54 @@ impl eframe::App for FreakREApp {
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(6.0);
-                    if ui.button("📂 Open").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_file() {
-                            self.scan_files(vec![path]);
-                        }
+
+                    // Persistent quick actions (single-click guaranteed:
+                    // plain egui buttons own their full hit area).
+                    let scan_btn = if !self.is_scanning {
+                        egui::Button::new(egui::RichText::new("▶ Scan"))
+                    } else {
+                        egui::Button::new(egui::RichText::new("… Scanning")).fill(c.bg_hover)
+                    };
+                    if ui.add_enabled(!self.is_scanning, scan_btn)
+                        .on_disabled_hover_text("Scan already in progress")
+                        .clicked()
+                    {
+                        self.rescan_current_file();
                     }
+                    if ui.button("⚡ Decompile  F5").clicked() {
+                        self.goto_tab(Tab::Decompiler);
+                        self.decompile_at(self.disasm_offset);
+                    }
+                    if ui.button(" CFG  Space").clicked() {
+                        self.build_cfg_at(self.disasm_offset);
+                        self.goto_tab(Tab::GraphView);
+                    }
+                    if ui.button(" Xrefs  X").clicked() {
+                        self.xref_query_addr = self.disasm_offset;
+                        self.goto_tab(Tab::Xrefs);
+                    }
+                    if ui.button(" Strings").clicked() {
+                        self.goto_tab(Tab::Strings);
+                    }
+                    if ui.button(" Backdoor Scan").clicked() {
+                        // Findings are produced by the scanner's backdoor
+                        // analyzer; surface them on the dedicated mode.
+                        self.active_mode = Mode::BackdoorAnalyzer;
+                        let has_bd = current_report_has_backdoor_findings(self);
+                        self.log(if has_bd {
+                            "Backdoor scan: findings available (Backdoor Analyzer)".to_string()
+                        } else {
+                            "Backdoor scan: no backdoor indicators found".to_string()
+                        });
+                    }
+                    if ui.button(" Full Source").clicked() {
+                        self.active_mode = Mode::Standard;
+                        self.goto_tab(Tab::FullSource);
+                    }
+
                     ui.separator();
+
+                    // Navigation aids
                     let can_back = self.nav_history_pos > 0;
                     let can_fwd = self.nav_history_pos + 1 < self.nav_history.len();
                     let back = ui.add_enabled(can_back, egui::Button::new("◀"));
@@ -1607,26 +2182,8 @@ impl eframe::App for FreakREApp {
                     if fwd.clicked() { self.nav_forward(); }
                     back.on_disabled_hover_text("No navigation history (Alt+←)");
                     fwd.on_disabled_hover_text("Nothing forward (Alt+→)");
-                    ui.separator();
                     if ui.button("Goto (G)").clicked() {
-                        self.show_goto = true;
-                        self.goto_input.clear();
-                    }
-                    ui.separator();
-                    if ui.button("▶ Decompile  F5").clicked() {
-                        self.active_tab = Tab::Decompiler;
-                        self.decompile_at(self.disasm_offset);
-                    }
-                    if ui.button("CFG  Space").clicked() {
-                        self.build_cfg_at(self.disasm_offset);
-                        self.active_tab = Tab::GraphView;
-                    }
-                    if ui.button("Xrefs  X").clicked() {
-                        self.xref_query_addr = self.disasm_offset;
-                        self.active_tab = Tab::Xrefs;
-                    }
-                    if ui.button("Hex").clicked() {
-                        self.active_tab = Tab::HexView;
+                        self.open_goto();
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1834,7 +2391,7 @@ impl eframe::App for FreakREApp {
                                     ui.label(egui::RichText::new(&report.file_type).color(egui::Color32::WHITE).size(11.0).monospace());
                                     ui.label(egui::RichText::new("|").color(egui::Color32::from_gray(180)).size(11.0));
                                     // Verdict chip
-                                    let score = report.suspicion_score as f64;
+                                    let score = report.suspicion_score;
                                     let vc = verdict_color(score);
                                     let chip = egui::Frame::new()
                                         .fill(vc.gamma_multiply(0.25))
@@ -1939,7 +2496,7 @@ impl eframe::App for FreakREApp {
                 });
         }
 
-        // ─── Central Panel with Tab Bar ─────────────────────────────
+        // ─── Central Panel ──────────────────────────────────────────
         egui::CentralPanel::default().show(ctx, |ui| {
             let has_file = !self.reports.is_empty() || self.is_scanning;
 
@@ -1948,91 +2505,51 @@ impl eframe::App for FreakREApp {
                 return;
             }
 
-            // Scan progress bar (thin strip above tabs)
-            if self.is_scanning && self.scan_total > 0 {
-                let frac = self.scan_done as f32 / self.scan_total.max(1) as f32;
-                ui.add(
-                    egui::ProgressBar::new(frac)
-                        .desired_height(3.0)
-                        .show_percentage(),
-                );
-            }
-
-            // Tab bar (flat IDA-style with accent underline for active tab)
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                let mut prev_category = "";
-                for tab in Tab::main_tabs() {
-                    let is_active = self.active_tab == *tab;
-                    let bg = if is_active { c.bg_tab_active } else { c.bg_tab_inactive };
-                    let fg = if is_active { c.text_white } else { c.text_secondary };
-                    let cat = tab_category(tab);
-
-                    // Thin separator between tab categories
-                    if !prev_category.is_empty() && prev_category != cat {
-                        ui.add_space(6.0);
-                        ui.separator();
-                        ui.add_space(2.0);
-                    }
-                    prev_category = cat;
-
-                    let frame = egui::Frame::new()
-                        .fill(bg)
-                        .stroke(egui::Stroke::new(1.0_f32, c.border))
-                        .inner_margin(egui::Margin::symmetric(10, 4));
-
-                    let resp = frame.show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add_space(1.0);
-                            ui.label(egui::RichText::new("●").size(8.0).color(tab_accent(cat)));
-                            ui.label(egui::RichText::new(tab.label()).size(11.0).color(fg));
-                        });
-                    }).response;
-
-                    // Accent underline under the active tab
-                    if is_active {
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(
-                                resp.rect.left_bottom() + egui::vec2(1.0, -2.0),
-                                egui::vec2(resp.rect.width() - 2.0, 2.0),
-                            ),
-                            0.0,
-                            tab_accent(cat),
-                        );
-                    }
-
-                    let clicked = resp.clicked();
-                    if resp.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    if clicked {
-                        self.active_tab = *tab;
-                    }
+            let mode = self.active_mode;
+            if mode == Mode::Standard {
+                // Scan progress bar (thin strip above tabs)
+                if self.is_scanning && self.scan_total > 0 {
+                    let frac = self.scan_done as f32 / self.scan_total.max(1) as f32;
+                    ui.add(
+                        egui::ProgressBar::new(frac)
+                            .desired_height(3.0)
+                            .show_percentage(),
+                    );
                 }
-            });
 
-            ui.separator();
+                render_central_tab_strip(ui, self);
 
-            // Active view content
-            match self.active_tab {
-                Tab::Disassembly  => views::disassembly_view(ui, self),
-                Tab::Decompiler   => views::decompiler_view(ui, self),
-                Tab::HexView      => views::hex_view(ui, self),
-                Tab::GraphView    => views::graph_view(ui, self),
-                Tab::Strings      => views::strings_view(ui, self),
-                Tab::Imports      => views::imports_view(ui, self),
-                Tab::Xrefs        => views::xrefs_view(ui, self),
-                Tab::Entropy      => views::entropy_view(ui, self),
-                Tab::Report       => views::report_view(ui, self),
-                Tab::Findings     => views::findings_view(ui, self),
-                Tab::Structures   => views::structures_view(ui, self),
-                Tab::Settings     => views::settings_view(ui, self),
-                Tab::Scripting    => views::scripting_view(ui, self),
-                Tab::Plugins      => views::plugins_view(ui, self),
-                Tab::Diffing      => views::diffing_view(ui, self),
-                Tab::DataFlow     => views::dataflow_view(ui, self),
-                Tab::MlClassify   => views::ml_classify_view(ui, self),
-                Tab::FuncSigs     => views::func_sigs_view(ui, self),
+                ui.separator();
+
+                // Active view content
+                match self.active_tab {
+                    Tab::Disassembly  => views::disassembly_view(ui, self),
+                    Tab::Decompiler   => views::decompiler_view(ui, self),
+                    Tab::HexView      => views::hex_view(ui, self),
+                    Tab::GraphView    => views::graph_view(ui, self),
+                    Tab::Strings      => views::strings_view(ui, self),
+                    Tab::Imports      => views::imports_view(ui, self),
+                    Tab::Xrefs        => views::xrefs_view(ui, self),
+                    Tab::Entropy      => views::entropy_view(ui, self),
+                    Tab::Report       => views::report_view(ui, self),
+                    Tab::Findings     => views::findings_view(ui, self),
+                    Tab::Structures   => views::structures_view(ui, self),
+                    Tab::Settings     => views::settings_view(ui, self),
+                    Tab::Scripting    => views::scripting_view(ui, self),
+                    Tab::Plugins      => views::plugins_view(ui, self),
+                    Tab::Diffing      => views::diffing_view(ui, self),
+                    Tab::DataFlow     => views::dataflow_view(ui, self),
+                    Tab::MlClassify   => views::ml_classify_view(ui, self),
+                    Tab::FuncSigs     => views::func_sigs_view(ui, self),
+                    Tab::FullSource   => views::full_source_view(ui, self),
+                }
+            } else {
+                match mode {
+                    Mode::Multi             => views::multi_view(ui, self),
+                    Mode::MalwareDetector   => views::malware_detector_view(ui, self),
+                    Mode::BackdoorAnalyzer  => views::backdoor_analyzer_view(ui, self),
+                    Mode::Standard          => unreachable!("handled above"),
+                }
             }
         });
 
@@ -2044,7 +2561,102 @@ impl eframe::App for FreakREApp {
         // ─── Toast Notifications ────────────────────────────────────
         self.toasts.show(ctx, &self.colors);
 
+        // ─── Incremental Full Source worker (no UI freeze) ─────────
+        self.pump_full_source(ctx);
+
+        // ─── Centered modal progress overlay while scanning ────────
+        // Drawn LAST so it sits on top; the full-screen blocker area is
+        // click-sensitive and therefore consumes all pointer input while
+        // a scan runs (keyboard shortcuts are gated separately).
         if self.is_scanning {
+            let started = self.scan_started_at;
+            let total = self.scan_total;
+            let done = self.scan_done.min(self.scan_total.max(1));
+            let file_name = self.current_file_path.as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "file".to_string());
+
+            // Dimmer + input blocker covering the whole window.
+            egui::Area::new(egui::Id::new("scan_modal_blocker"))
+                .order(egui::Order::Foreground)
+                .interactable(true)
+                .show(ctx, |ui| {
+                    let screen = ctx.screen_rect();
+                    let _resp = ui.allocate_rect(screen, egui::Sense::CLICK);
+                    ui.painter().rect_filled(
+                        screen,
+                        0.0,
+                        egui::Color32::from_black_alpha(150),
+                    );
+                });
+
+            // Centered card: spinner + progress text + elapsed time.
+            egui::Area::new(egui::Id::new("scan_modal_card"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .interactable(false)
+                .show(ctx, |ui| {
+                    let elapsed = started
+                        .map(|t| t.elapsed().as_secs_f64())
+                        .unwrap_or(0.0);
+                    let mins = (elapsed / 60.0) as u64;
+                    let secs = elapsed % 60.0;
+
+                    egui::Frame::new()
+                        .fill(c.bg_panel)
+                        .stroke(egui::Stroke::new(1.0_f32, c.info))
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .inner_margin(egui::Margin::same(24))
+                        .show(ui, |ui| {
+                            ui.set_min_width(360.0);
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(4.0);
+                                ui.add(egui::Spinner::new().size(34.0));
+                                ui.add_space(12.0);
+                                ui.label(
+                                    egui::RichText::new("Scanning")
+                                        .size(16.0).strong().color(c.text_white),
+                                );
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(&file_name)
+                                        .size(12.0).monospace().color(c.func_color),
+                                );
+                                ui.add_space(10.0);
+                                if total > 1 {
+                                    let frac = done as f32 / total.max(1) as f32;
+                                    ui.add(
+                                        egui::ProgressBar::new(frac)
+                                            .desired_width(320.0)
+                                            .desired_height(14.0)
+                                            .show_percentage(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!("file {} of {}", done, total))
+                                            .size(11.0).monospace().color(c.text_secondary),
+                                    );
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new("analyzing binary…")
+                                            .size(11.0).monospace().color(c.text_secondary),
+                                    );
+                                }
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new(format!("elapsed  {:02}:{:05.2}", mins, secs))
+                                        .size(11.0).monospace().color(c.text_secondary),
+                                );
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new("input is blocked until the scan finishes")
+                                        .size(9.5).color(c.text_secondary.gamma_multiply(0.7)),
+                                );
+                                ui.add_space(4.0);
+                            });
+                        });
+                });
+
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
     }

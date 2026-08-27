@@ -11,6 +11,7 @@ dataflow = { path = "../dataflow" }
 freakre-type-propagation = { path = "../type-propagation" }
 freakre-x86 = { path = "../freakre-x86" }
 pe-parser = { path = "../pe-parser" }
+func-sigs = { path = "../func-sigs" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 indexmap = "2"

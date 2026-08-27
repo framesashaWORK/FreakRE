@@ -293,7 +293,9 @@ impl Arch {
     pub fn has_lifter(&self) -> bool {
         matches!(self,
             Arch::X86 | Arch::X86_64 |
-            Arch::Arm32 | Arch::Arm32Thumb | Arch::Arm64
+            Arch::Arm32 | Arch::Arm32Thumb | Arch::Arm64 |
+            Arch::Mips32LE | Arch::Mips32BE | Arch::Mips64LE | Arch::Mips64BE |
+            Arch::RiscV32 | Arch::RiscV64
         )
     }
 }

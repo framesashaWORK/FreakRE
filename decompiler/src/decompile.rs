@@ -19,6 +19,16 @@ pub struct DecompilerConfig {
     
     /// Indentation string (default: 4 spaces)
     pub indent: String,
+
+    /// Whether to run SSA construction / trivial-phi removal / out-of-SSA lowering
+    /// before structuring. Enabled by default; falls back silently if SSA fails.
+    pub use_ssa: bool,
+
+    /// Whether to run interprocedural analysis (calling convention, param count)
+    /// and auto-populate call names from the program's own function map.
+    /// Enabled by default for `decompile_program`.
+    pub auto_interproc: bool,
+    pub auto_call_names: bool,
 }
 
 impl Default for DecompilerConfig {
@@ -28,6 +38,9 @@ impl Default for DecompilerConfig {
             simplify_expressions: true,
             annotate_addresses: false,
             indent: "    ".to_string(),
+            use_ssa: true,
+            auto_interproc: true,
+            auto_call_names: true,
         }
     }
 }
@@ -50,22 +63,17 @@ pub fn decompile_function(func: &IrFunction) -> Result<String, DecompileError> {
     decompile_function_with_config(func, &DecompilerConfig::default())
 }
 
-/// Decompile a function through an explicit SSA round-trip (experimental).
+/// Decompile a function through an explicit SSA round-trip.
 ///
-/// The function is converted to SSA form (`freakre_ir::ssa::to_ssa`) and
-/// lowered back (`from_ssa`, naive edge-copy out-of-SSA) before running the
-/// regular pipeline. Falls back to the plain [`decompile_function`] path when
-/// SSA construction fails (e.g. unreachable blocks). The default
-/// `decompile_function` pipeline is intentionally left untouched.
+/// When `use_ssa` is enabled (now default with stack-aware fallback), the
+/// function is converted `to_ssa -> remove_trivial_phis -> from_ssa` before
+/// structuring. Stack-heavy functions where `rsp` would be lost (SSA lowers
+/// `Register("rsp")` to fresh `Var`s) are detected and SSA is skipped for
+/// that function so `recover_stack_vars` keeps working.
 pub fn decompile_function_ssa(func: &IrFunction) -> Result<String, DecompileError> {
-    let default_config = DecompilerConfig::default();
-    let mut lifted = func.clone();
-    let ssa = match freakre_ir::ssa::to_ssa(&mut lifted) {
-        Ok(ssa) => ssa,
-        Err(_) => return decompile_function_with_config(func, &default_config),
-    };
-    let ir = freakre_ir::ssa::from_ssa(&ssa);
-    decompile_function_with_config(&ir, &default_config)
+    let mut cfg = DecompilerConfig::default();
+    cfg.use_ssa = true;
+    decompile_function_with_config(func, &cfg)
 }
 
 /// Decompile a single IR function with custom configuration
@@ -73,14 +81,62 @@ pub fn decompile_function_with_config(
     func: &IrFunction,
     config: &DecompilerConfig,
 ) -> Result<String, DecompileError> {
+    decompile_function_inner(
+        func,
+        config,
+        &crate::call_naming::SignatureMap::default(),
+        &crate::call_naming::AddrNameMap::default(),
+    )
+}
+
+fn decompile_function_inner(
+    func: &IrFunction,
+    config: &DecompilerConfig,
+    signatures: &crate::call_naming::SignatureMap,
+    addr_names: &crate::call_naming::AddrNameMap,
+) -> Result<String, DecompileError> {
     // Phase 0: IR cleanups (flag folding, temp propagation, dead flags)
     let mut ir = func.clone();
     crate::fold_flags::fold_flag_comparisons(&mut ir);
     crate::fold_flags::propagate_block_temps(&mut ir);
     crate::fold_flags::fuse_load_copies(&mut ir);
+    crate::fold_flags::fold_adc_carries(&mut ir);
+
+    // Phase 0.6: SSA round-trip (optional, enabled by default).
+    // Must run before stack-var recovery so that recovered Var ids correspond
+    // to the final lowered IR (from_ssa allocates fresh Vars). However SSA
+    // lowers `Register("rsp")` to `Var`s, which blinds `recover_stack_vars`
+    // (it keys on `Register("rsp")`). For functions that actually use `rsp`
+    // for stack slots, we detect the loss and fall back to the pre-SSA IR.
+    if config.use_ssa {
+        let has_stack_access = ir.blocks.iter().any(|b| {
+            b.insts.iter().any(|i| {
+                i.sources().iter().any(|v| matches!(v, freakre_ir::Value::Register { name, .. } if name == "rsp"))
+                    || i.dst().map_or(false, |d| matches!(d, freakre_ir::Value::Register { name, .. } if name == "rsp"))
+            })
+        });
+        let mut ssa_candidate = ir.clone();
+        if let Ok(mut ssa) = freakre_ir::ssa::to_ssa(&mut ssa_candidate) {
+            freakre_ir::ssa::remove_trivial_phis(&mut ssa);
+            let lowered = freakre_ir::ssa::from_ssa(&ssa);
+            let lowered_has_rsp = lowered.blocks.iter().any(|b| {
+                b.insts.iter().any(|i| {
+                    i.sources().iter().any(|v| matches!(v, freakre_ir::Value::Register { name, .. } if name == "rsp"))
+                        || i.dst().map_or(false, |d| matches!(d, freakre_ir::Value::Register { name, .. } if name == "rsp"))
+                })
+            });
+            if !(has_stack_access && !lowered_has_rsp) {
+                ir = lowered;
+                crate::fold_flags::eliminate_dead_flag_defs(&mut ir);
+            }
+            // else: SSA would hide `rsp`; keep original `ir` for stack recovery.
+        }
+    }
 
     // Phase 0.5: stack-variable recovery (rsp-relative Load/Store → locals).
-    // Runs before dead-flag elimination so recovered copies stay alive.
+    // Runs after SSA so that the recovered mapping matches the final IR's Var ids,
+    // and before final dead-flag elimination so recovered copies stay alive.
+    // If SSA was skipped due to rsp loss, `ir` is still the pre-SSA form.
     let stack_var_names = crate::stack_vars::recover_stack_vars(&mut ir);
     crate::fold_flags::eliminate_dead_flag_defs(&mut ir);
 
@@ -106,6 +162,8 @@ pub fn decompile_function_with_config(
         crate::simplify::simplify_function(&mut ast);
     }
 
+    crate::call_naming::apply_call_naming_with(&mut ast, signatures, addr_names, Some(ir.entry_address));
+
     // Phase 6: Convert AST to C pseudocode
     let c_code = ast_to_c(&ast);
 
@@ -122,13 +180,40 @@ pub fn decompile_program_with_config(
     program: &IrProgram,
     config: &DecompilerConfig,
 ) -> Result<Vec<(String, String)>, DecompileError> {
+    // Interprocedural analysis (calling conventions) and auto call-name maps
+    let analysis = if config.auto_interproc {
+        Some(crate::interproc::analyze_program(program))
+    } else {
+        None
+    };
+    let addr_names = if config.auto_call_names {
+        crate::call_naming::addr_names_from_program(program)
+    } else {
+        crate::call_naming::AddrNameMap::default()
+    };
+    let signatures = crate::call_naming::SignatureMap::default();
+
     let mut results = Vec::new();
-    
     for func in &program.functions {
-        let c_code = decompile_function_with_config(func, config)?;
+        // Enrich metadata from interproc analysis if available
+        let mut enriched = func.clone();
+        if let Some(ref an) = analysis {
+            if let Some(summary) = an.get_summary(&func.name) {
+                if enriched.metadata.calling_convention.is_none() {
+                    enriched.metadata.calling_convention = Some(summary.calling_convention.to_string());
+                }
+                if enriched.metadata.return_type.is_none() {
+                    if let Some(ref rt) = summary.return_type {
+                        if *rt != freakre_ir::Ty::Unknown {
+                            enriched.metadata.return_type = Some(rt.clone());
+                        }
+                    }
+                }
+            }
+        }
+        let c_code = decompile_function_inner(&enriched, config, &signatures, &addr_names)?;
         results.push((func.name.clone(), c_code));
     }
-    
     Ok(results)
 }
 

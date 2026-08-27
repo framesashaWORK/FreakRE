@@ -311,7 +311,7 @@ impl<'a> Parser<'a> {
                     escaped = true;
                     self.advance(1);
                 } else if c == '/' {
-                    let value = self.input[start..self.pos].as_bytes().to_vec();
+                    let value = self.input.as_bytes()[start..self.pos].to_vec();
                     self.advance(1);
                     return Ok(TextPattern {
                         value,

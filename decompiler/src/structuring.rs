@@ -672,6 +672,7 @@ impl<'a> ControlFlowStructurer<'a> {
     /// Build the then-arm for a mid-loop early exit: convert the break
     /// path's own block(s) without spilling past the loop boundary, then
     /// terminate with `break`.
+    #[allow(clippy::too_many_arguments)]
     fn build_break_arm(
         &self,
         target: BlockId,
@@ -1206,7 +1207,7 @@ fn compute_dominator_tree(func: &IrFunction) -> HashMap<BlockId, Vec<BlockId>> {
 
 /// Whether `block` may be expanded during a scoped search (`None` = unscoped).
 fn in_scope(scope: Option<&HashSet<BlockId>>, block: &BlockId) -> bool {
-    scope.map_or(true, |s| s.contains(block))
+    scope.is_none_or(|s| s.contains(block))
 }
 
 /// Whether the last statement transfers control (return/break/continue/goto),
@@ -1460,12 +1461,23 @@ fn build_cmp_index(func: &IrFunction) -> CmpIndex {
     let mut map: HashMap<u32, (u32, i64, bool)> = HashMap::new();
     for block in &func.blocks {
         for inst in &block.insts {
-            if let IrInst::Binary { dst, op: op @ (OpCode::Eq | OpCode::Ne), lhs, rhs } = inst {
+            // Handle Eq/Ne as well as range checks LtU/LeU/GtU/GeU for switch bounds
+            let (op, is_eq) = match inst {
+                IrInst::Binary { dst: _, op: OpCode::Eq, .. } => (OpCode::Eq, true),
+                IrInst::Binary { dst: _, op: OpCode::Ne, .. } => (OpCode::Ne, false),
+                IrInst::Binary { dst: _, op: OpCode::LtU, .. } => (OpCode::LtU, false),
+                IrInst::Binary { dst: _, op: OpCode::LeU, .. } => (OpCode::LeU, false),
+                IrInst::Binary { dst: _, op: OpCode::GtU, .. } => (OpCode::GtU, false),
+                IrInst::Binary { dst: _, op: OpCode::GeU, .. } => (OpCode::GeU, false),
+                _ => continue,
+            };
+            if let IrInst::Binary { dst, lhs, rhs, .. } = inst {
                 let cond_id = match dst.var_id() {
                     Some(id) => id,
                     None => continue,
                 };
-                let eq_on_true = *op == OpCode::Eq;
+                let eq_on_true = is_eq;
+                // For range ops, treat as not eq, but still record
                 let info = if let (Some(vid), Some(cval)) = (lhs.var_id(), rhs.as_const()) {
                     Some((vid, cval, eq_on_true))
                 } else if let (Some(cval), Some(vid)) = (lhs.as_const(), rhs.var_id()) {
@@ -1476,6 +1488,7 @@ fn build_cmp_index(func: &IrFunction) -> CmpIndex {
                 if let Some(info) = info {
                     map.entry(cond_id).or_insert(info);
                 }
+                let _ = op;
             }
         }
     }
