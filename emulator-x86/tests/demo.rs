@@ -140,7 +140,7 @@ fn call_recorded_and_stubbed() {
     let calls = emu.calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].target, Some(BASE + 7));
-    assert_eq!(calls[0].symbol.as_deref(), Some("sub_401007"));
+    assert_eq!(calls[0].symbol.as_deref(), Some("func_401007"));
     assert_eq!(res.registers["rax"], 0, "stubbed callee returns RAX=0");
 }
 

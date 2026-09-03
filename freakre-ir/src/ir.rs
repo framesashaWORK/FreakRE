@@ -546,6 +546,9 @@ pub struct IrFunction {
     pub entry_address: u64,
     /// All basic blocks, indexed by BlockId.
     pub blocks: Vec<IrBlock>,
+    /// O(1) lookup index: BlockId → position in `blocks`.
+    #[serde(skip)]
+    block_index: HashMap<BlockId, usize>,
     /// Entry block ID.
     pub entry_block: BlockId,
     /// Next variable ID counter (for SSA allocation).
@@ -587,10 +590,14 @@ impl IrFunction {
             successors: Vec::new(),
         };
 
+        let mut block_index = HashMap::new();
+        block_index.insert(BlockId(0), 0);
+
         IrFunction {
             name: name.to_string(),
             entry_address,
             blocks: vec![entry],
+            block_index,
             entry_block: BlockId(0),
             next_var_id: 0,
             next_block_id: 1,
@@ -609,6 +616,7 @@ impl IrFunction {
     pub fn add_block(&mut self, label: &str) -> BlockId {
         let id = BlockId(self.next_block_id);
         self.next_block_id += 1;
+        let idx = self.blocks.len();
         self.blocks.push(IrBlock {
             id,
             label: label.to_string(),
@@ -617,6 +625,7 @@ impl IrFunction {
             predecessors: Vec::new(),
             successors: Vec::new(),
         });
+        self.block_index.insert(id, idx);
         id
     }
 
@@ -626,12 +635,12 @@ impl IrFunction {
     /// builds) but is silently skipped in release instead of panicking.
     pub fn push_inst(&mut self, block: BlockId, inst: IrInst) {
         debug_assert!(
-            self.blocks.iter().any(|b| b.id == block),
+            self.block_index.contains_key(&block),
             "push_inst on unknown BlockId({})",
             block.0
         );
-        if let Some(b) = self.blocks.iter_mut().find(|b| b.id == block) {
-            b.insts.push(inst);
+        if let Some(&idx) = self.block_index.get(&block) {
+            self.blocks[idx].insts.push(inst);
         }
     }
 
@@ -665,7 +674,7 @@ impl IrFunction {
                     _ => {}
                 }
                 succs.retain(|s| {
-                    let known = self.blocks.iter().any(|blk| blk.id == *s);
+                    let known = self.block_index.contains_key(s);
                     debug_assert!(
                         known,
                         "build_cfg: terminator references unknown BlockId({})",
@@ -679,14 +688,14 @@ impl IrFunction {
 
         // Apply edges
         for (src, dst) in &edges {
-            if let Some(src_block) = self.blocks.iter_mut().find(|b| b.id == *src) {
-                if !src_block.successors.contains(dst) {
-                    src_block.successors.push(*dst);
+            if let Some(&src_idx) = self.block_index.get(src) {
+                if !self.blocks[src_idx].successors.contains(dst) {
+                    self.blocks[src_idx].successors.push(*dst);
                 }
             }
-            if let Some(dst_block) = self.blocks.iter_mut().find(|b| b.id == *dst) {
-                if !dst_block.predecessors.contains(src) {
-                    dst_block.predecessors.push(*src);
+            if let Some(&dst_idx) = self.block_index.get(dst) {
+                if !self.blocks[dst_idx].predecessors.contains(src) {
+                    self.blocks[dst_idx].predecessors.push(*src);
                 }
             }
         }
@@ -694,12 +703,23 @@ impl IrFunction {
 
     /// Get a block by ID.
     pub fn block(&self, id: BlockId) -> Option<&IrBlock> {
-        self.blocks.iter().find(|b| b.id == id)
+        self.block_index.get(&id).map(|&idx| &self.blocks[idx])
     }
 
     /// Get a mutable block by ID.
     pub fn block_mut(&mut self, id: BlockId) -> Option<&mut IrBlock> {
-        self.blocks.iter_mut().find(|b| b.id == id)
+        self.block_index.get(&id).map(|&idx| &mut self.blocks[idx])
+    }
+
+    /// Rebuild the block index from the `blocks` vector.
+    ///
+    /// Call after any direct mutation of `blocks` (e.g., removing or
+    /// reordering blocks) to keep the index consistent.
+    pub fn rebuild_index(&mut self) {
+        self.block_index.clear();
+        for (i, b) in self.blocks.iter().enumerate() {
+            self.block_index.insert(b.id, i);
+        }
     }
 
     /// Print the IR in human-readable format.
@@ -735,6 +755,10 @@ impl IrFunction {
 /// (`None` for labels carrying no address). Label addresses may be off by up
 /// to one instruction (length computation drift), so the nearest following
 /// code chunk within a 15-byte window is accepted.
+///
+/// Intended to be invoked by arch-specific lifters after block creation;
+/// kept here until a lifter wires it in.
+#[allow(dead_code)]
 pub(crate) fn repair_block_graph(
     func: &mut IrFunction,
     parse_label: fn(&str, u64) -> Option<u64>,
@@ -1006,9 +1030,9 @@ mod tests {
             carry: cf.clone(),
         };
         assert_eq!(adc.dst(), Some(&dst));
-        assert!(adc.sources().iter().any(|s| *s == &a));
-        assert!(adc.sources().iter().any(|s| *s == &b));
-        assert!(adc.sources().iter().any(|s| *s == &cf));
+        assert!(adc.sources().contains(&&a));
+        assert!(adc.sources().contains(&&b));
+        assert!(adc.sources().contains(&&cf));
         assert!(adc.display().contains("ADC"));
 
         let sbb = IrInst::Sbb {

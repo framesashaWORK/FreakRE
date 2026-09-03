@@ -1071,6 +1071,7 @@ pub fn from_ssa(ssa: &SsaFunction) -> IrFunction {
             successors: Vec::new(),
         });
     }
+    out.rebuild_index();
 
     let pos: HashMap<BlockId, usize> = ssa
         .blocks
@@ -1182,6 +1183,7 @@ pub fn from_ssa(ssa: &SsaFunction) -> IrFunction {
         }
     }
 
+    out.rebuild_index();
     out.build_cfg();
     out
 }

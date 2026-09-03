@@ -231,7 +231,7 @@ mod tests {
         let mut m = Machine::new();
         assert_eq!(m.read_reg("flag_zf", &Ty::Bool), 0);
         m.write_reg("flag_zf", 1, 1);
-        assert_eq!(m.flags["zf"], true);
+        assert!(m.flags["zf"]);
         assert_eq!(m.read_reg("flag_zf", &Ty::Bool), 1);
     }
 

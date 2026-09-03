@@ -42,7 +42,7 @@ pub fn validate_function(func: &IrFunction) -> Result<(), Vec<ValidationError>> 
             )));
         }
         if let Some(term) = block.terminator() {
-            if block.insts.last().map(|i| i.is_terminator()).unwrap_or(false) == false {
+            if !block.insts.last().map(|i| i.is_terminator()).unwrap_or(false) {
                 errors.push(ValidationError(format!(
                     "{} terminator is not last instruction",
                     block.id

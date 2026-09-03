@@ -383,7 +383,7 @@ impl ArmLifter {
                     });
                     func.push_inst(work, IrInst::Call {
                         dst: Some(self.reg("r0")),
-                        target: Value::Symbol(format!("sub_{:X}", target_addr)),
+                        target: Value::Symbol(format!("func_{:X}", target_addr)),
                         args: Vec::new(),
                     });
                 } else {
@@ -498,7 +498,7 @@ impl ArmLifter {
             });
             func.push_inst(block, IrInst::Call {
                 dst: Some(self.reg("x0")),
-                target: Value::Symbol(format!("sub_{:X}", target_addr)),
+                target: Value::Symbol(format!("func_{:X}", target_addr)),
                 args: Vec::new(),
             });
             return (4, true, None);
@@ -811,7 +811,7 @@ impl ArmLifter {
             });
             func.push_inst(block, IrInst::Call {
                 dst: Some(self.reg("r0")),
-                target: Value::Symbol(format!("sub_{:X}", target_addr)),
+                target: Value::Symbol(format!("func_{:X}", target_addr)),
                 args: Vec::new(),
             });
             return Ok((4, true, None));

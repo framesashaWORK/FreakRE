@@ -92,10 +92,22 @@ impl std::fmt::Display for TraceEntry {
 pub struct CallRecord {
     /// Resolved call target, when statically/runtime derivable.
     pub target: Option<u64>,
-    /// Raw symbol name when the lifter emitted one (`sub_XXXX`).
+    /// Raw symbol name when the lifter emitted one (`func_XXXX`,
+    /// legacy `sub_XXXX`).
     pub symbol: Option<String>,
     /// Approximate source address of the call site.
     pub at: u64,
+}
+
+/// Parse a lifter-emitted code symbol into its address.
+///
+/// Accepts the current `func_XXXX` scheme and the legacy `sub_XXXX` scheme
+/// (the lifter was renamed in-tree; old reports and hand-written IR still
+/// use `sub_`). Returns `None` for non-code symbols.
+fn parse_code_symbol(s: &str) -> Option<u64> {
+    s.strip_prefix("func_")
+        .or_else(|| s.strip_prefix("sub_"))
+        .and_then(|h| u64::from_str_radix(h, 16).ok())
 }
 
 /// Final report of a completed emulation run.
@@ -180,19 +192,28 @@ fn find_entry_block(func: &IrFunction, base: u64, entry_offset: u64) -> Option<B
         }
     }
     // Second fallback: want is inside a block's byte range (for mid-block entry like XOR_LOOP+4)
-    // Use block_address ordering: find the block with greatest address <= want
+    // Use block_address ordering: find the block with greatest address <= want.
+    // Empty label blocks (e.g. a bare `loc_XXXX` jump target) must not shadow
+    // a non-empty block: starting in an empty block falls off immediately.
     let mut best: Option<(u64, BlockId)> = None;
+    let mut best_nonempty: Option<(u64, BlockId)> = None;
     for b in &func.blocks {
         if let Some(addr) = block_address(&b.label, base) {
             if addr <= want && want.wrapping_sub(addr) < 15 {
                 match best {
-                    Some((best_addr, _)) if best_addr > addr => {},
+                    Some((best_addr, _)) if best_addr > addr => {}
                     _ => best = Some((addr, b.id)),
+                }
+                if !b.insts.is_empty() {
+                    match best_nonempty {
+                        Some((best_addr, _)) if best_addr > addr => {}
+                        _ => best_nonempty = Some((addr, b.id)),
+                    }
                 }
             }
         }
     }
-    if let Some((best_addr, id)) = best {
+    if let Some((best_addr, id)) = best_nonempty.or(best) {
         // Verify that want is before the next block's address (if any)
         let mut next_addr: Option<u64> = None;
         for b in &func.blocks {
@@ -207,7 +228,7 @@ fn find_entry_block(func: &IrFunction, base: u64, entry_offset: u64) -> Option<B
             }
         }
         // If want is inside the best block's extent (up to next block or end), return it
-        if next_addr.map_or(true, |n| want < n) {
+        if next_addr.map(|n| want < n).unwrap_or(true) {
             // Also ensure want is not too far from best_addr (max insn len)
             if want.wrapping_sub(best_addr) < 15 {
                 return Some(id);
@@ -526,9 +547,7 @@ impl<E: EmuEnv> Emulator<E> {
 
             IrInst::Call { dst, target, args } => {
                 let tval: Option<u64> = match target {
-                    Value::Symbol(s) => {
-                        s.strip_prefix("sub_").and_then(|h| u64::from_str_radix(h, 16).ok())
-                    }
+                    Value::Symbol(s) => parse_code_symbol(s),
                     v => Some(self.eval(v, addr)?),
                 };
                 let mut argv = Vec::with_capacity(args.len());
@@ -685,10 +704,11 @@ impl<E: EmuEnv> Emulator<E> {
                 Ok(self.machine.vars.get(id).copied().unwrap_or(0) & mask(ty_bits(ty)))
             }
             Value::Register { name, ty } => Ok(self.machine.read_reg(name, ty)),
-            Value::Symbol(s) => match s.strip_prefix("sub_") {
-                Some(h) => u64::from_str_radix(h, 16)
-                    .ok()
-                    .ok_or_else(|| unsup(addr, format!("malformed symbol @{s}"))),
+            Value::Symbol(s) => match parse_code_symbol(s) {
+                Some(v) => Ok(v),
+                None if s.starts_with("sub_") || s.starts_with("func_") => {
+                    Err(unsup(addr, format!("malformed symbol @{s}")))
+                }
                 None => Err(unsup(addr, format!("symbolic value @{s} in data position"))),
             },
             Value::StringRef(_) => Err(unsup(addr, "StringRef in data position")),

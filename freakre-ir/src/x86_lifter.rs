@@ -1625,7 +1625,7 @@ impl X86Lifter {
                 self.emit_push(func, block, Value::Const(ret_addr), sbits);
                 func.push_inst(block, IrInst::Call {
                     dst: Some(reg_value(0, self.ptr_bits(), false)),
-                    target: Value::Symbol(format!("sub_{:X}", target_addr)),
+                    target: Value::Symbol(format!("func_{:X}", target_addr)),
                     args: Vec::new(),
                 });
                 Ok((insn_len, true))
@@ -1859,6 +1859,10 @@ impl Lifter for X86Lifter {
         let mut current_block = func.entry_block;
         let mut offset = 0usize;
         let mut instruction_count = 0usize;
+        // Start address of the block currently being filled. Recorded into
+        // `source_range` so downstream consumers (e.g. the emulator's
+        // mid-function entry) can map addresses back to blocks.
+        let mut block_start = base_address;
 
         if self.is_64bit {
             offset += self.try_lift_prologue(&mut func, current_block, code);
@@ -1884,12 +1888,7 @@ impl Lifter for X86Lifter {
                 // the first SSE/AVX op would lose the entire function — real
                 // x64 code is full of them.
                 Err(LifterError::UnsupportedInstruction(msg)) => {
-                    let mode = if self.is_64bit {
-                        freakre_x86::types::Mode::X64
-                    } else {
-                        freakre_x86::types::Mode::X86
-                    };
-                    let len = freakre_x86::decode_len(remaining, mode)
+                    let len = freakre_x86::decode_len(remaining, if self.is_64bit { freakre_x86::Mode::X64 } else { freakre_x86::Mode::X86 })
                         .map_err(|e| LifterError::UnsupportedInstruction(format!("{} ({})", msg, e)))?;
                     if len == 0 || len > remaining.len() {
                         return Err(LifterError::UnsupportedInstruction(format!("{} (bad length {})", msg, len)));
@@ -1910,8 +1909,23 @@ impl Lifter for X86Lifter {
             if lifted {
                 if let Some(b) = func.block(current_block) {
                     if b.terminator().is_some() {
+                        let end = base_address + offset as u64;
+                        if let Some(prev) = func.block_mut(current_block) {
+                            prev.source_range = Some((block_start, end));
+                        }
                         current_block = func.add_block(&format!("bb_{}", offset));
+                        block_start = end;
                     }
+                }
+            }
+        }
+
+        // Close the final block's range (covers the epilogue-break path too).
+        {
+            let end = base_address + offset as u64;
+            if let Some(last) = func.block_mut(current_block) {
+                if last.source_range.is_none() {
+                    last.source_range = Some((block_start, end.max(block_start)));
                 }
             }
         }
@@ -2849,12 +2863,12 @@ mod tests {
     #[test]
     fn test_call_pushes_return_address() {
         // call rel5 at 0x1000: rsp -= 8 and the return address (0x100A)
-        // is stored at [rsp]; the callee symbol resolves to sub_100A.
+        // is stored at [rsp]; the callee symbol resolves to func_100A.
         let lifter = X86Lifter::new(true);
         let code = [0xE8, 0x05, 0x00, 0x00, 0x00, 0xC3];
         let func = lifter.lift_function(&code, 0x1000, "t").unwrap();
         let d = dump(&func);
-        assert!(d.contains("sub_100A"), "callee target expected:\n{}", d);
+        assert!(d.contains("func_100A"), "callee target expected:\n{}", d);
         assert!(has_op(&d, "Sub"), "push must decrement rsp:\n{}", d);
         assert!(d.contains("Const(8)"), "64-bit push delta expected:\n{}", d);
         assert!(d.contains("Store"), "return address must be stored:\n{}", d);

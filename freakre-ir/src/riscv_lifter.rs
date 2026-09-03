@@ -114,7 +114,7 @@ impl Lifter for RiscvLifter {
                         func.push_inst(current_block, IrInst::Unary { dst, op: OpCode::Copy, src: Value::Const((address+4) as i64) });
                     }
                     let target = (address as i64 + imm_j) as u64;
-                    func.push_inst(current_block, IrInst::Call { dst: if rd==1 { Some(self.reg(1)) } else { None }, target: Value::Symbol(format!("sub_{:X}", target)), args: vec![] });
+                    func.push_inst(current_block, IrInst::Call { dst: if rd==1 { Some(self.reg(1)) } else { None }, target: Value::Symbol(format!("func_{:X}", target)), args: vec![] });
                     let next = func.add_block(&format!("bb_{}", offset+4));
                     func.push_inst(current_block, IrInst::Branch { target: next });
                     current_block = next;
@@ -134,7 +134,7 @@ impl Lifter for RiscvLifter {
                 }
                 0x17 => { // auipc
                     let dst = self.reg(rd);
-                    func.push_inst(current_block, IrInst::Unary { dst, op: OpCode::Copy, src: Value::Const((address as i64 + imm_u) as i64) });
+                    func.push_inst(current_block, IrInst::Unary { dst, op: OpCode::Copy, src: Value::Const(address as i64 + imm_u) });
                 }
                 _ => { func.push_inst(current_block, IrInst::Nop); }
             }

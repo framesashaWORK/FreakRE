@@ -146,7 +146,7 @@ impl Lifter for MipsLifter {
                 }
                 0x03 => { // jal
                     let target_addr = (base_address & 0xF0000000) | ((target as u64) << 2);
-                    func.push_inst(current_block, IrInst::Call { dst: Some(self.reg(31)), target: Value::Symbol(format!("sub_{:X}", target_addr)), args: vec![] });
+                    func.push_inst(current_block, IrInst::Call { dst: Some(self.reg(31)), target: Value::Symbol(format!("func_{:X}", target_addr)), args: vec![] });
                 }
                 0x04 => { // beq
                     let off = imm << 2;
@@ -182,7 +182,7 @@ impl Lifter for MipsLifter {
                 }
                 0x0F => { // lui
                     let dst = self.reg(rt);
-                    func.push_inst(current_block, IrInst::Unary { dst, op: OpCode::Copy, src: Value::Const((imm << 16) as i64) });
+                    func.push_inst(current_block, IrInst::Unary { dst, op: OpCode::Copy, src: Value::Const(imm << 16) });
                 }
                 0x23 => { // lw
                     let dst = self.reg(rt);
