@@ -26,11 +26,17 @@
 //! cargo run --features cli -- /path/to/scan --rules rules.yar
 //! ```
 
+pub mod filetype;
 pub mod output;
+pub mod packers;
 pub mod report;
 pub mod scanner;
+pub mod scoring;
 
+pub use filetype::{detect_file_type, hex_md5, hex_sha256};
+pub use packers::{detect_packers, match_packer};
 pub use report::*;
-pub use scanner::{Scanner, ScoringConfig};
+pub use scanner::Scanner;
+pub use scoring::{calculate_suspicion_score, calculate_suspicion_score_with_config, ScoringConfig};
 
 

@@ -1,4 +1,13 @@
-﻿use crate::report::*;
+﻿/// Re-exports of the pipeline modules split out of this file, kept here so
+/// existing `freakre_scanner::scanner::*` paths (benches, downstream crates)
+/// keep working.
+pub use crate::filetype::{contains_any, detect_file_type, hex_md5, hex_sha256, strip_utf8_bom};
+pub use crate::packers::{detect_packers, pe_is_library, section_index_for_offset};
+pub use crate::report::*;
+pub use crate::scoring::{
+    calculate_suspicion_score, calculate_suspicion_score_with_config, determine_verdict,
+    is_executable_section, is_weak_shellcode_finding, is_yara_budget_notice, ScoringConfig,
+};
 use backdoor_analyzer::analyze_backdoors;
 use cfg_builder::{build_cfg, CfgConfig};
 use elf_parser::ElfFile;
@@ -7,13 +16,18 @@ use func_sigs::{scan_signatures, SigScanConfig};
 use import_analyzer::ImportAnalyzer;
 use ml_detection;
 use pe_parser::PeFile;
-// Own zero-dep hash implementations
-use freakre_hash::{sha256 as freakre_sha256, md5 as freakre_md5};
-use shellcode_analyzer::{detect_shellcode, ShellcodeConfig};
+use shellcode_analyzer::{detect_architecture, detect_shellcode, Arch, ShellcodeConfig};
 use std::path::Path;
 use std::time::Instant;
 use str_extract::{extract_strings, ExtractConfig};
 use xrefs::{build_string_xrefs, build_import_xrefs, XrefDatabase};
+
+use script_analyzer::{analyze_script, detect_kind as script_detect_kind};
+use pdf_analyzer::analyze_pdf;
+use dotnet_analyzer::analyze_dotnet;
+use pyc_parser::analyze_python;
+use firmware_analyzer::analyze_firmware;
+use memdump_analyzer::analyze_dump;
 
 /// Core scanner that orchestrates all analysis modules
 pub struct Scanner {
@@ -81,6 +95,14 @@ impl Scanner {
                     dex_info: None,
                     coff_info: None,
                     flat_binary_info: None,
+                    script_info: None,
+                    pdf_info: None,
+                    dotnet_info: None,
+                    pyc_info: None,
+                    firmware_info: None,
+                    memdump_info: None,
+                    dll_info: None,
+                    architecture_info: None,
                     backdoor_report: None,
                     shellcode_report: None,
                     xref_summary: None,
@@ -114,11 +136,8 @@ impl Scanner {
         let mut pe_info = None;
         let mut sections_entropy = Vec::new();
         let mut import_score = 0.0;
-        // True for shared libraries (DLLs). Capability / pattern detectors
-        // (import-API combos, backdoor loops, lone GetPC) are inherently
-        // unreliable for libraries вЂ” they legitimately contain these APIs and
-        // code idioms вЂ” so they are suppressed for DLLs.
         let mut is_library = false;
+        let mut dll_info: Option<DllInfo> = None;
 
         // Store PE parse result for reuse (avoid double parsing)
         let pe_parse_result: Option<Result<PeFile<'_>, pe_parser::PeError>> =
@@ -271,6 +290,41 @@ impl Scanner {
                 has_delay_imports: !pe.delay_imports().is_empty(),
                 delay_import_dlls: pe.delay_imports(),
                 warnings: pe.warnings.iter().map(|w| w.message.clone()).collect(),
+            });
+
+            // DLL Analysis — classify DLL type, calling convention, exports
+            let export_names = pe.export_names();
+            let (dll_name, _exports_raw) = pe.exports();
+            let dll_raw = dll_analyzer::analyze_dll(
+                &data,
+                is_library,
+                pe.is_dotnet(),
+                pe.nt_headers.file_header.machine.to_raw(),
+                pe.dll_characteristics,
+                &export_names,
+                dll_name,
+                cached_import_names.len(),
+            );
+            dll_info = Some(DllInfo {
+                dll_type: dll_raw.dll_type.to_string(),
+                architecture: dll_raw.architecture,
+                is_dotnet: dll_raw.is_dotnet,
+                is_resource_only: dll_raw.is_resource_only,
+                is_com: dll_raw.is_com,
+                is_wdm_driver: dll_raw.is_wdm_driver,
+                is_injectable: dll_raw.is_injectable,
+                calling_conventions: dll_raw.calling_conventions.iter().map(|c| format!("{:?}", c)).collect(),
+                exports: dll_raw.exports,
+                dll_name: dll_raw.dll_name,
+                export_count: dll_raw.export_count,
+                import_count: dll_raw.import_count,
+                characteristics: dll_raw.characteristics,
+                suspicion_score: dll_raw.suspicion_score,
+                findings: dll_raw.findings.into_iter().map(|f| DllFindingInfo {
+                    severity: f.severity,
+                    rule_id: f.rule_id,
+                    description: f.description,
+                }).collect(),
             });
 
             // в”Ђв”Ђв”Ђ PE Security Findings в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
@@ -848,7 +902,377 @@ impl Scanner {
             }
         }
 
-        // в”Ђв”Ђв”Ђ Backdoor Analysis (uses cached imports вЂ” no re-parse) в”Ђв”Ђв”Ђв”Ђ
+        // [NEW FORMATS] Script / PDF / .NET / Python / Firmware / Dump / Arch
+        let mut script_info: Option<ScriptInfo> = None;
+        let mut pdf_info: Option<PdfInfo> = None;
+        let mut dotnet_info: Option<DotnetInfo> = None;
+        let mut pyc_info: Option<PycInfo> = None;
+        let mut firmware_info: Option<FirmwareInfo> = None;
+        let mut memdump_info: Option<MemdumpInfo> = None;
+        let mut architecture_info: Option<ArchitectureInfo> = None;
+
+        // --- Script Analysis (PowerShell / AutoIt / AHK / BAT / VBS) ---
+        if file_type.starts_with("Script/")
+            || (file_type == "unknown"
+                && std::str::from_utf8(&data).is_ok()
+                && script_detect_kind(&data).is_some())
+        {
+            if let Some(kind) = script_detect_kind(&data)
+                .or(match file_type.as_str() {
+                    "Script/PowerShell" => Some(script_analyzer::ScriptKind::PowerShell),
+                    "Script/AutoIt" => Some(script_analyzer::ScriptKind::AutoIt),
+                    "Script/AutoHotkey" => Some(script_analyzer::ScriptKind::AutoHotkey),
+                    "Script/Batch" => Some(script_analyzer::ScriptKind::Batch),
+                    "Script/VBScript" => Some(script_analyzer::ScriptKind::VBScript),
+                    _ => None,
+                })
+            {
+                let report = analyze_script(kind, &data);
+                let highest_severity = report.findings.iter()
+                    .map(|f| f.severity)
+                    .max()
+                    .map(|s| match s {
+                        script_analyzer::ScriptSeverity::Critical => "Critical",
+                        script_analyzer::ScriptSeverity::High => "High",
+                        script_analyzer::ScriptSeverity::Medium => "Medium",
+                        script_analyzer::ScriptSeverity::Low => "Low",
+                        script_analyzer::ScriptSeverity::Info => "Info",
+                    }.to_string())
+                    .unwrap_or_else(|| "Info".into());
+                for f in &report.findings {
+                    let sev = match f.severity {
+                        script_analyzer::ScriptSeverity::Critical => Severity::Critical,
+                        script_analyzer::ScriptSeverity::High => Severity::High,
+                        script_analyzer::ScriptSeverity::Medium => Severity::Medium,
+                        script_analyzer::ScriptSeverity::Low => Severity::Low,
+                        script_analyzer::ScriptSeverity::Info => Severity::Info,
+                    };
+                    findings.push(Finding {
+                        severity: sev,
+                        module: "script-analyzer".into(),
+                        rule_id: f.rule_id.clone(),
+                        description: f.description.clone(),
+                        details: Some(format!("offset 0x{:X}", f.offset)),
+                    });
+                }
+                if report.obfuscation_score >= 0.3 {
+                    findings.push(Finding {
+                        severity: Severity::Medium,
+                        module: "script-analyzer".into(),
+                        rule_id: "SCRIPT_OBFUSCATION".into(),
+                        description: format!(
+                            "Script obfuscation score {:.0}% — likely obfuscated/encoded",
+                            report.obfuscation_score * 100.0
+                        ),
+                        details: Some(format!("kind: {:?}", report.kind)),
+                    });
+                }
+                script_info = Some(ScriptInfo {
+                    kind: format!("{:?}", report.kind),
+                    line_count: report.line_count,
+                    comment_count: report.comment_count,
+                    avg_line_length: report.avg_line_length,
+                    obfuscation_score: report.obfuscation_score,
+                    finding_count: report.findings.len(),
+                    highest_severity,
+                    suspicious_calls: report.suspicious_calls,
+                    iocs: report.iocs.into_iter().map(|i| ScriptIoc {
+                        kind: format!("{:?}", i.kind),
+                        value: i.value,
+                    }).collect(),
+                });
+            }
+        }
+
+        // --- PDF Analysis ---
+        if file_type == "PDF" {
+            if let Some(report) = analyze_pdf(&data) {
+                let highest = report.findings.iter()
+                    .map(|f| f.severity).max()
+                    .map(|s| match s {
+                        pdf_analyzer::PdfSeverity::Critical => "Critical",
+                        pdf_analyzer::PdfSeverity::High => "High",
+                        pdf_analyzer::PdfSeverity::Medium => "Medium",
+                        pdf_analyzer::PdfSeverity::Low => "Low",
+                        pdf_analyzer::PdfSeverity::Info => "Info",
+                    }.to_string())
+                    .unwrap_or_else(|| "Info".into());
+                for f in &report.findings {
+                    let sev = match f.severity {
+                        pdf_analyzer::PdfSeverity::Critical => Severity::Critical,
+                        pdf_analyzer::PdfSeverity::High => Severity::High,
+                        pdf_analyzer::PdfSeverity::Medium => Severity::Medium,
+                        pdf_analyzer::PdfSeverity::Low => Severity::Low,
+                        pdf_analyzer::PdfSeverity::Info => Severity::Info,
+                    };
+                    findings.push(Finding {
+                        severity: sev,
+                        module: "pdf-analyzer".into(),
+                        rule_id: f.rule_id.clone(),
+                        description: f.description.clone(),
+                        details: Some(format!("offset 0x{:X}", f.offset)),
+                    });
+                }
+                pdf_info = Some(PdfInfo {
+                    version: report.version,
+                    is_encrypted: report.is_encrypted,
+                    is_linearized: report.is_linearized,
+                    has_xfa: report.has_xfa,
+                    has_javascript: report.has_javascript,
+                    has_open_action: report.has_open_action,
+                    has_launch_action: report.has_launch_action,
+                    has_embedded_files: report.has_embedded_files,
+                    has_acroform: report.has_acroform,
+                    object_count: report.object_count,
+                    page_count: report.page_count,
+                    uri_count: report.uri_count,
+                    suspicious_uris: report.suspicious_uris,
+                    embedded_magic: report.embedded_magic,
+                    finding_count: report.findings.len(),
+                    highest_severity: highest,
+                });
+            }
+        }
+
+        // --- .NET / C# Analysis (only when PE flagged as .NET) ---
+        if let Some(ref pei) = pe_info {
+            if pei.is_dotnet {
+                if let Some(report) = analyze_dotnet(&data) {
+                    let highest = report.findings.iter()
+                        .map(|f| f.severity).max()
+                        .map(|s| match s {
+                            dotnet_analyzer::DotnetSeverity::Critical => "Critical",
+                            dotnet_analyzer::DotnetSeverity::High => "High",
+                            dotnet_analyzer::DotnetSeverity::Medium => "Medium",
+                            dotnet_analyzer::DotnetSeverity::Low => "Low",
+                            dotnet_analyzer::DotnetSeverity::Info => "Info",
+                        }.to_string())
+                        .unwrap_or_else(|| "Info".into());
+                    for f in &report.findings {
+                        let sev = match f.severity {
+                            dotnet_analyzer::DotnetSeverity::Critical => Severity::Critical,
+                            dotnet_analyzer::DotnetSeverity::High => Severity::High,
+                            dotnet_analyzer::DotnetSeverity::Medium => Severity::Medium,
+                            dotnet_analyzer::DotnetSeverity::Low => Severity::Low,
+                            dotnet_analyzer::DotnetSeverity::Info => Severity::Info,
+                        };
+                        findings.push(Finding {
+                            severity: sev,
+                            module: "dotnet-analyzer".into(),
+                            rule_id: f.rule_id.clone(),
+                            description: f.description.clone(),
+                            details: Some(format!("offset 0x{:X}", f.offset)),
+                        });
+                    }
+                    dotnet_info = Some(DotnetInfo {
+                        metadata_version: report.metadata_version,
+                        runtime_version: report.runtime_version,
+                        entry_point_token: report.entry_point_token,
+                        flags: report.flags,
+                        strong_name_signed: report.strong_name_signed,
+                        module_name: report.module_name,
+                        assembly_ref_count: report.assembly_ref_count,
+                        type_ref_count: report.type_ref_count,
+                        method_def_count: report.method_def_count,
+                        member_ref_count: report.member_ref_count,
+                        user_string_count: report.user_string_count,
+                        assembly_refs: report.assembly_refs,
+                        suspicious_strings: report.suspicious_strings,
+                        finding_count: report.findings.len(),
+                        highest_severity: highest,
+                    });
+                }
+            }
+        }
+
+        // --- Python / .pyc / PyInstaller ---
+        if file_type == "Python/Compiled" {
+            if let Some(report) = analyze_python(&data) {
+                let highest = report.findings.iter()
+                    .map(|f| f.severity).max()
+                    .map(|s| match s {
+                        pyc_parser::PycSeverity::Critical => "Critical",
+                        pyc_parser::PycSeverity::High => "High",
+                        pyc_parser::PycSeverity::Medium => "Medium",
+                        pyc_parser::PycSeverity::Low => "Low",
+                        pyc_parser::PycSeverity::Info => "Info",
+                    }.to_string())
+                    .unwrap_or_else(|| "Info".into());
+                for f in &report.findings {
+                    let sev = match f.severity {
+                        pyc_parser::PycSeverity::Critical => Severity::Critical,
+                        pyc_parser::PycSeverity::High => Severity::High,
+                        pyc_parser::PycSeverity::Medium => Severity::Medium,
+                        pyc_parser::PycSeverity::Low => Severity::Low,
+                        pyc_parser::PycSeverity::Info => Severity::Info,
+                    };
+                    findings.push(Finding {
+                        severity: sev,
+                        module: "pyc-parser".into(),
+                        rule_id: f.rule_id.clone(),
+                        description: f.description.clone(),
+                        details: Some(format!("offset 0x{:X}", f.offset)),
+                    });
+                }
+                pyc_info = Some(PycInfo {
+                    kind: format!("{:?}", report.kind),
+                    python_version: report.python_version.map(|v| v.to_string()),
+                    source_path: report.source_path,
+                    is_pyinstaller: report.is_pyinstaller,
+                    code_size: report.code_size,
+                    imports: report.imports,
+                    high_risk_imports: report.high_risk_imports,
+                    urls: report.urls,
+                    archive_entry_count: report.archive_entry_count,
+                    archive_entries_sample: report.archive_entries.into_iter()
+                        .map(|e| e.name).collect(),
+                    finding_count: report.findings.len(),
+                    highest_severity: highest,
+                });
+            }
+        }
+
+        // --- Firmware (UEFI / BIOS) ---
+        if matches!(file_type.as_str(),
+            "UEFI/FirmwareVolume" | "UEFI/FFS" | "UEFI/GPT-Disk" | "BIOS/MBR")
+        {
+            if let Some(report) = analyze_firmware(&data) {
+                let finding_strs: Vec<String> = report.findings.iter()
+                    .map(|f| format!("[{:?}] {}: {}", f.severity, f.rule_id, f.description))
+                    .collect();
+                for f in &report.findings {
+                    let sev = match f.severity {
+                        firmware_analyzer::FirmwareSeverity::Critical => Severity::Critical,
+                        firmware_analyzer::FirmwareSeverity::High => Severity::High,
+                        firmware_analyzer::FirmwareSeverity::Medium => Severity::Medium,
+                        firmware_analyzer::FirmwareSeverity::Low => Severity::Low,
+                        firmware_analyzer::FirmwareSeverity::Info => Severity::Info,
+                    };
+                    findings.push(Finding {
+                        severity: sev,
+                        module: "firmware-analyzer".into(),
+                        rule_id: f.rule_id.clone(),
+                        description: f.description.clone(),
+                        details: Some(format!("offset 0x{:X}", f.offset)),
+                    });
+                }
+                firmware_info = Some(FirmwareInfo {
+                    kind: format!("{:?}", report.kind),
+                    volume_count: report.volumes.len(),
+                    gpt_partition_count: report.gpt_partitions.len(),
+                    mbr_partition_count: report.mbr_partitions.len(),
+                    embedded_pe_count: report.embedded_pe.len(),
+                    findings: finding_strs,
+                });
+            }
+        }
+
+        // --- Memory Dump ---
+        if matches!(file_type.as_str(),
+            "Minidump" | "ELF Core" | "Mach-O Core")
+            || (file_type == "unknown" && analyze_dump(&data).is_some())
+        {
+            if let Some(report) = analyze_dump(&data) {
+                for f in &report.findings {
+                    let sev = match f.severity {
+                        memdump_analyzer::DumpSeverity::Critical => Severity::Critical,
+                        memdump_analyzer::DumpSeverity::High => Severity::High,
+                        memdump_analyzer::DumpSeverity::Medium => Severity::Medium,
+                        memdump_analyzer::DumpSeverity::Low => Severity::Low,
+                        memdump_analyzer::DumpSeverity::Info => Severity::Info,
+                    };
+                    findings.push(Finding {
+                        severity: sev,
+                        module: "memdump-analyzer".into(),
+                        rule_id: f.rule_id.clone(),
+                        description: f.description.clone(),
+                        details: Some(format!("offset 0x{:X}", f.offset)),
+                    });
+                }
+                memdump_info = Some(MemdumpInfo {
+                    kind: format!("{:?}", report.kind),
+                    stream_count: report.streams.len(),
+                    embedded_pe_count: report.embedded_pe.len(),
+                    raw_mz_hits: report.raw_mz_hits,
+                    embedded_pe: report.embedded_pe.iter()
+                        .map(|p| format!("{} {}-bit @ 0x{:X}",
+                            p.machine, if p.is_64bit { 64 } else { 32 }, p.offset))
+                        .collect(),
+                });
+            }
+        }
+
+        // --- Architecture auto-detection (ARM / AArch64 / x86_64 / x86) ---
+        if file_type == "unknown" || file_type.starts_with("Mach-O")
+            || flat_binary_info.is_some()
+        {
+            let arch_from_pe = if let Some(ref pi) = pe_info {
+                match pi.machine.as_str() {
+                    "Machine(0x14C)" => Some(("x86".to_string(), "little".to_string(), 32u8)),
+                    "Machine(0x8664)" => Some(("x86_64".to_string(), "little".to_string(), 64u8)),
+                    "Machine(0x1C0)" => Some(("ARM".to_string(), "little".to_string(), 32u8)),
+                    "Machine(0xAA64)" => Some(("AArch64".to_string(), "little".to_string(), 64u8)),
+                    "Machine(0x1C4)" => Some(("ARMNT".to_string(), "little".to_string(), 32u8)),
+                    _ => None,
+                }
+            } else { None };
+            if let Some((a, e, b)) = arch_from_pe {
+                architecture_info = Some(ArchitectureInfo {
+                    arch: a,
+                    endian: e,
+                    bitness: b,
+                    confidence: 1.0,
+                    indicators: vec!["PE machine code".into()],
+                });
+            } else if let Some(ref ei) = elf_info {
+                let (a, e, b) = match ei.machine.as_str() {
+                    "Machine(3)" => ("x86", "little", 32),
+                    "Machine(62)" => ("x86_64", "little", 64),
+                    "Machine(40)" => ("ARM", "little", 32),
+                    "Machine(183)" => ("AArch64", "little", 64),
+                    "Machine(20)" => ("PowerPC", "big", 32),
+                    "Machine(21)" => ("PowerPC64", "big", 64),
+                    _ => ("unknown", "unknown", 0),
+                };
+                architecture_info = Some(ArchitectureInfo {
+                    arch: a.into(),
+                    endian: e.into(),
+                    bitness: b,
+                    confidence: 1.0,
+                    indicators: vec!["ELF e_machine".into()],
+                });
+            } else if (file_type == "unknown" || file_type.starts_with("BIOS") || file_type.starts_with("UEFI")) && pe_info.is_none() && elf_info.is_none() && !data.is_empty() {
+                // Only run arch detection on raw binaries — skip text-like files
+                let printable_count = data.iter().take(256).filter(|&&b| (0x20..=0x7E).contains(&b) || b == 0x09 || b == 0x0A || b == 0x0D).count();
+                let total = data.len().min(256);
+                let is_text = total > 0 && (printable_count as f64 / total as f64) > 0.85;
+                if !is_text {
+                    let d = detect_architecture(&data);
+                let bitness = d.arch.bitness();
+                let endian = d.arch.is_little_endian()
+                    .map(|b| if b { "little".to_string() } else { "big".to_string() })
+                    .unwrap_or_else(|| "unknown".into());
+                let arch_name = match d.arch {
+                    Arch::X86 => "x86",
+                    Arch::X86_64 => "x86_64",
+                    Arch::ArmLe | Arch::ArmBe => "ARM",
+                    Arch::AArch64Le | Arch::AArch64Be => "AArch64",
+                    Arch::Unknown => "unknown",
+                }.to_string();
+                if d.arch != Arch::Unknown {
+                    architecture_info = Some(ArchitectureInfo {
+                        arch: arch_name,
+                        endian,
+                        bitness,
+                        confidence: d.confidence as f64 as f32,
+                        indicators: d.indicators,
+                    });
+                }
+                } // if !is_text
+            }
+        }
+
+        // [BACKDOOR]
         let mut backdoor_report = None;
 
         // Backdoor/behavioral *pattern* detection (C2 beacon loops, DLL
@@ -1486,6 +1910,14 @@ impl Scanner {
             dex_info,
             coff_info,
             flat_binary_info,
+            script_info,
+            pdf_info,
+            dotnet_info,
+            pyc_info,
+            firmware_info,
+            memdump_info,
+            dll_info,
+            architecture_info,
             backdoor_report,
             shellcode_report,
             xref_summary,
@@ -1495,955 +1927,5 @@ impl Scanner {
             scan_duration_ms: start.elapsed().as_millis(),
             functions: Vec::new(),
         }
-    }
-}
-
-/// Configurable scoring weights for the suspicion score calculation.
-/// All weights can be calibrated against known malware/benign samples.
-#[derive(Debug, Clone)]
-pub struct ScoringConfig {
-    // в”Ђв”Ђв”Ђ Module signal weights в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    pub import_weight: f64,
-    pub backdoor_weight: f64,
-    pub shellcode_signal: f64,
-    /// Weight for ML-based malicious confidence (0.0-1.0 signal).
-    pub ml_weight: f64,
-
-    // в”Ђв”Ђв”Ђ YARA weights в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    pub yara_per_match: f64,
-    pub yara_cap: f64,
-
-    // в”Ђв”Ђв”Ђ Critical findings (index = count, diminishing returns)
-    pub critical_weights: [f64; 4], // [0, 1, 2, 3+]
-
-    // в”Ђв”Ђв”Ђ High findings (index = count, diminishing returns)
-    pub high_weights: [f64; 6],     // [0, 1, 2, 3, 4, 5+]
-
-    // в”Ђв”Ђв”Ђ Medium/Low per-finding weights and caps
-    pub medium_per_finding: f64,
-    pub medium_cap: f64,
-    pub low_per_finding: f64,
-    pub low_cap: f64,
-
-    // в”Ђв”Ђв”Ђ Structural signals в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    pub packed_executable_bonus: f64,
-    pub xref_per_pair: f64,
-    pub xref_cap: f64,
-
-    // в”Ђв”Ђв”Ђ Signal compounding в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    pub compounding_3plus: f64,
-    pub compounding_5plus: f64,
-
-    // в”Ђв”Ђв”Ђ Thresholds for active signal categories
-    pub import_active_threshold: f64,
-    pub backdoor_active_threshold: f64,
-}
-
-impl Default for ScoringConfig {
-    fn default() -> Self {
-        Self {
-            import_weight: 0.25,
-            backdoor_weight: 0.25,
-            shellcode_signal: 0.25,
-            ml_weight: 0.15,
-
-            yara_per_match: 0.15,
-            yara_cap: 0.45,
-
-            critical_weights: [0.0, 0.20, 0.25, 0.30],
-            high_weights: [0.0, 0.10, 0.15, 0.18, 0.20, 0.22],
-
-            medium_per_finding: 0.04,
-            medium_cap: 0.20,
-            low_per_finding: 0.01,
-            low_cap: 0.05,
-
-            packed_executable_bonus: 0.08,
-            xref_per_pair: 0.05,
-            xref_cap: 0.15,
-
-            compounding_3plus: 0.05,
-            compounding_5plus: 0.05,
-
-            import_active_threshold: 0.3,
-            backdoor_active_threshold: 0.2,
-        }
-    }
-}
-
-/// Calculate suspicion score using weighted signal correlation.
-///
-/// The scoring considers:
-/// - Module scores (import analyzer, backdoor analyzer) as base signals
-/// - Finding severity with diminishing returns for repeated low-severity signals
-/// - Content-based signals (shellcode, YARA matches) as strong indicators
-/// - Structural anomalies (RWX sections, high entropy) as moderate indicators
-/// - Cross-module correlations (xref pairs, cfg anomalies) as amplifiers
-/// - ML classification as a strong indicator (if available)
-///
-/// All weights are configurable via `ScoringConfig` for calibration against
-/// known malware/benign sample datasets.
-///
-/// Returns a value in [0.0, 1.0] where higher = more suspicious.
-#[allow(clippy::too_many_arguments)] // public scoring API; grouping into a struct would break callers
-pub fn calculate_suspicion_score_with_config(
-    cfg: &ScoringConfig,
-    findings: &[Finding],
-    import_score: f64,
-    backdoor_score: f64,
-    sections_entropy: &[SectionEntropy],
-    has_shellcode: bool,
-    correlated_xref_pairs: usize,
-    ml_confidence_malicious: f64,
-) -> f64 {
-    let mut score: f64 = 0.0;
-
-    // в”Ђв”Ђв”Ђ Base module scores (already normalized 0.0-1.0) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    score += import_score * cfg.import_weight;
-    score += backdoor_score * cfg.backdoor_weight;
-
-    // в”Ђв”Ђв”Ђ ML-based signal (strong indicator) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    score += ml_confidence_malicious * cfg.ml_weight;
-
-    // в”Ђв”Ђв”Ђ Content-based signals (very strong) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    if has_shellcode {
-        score += cfg.shellcode_signal;
-    }
-
-    // в”Ђв”Ђв”Ђ Finding-based scoring with diminishing returns в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    // Findings produced by modules that already contribute an aggregated
-    // score (import-analyzer -> import_score, backdoor-analyzer ->
-    // backdoor_score) are NOT counted again here: the same evidence would be
-    // double-counted, inflating composite scores for large binaries.
-    let aggregate_scored = |m: &str| m == "import-analyzer" || m == "backdoor-analyzer";
-
-    let mut critical_count = 0usize;
-    let mut high_count = 0usize;
-    let mut medium_count = 0usize;
-    let mut low_count = 0usize;
-    let mut yara_matches = 0usize;
-
-    for f in findings {
-        if f.module == "yara-lite" {
-            if !is_yara_budget_notice(f) {
-                yara_matches += 1;
-            }
-            continue;
-        }
-        if aggregate_scored(&f.module) {
-            continue;
-        }
-        match f.severity {
-            Severity::Critical => critical_count += 1,
-            Severity::High => {
-                high_count += 1;
-            }
-            Severity::Medium => medium_count += 1,
-            Severity::Low => low_count += 1,
-            Severity::Info => {}
-        }
-    }
-
-    // YARA matches
-    score += (yara_matches as f64 * cfg.yara_per_match).min(cfg.yara_cap);
-
-    // Critical findings (diminishing returns, capped at index 3+)
-    let crit_idx = critical_count.min(cfg.critical_weights.len() - 1);
-    score += cfg.critical_weights[crit_idx];
-
-    // High findings (diminishing returns, capped at index 5+)
-    let high_idx = high_count.min(cfg.high_weights.len() - 1);
-    score += cfg.high_weights[high_idx];
-
-    // Medium findings
-    score += (medium_count as f64 * cfg.medium_per_finding).min(cfg.medium_cap);
-
-    // Low findings
-    score += (low_count as f64 * cfg.low_per_finding).min(cfg.low_cap);
-
-    // в”Ђв”Ђв”Ђ Structural signals в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    let suspicious_high_entropy = sections_entropy
-        .iter()
-        .filter(|s| s.entropy > 7.0 && is_executable_section(&s.name))
-        .count();
-    if suspicious_high_entropy > 0 {
-        score += cfg.packed_executable_bonus;
-    }
-
-    // в”Ђв”Ђв”Ђ Cross-module correlation amplifier в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    if correlated_xref_pairs > 0 {
-        score += (correlated_xref_pairs as f64 * cfg.xref_per_pair).min(cfg.xref_cap);
-    }
-
-    // в”Ђв”Ђв”Ђ Signal compounding bonus в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    let signal_categories = [
-        import_score > cfg.import_active_threshold,
-        backdoor_score > cfg.backdoor_active_threshold,
-        has_shellcode,
-        high_count > 0,
-        suspicious_high_entropy > 0,
-        yara_matches > 0,
-    ];
-    let active_signals = signal_categories.iter().filter(|&&x| x).count();
-    if active_signals >= 3 {
-        score += cfg.compounding_3plus;
-    }
-    if active_signals >= 5 {
-        score += cfg.compounding_5plus;
-    }
-
-    score.min(1.0)
-}
-
-/// Calculate suspicion score using default configuration.
-#[must_use]
-pub fn calculate_suspicion_score(
-    findings: &[Finding],
-    import_score: f64,
-    backdoor_score: f64,
-    sections_entropy: &[SectionEntropy],
-    has_shellcode: bool,
-    correlated_xref_pairs: usize,
-    ml_confidence_malicious: f64,
-) -> f64 {
-    let cfg = ScoringConfig::default();
-    calculate_suspicion_score_with_config(
-        &cfg,
-        findings,
-        import_score,
-        backdoor_score,
-        sections_entropy,
-        has_shellcode,
-        correlated_xref_pairs,
-        ml_confidence_malicious,
-    )
-}
-
-// в”Ђв”Ђв”Ђ Packer / Protector Detection в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-// Specific, low-false-positive identification of common packers and
-// protectors from section names (and the UPX magic). Unlike the generic
-// high-entropy heuristic, these signatures are specific and will not fire on
-// ordinary binaries.
-
-/// (section-name substring, display name, rule suffix, severity)
-const PACKER_MARKERS: &[(&str, &str, &str, Severity)] = &[
-    ("upx", "UPX", "UPX", Severity::Medium),
-    ("themida", "Themida / WinLicense", "THEMIDA", Severity::High),
-    ("winlicense", "Themida / WinLicense", "THEMIDA", Severity::High),
-    ("vmp", "VMProtect", "VMPROTECT", Severity::High),
-    (".vmp0", "VMProtect", "VMPROTECT", Severity::High),
-    (".vmp1", "VMProtect", "VMPROTECT", Severity::High),
-    ("obsidium", "Obsidium", "OBSIDIUM", Severity::High),
-    ("enigma", "Enigma Protector", "ENIGMA", Severity::High),
-    ("aspack", "ASPack", "ASPACK", Severity::Medium),
-    ("fsg", "FSG", "FSG", Severity::Medium),
-    ("mew", "MEW", "MEW", Severity::Medium),
-    ("nsp", "NSPack", "NSPACK", Severity::Medium),
-    ("pespin", "PESpin", "PESPIN", Severity::Medium),
-    ("petite", "Petite", "PETITE", Severity::Medium),
-    ("yoda", "Yoda's Protector", "YODA", Severity::Medium),
-    ("packed", "Generic Packer", "GENERIC", Severity::Medium),
-    ("packman", "Packman", "PACKMAN", Severity::Medium),
-    ("molebox", "Molebox", "MOLEBOX", Severity::Medium),
-    ("telock", "tElock", "TELOCK", Severity::Medium),
-    ("upack", "UPack", "UPACK", Severity::Medium),
-    ("boxedapp", "BoxedApp", "BOXEDAPP", Severity::Medium),
-    ("stf", "StarForce", "STARFORCE", Severity::High),
-    (".neolite", "NeoLite", "NEOLITE", Severity::Medium),
-    ("slv", "SLV", "SLV", Severity::Medium),
-];
-
-/// Match a section name against known packer markers.
-#[must_use]
-fn match_packer(name: &str) -> Option<(&'static str, &'static str, Severity)> {
-    let lower = name.to_ascii_lowercase();
-    PACKER_MARKERS
-        .iter()
-        .find(|(marker, _, _, _)| lower.contains(marker))
-        .map(|(_, display, suffix, sev)| (*display, *suffix, *sev))
-}
-
-/// Byte-level packer/protector signatures. `needle`/`mask` pairs: bytes where the
-/// corresponding `mask` byte is `0xFF` must match exactly; `0x00` = wildcard (`??`).
-/// Catches packers even when section names are renamed or stripped.
-type PackerByteSig = (&'static str, &'static str, Severity, &'static [u8], &'static [u8]);
-const PACKER_BYTE_SIGS: &[PackerByteSig] = &[
-    // ASPack 2.x entry stub: pushad; call $+5; pop ebp; sub ebp,0D; add ebp,[...]
-    (
-        "ASPack",
-        "ASPACK",
-        Severity::High,
-        &[0x60, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x5D, 0x83, 0xED, 0x0D, 0x03, 0x2D],
-        &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
-    ),
-    // VMProtect 2.x/3.x: push imm32; call rel32; pushfd; push imm32; call rel32; pushfd
-    (
-        "VMProtect",
-        "VMPROTECT",
-        Severity::High,
-        &[
-            0x68, 0x00, 0x00, 0x00, 0x00, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x9C, 0x68, 0x00, 0x00,
-            0x00, 0x00, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x9C,
-        ],
-        &[
-            0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00,
-            0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF,
-        ],
-    ),
-    // Themida 2.x polymorphic entry: jmp rel32; push esi; push edi; mov edi,[esi+imm]
-    (
-        "Themida / WinLicense",
-        "THEMIDA",
-        Severity::High,
-        &[0xE9, 0x00, 0x00, 0x00, 0x00, 0x56, 0x57, 0x8B, 0x7E, 0x00],
-        &[0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00],
-    ),
-];
-
-/// Does `data` contain `needle` at any offset, honouring the `mask` (0x00 = wildcard)?
-#[must_use]
-fn masked_contains(data: &[u8], needle: &[u8], mask: &[u8]) -> bool {
-    if needle.len() != mask.len() || needle.is_empty() {
-        return false;
-    }
-    data.windows(needle.len()).any(|w| {
-        w.iter()
-            .zip(needle.iter().zip(mask.iter()))
-            .all(|(b, (n, m))| *m == 0x00 || *b == *n)
-    })
-}
-
-/// Identify known packers / protectors in a PE file.
-fn detect_packers(pe: &PeFile<'_>, data: &[u8]) -> Vec<Finding> {
-    let mut findings = Vec::new();
-    let mut seen: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
-
-    for section in &pe.sections {
-        let name = section.name_string();
-        if let Some((display, suffix, sev)) = match_packer(&name) {
-            if seen.insert(suffix) {
-                let raw = section.raw_data(data);
-                let ent = if raw.is_empty() {
-                    0.0
-                } else {
-                    calculate_entropy(raw).entropy
-                };
-                findings.push(Finding {
-                    severity: sev,
-                    module: "pe-parser".into(),
-                    rule_id: format!("PE_PACKER_{}", suffix),
-                    description: format!(
-                        "Likely packed / protected with {} (section '{}', entropy {:.2})",
-                        display, name, ent
-                    ),
-                    details: Some(format!("section: {}; entropy: {:.2}", name, ent)),
-                });
-            }
-        }
-    }
-
-    // UPX leaves a distinctive "UPX!" magic even when section names are renamed.
-    if data.windows(4).any(|w| w == b"UPX!") && seen.insert("UPX") {
-        findings.push(Finding {
-            severity: Severity::Medium,
-            module: "pe-parser".into(),
-            rule_id: "PE_PACKER_UPX".into(),
-            description: "UPX magic 'UPX!' found in binary вЂ” packed with UPX".into(),
-            details: Some("UPX! signature detected".into()),
-        });
-    }
-
-    // Byte-level signatures (work even when section names are obfuscated).
-    for (display, suffix, sev, needle, mask) in PACKER_BYTE_SIGS {
-        if masked_contains(data, needle, mask) && seen.insert(*suffix) {
-            findings.push(Finding {
-                severity: *sev,
-                module: "pe-parser".into(),
-                rule_id: format!("PE_PACKER_{}", suffix),
-                description: format!(
-                    "Packer/protector byte-signature match for {} (High confidence)",
-                    display
-                ),
-                details: Some(format!(
-                    "matched {} byte pattern at {}",
-                    needle.len(),
-                    suffix.to_ascii_lowercase()
-                )),
-            });
-        }
-    }
-
-    findings
-}
-
-/// Determine the final verdict based on all signals.
-#[must_use]
-fn determine_verdict(
-    suspicion_score: f64,
-    max_severity: Option<Severity>,
-    backdoor_score: f64,
-    findings: &[Finding],
-) -> Verdict {
-    if findings.is_empty() {
-        return Verdict::Clean;
-    }
-
-    // Hard overrides: only signals backed by byte-level evidence (shellcode
-    // detection, YARA) force Malicious regardless of score. Import-pattern
-    // criticals are contextual heuristics — they force the verdict only when
-    // other independent signals corroborate them.
-    let has_critical = max_severity == Some(Severity::Critical);
-    // Only a *strong* (High-severity) shellcode signal forces Malicious.
-    // Weak shellcode indicators (e.g. a high-entropy region, a lone PEB/GetPC
-    // pattern) are expected in legitimate binaries and must not alone condemn
-    // a file.
-    let has_shellcode_finding = findings.iter().any(|f| {
-        f.module == "shellcode-analyzer" && f.severity == Severity::High
-    });
-    let has_yara_match = findings
-        .iter()
-        .any(|f| f.module == "yara-lite" && !is_yara_budget_notice(f));
-
-    if (has_critical && suspicion_score >= 0.45) || has_shellcode_finding {
-        return Verdict::Malicious;
-    }
-
-    // Score-based classification
-    if suspicion_score >= 0.65 || backdoor_score >= 0.7 || has_yara_match {
-        Verdict::Malicious
-    } else if suspicion_score >= 0.35
-        || max_severity >= Some(Severity::High)
-        || backdoor_score >= 0.4
-        || suspicion_score >= 0.15
-        || max_severity >= Some(Severity::Medium)
-    {
-        Verdict::Suspicious
-    } else {
-        // Only Low/Info findings remain. These are weak, expected-in-legitimate
-        // binaries signals (e.g. a noise-bounded CFG hint, a missing rich header)
-        // and must not by themselves condemn a file.
-        Verdict::Clean
-    }
-}
-
-/// True if the PE is a shared library (DLL) вЂ” i.e. the COFF File Header
-/// `Characteristics` has the `IMAGE_FILE_DLL` (0x2000) bit set. The pe-parser
-/// does not surface this field, so it is read directly from the raw bytes.
-fn pe_is_library(data: &[u8]) -> bool {
-    if data.len() < 64 {
-        return false;
-    }
-    let lfanew = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
-    let coff = lfanew + 4; // skip the "PE\0\0" signature
-    if coff + 20 > data.len() {
-        return false;
-    }
-    let characteristics = u16::from_le_bytes([data[coff + 18], data[coff + 19]]);
-    characteristics & 0x2000 != 0
-}
-
-/// Entropy of the section containing `offset`, or `None` if the offset is
-/// outside any section (e.g. an overlay).
-fn section_index_for_offset(pe: &PeFile<'_>, offset: usize) -> Option<usize> {
-    pe.sections.iter().position(|s| {
-        let start = s.raw_data_offset as usize;
-        let end = start.saturating_add(s.raw_data_size as usize);
-        offset >= start && offset < end
-    })
-}
-
-/// Check if a section name corresponds to an executable section.
-fn is_executable_section(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower == ".text"
-        || lower == "code"
-        || lower == ".code"
-        || lower.contains("exec")
-        || lower == ".init"
-        || lower == ".fini"
-}
-
-/// Shellcode rule IDs that are generic/coincidental in large normal code
-/// (e.g. a library's routine GetPC-like idiom, NOP sleds, or high-entropy
-/// runs) and therefore unreliable when scanning full binaries / DLLs.
-fn is_weak_shellcode_finding(rule_id: &str) -> bool {
-    matches!(
-        rule_id,
-        "SHELLCODE_GETPC"
-            | "SHELLCODE_HIGH_ENTROPY"
-            | "SHELLCODE_PIC_HIGH_ENTROPY"
-            | "SHELLCODE_NOP_SLED"
-    )
-}
-
-/// The yara-lite budget notice reports truncated match collection; it is
-/// not itself a signature hit and must not feed YARA counting or verdict
-/// logic.
-fn is_yara_budget_notice(f: &Finding) -> bool {
-    f.module == "yara-lite" && f.rule_id == "YARA_MATCH_BUDGET"
-}
-
-pub fn detect_file_type(data: &[u8]) -> String {
-    if data.len() < 4 {
-        return "unknown".into();
-    }
-
-    // в”Ђв”Ђв”Ђ PE / DOS в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    if data.starts_with(b"MZ") {
-        if data.len() > 60 {
-            let pe_offset = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
-            if pe_offset + 4 <= data.len() && &data[pe_offset..pe_offset + 4] == b"PE\0\0"
-                // Reads 2 bytes of optional-header magic ([pe_offset+24],
-                // [pe_offset+25]) — both indices must be in bounds.
-                && pe_offset + 26 <= data.len() {
-                    let magic = u16::from_le_bytes([data[pe_offset + 24], data[pe_offset + 25]]);
-                    return if magic == 0x20B {
-                        "PE32+".into()
-                    } else {
-                        "PE32".into()
-                    };
-                }
-        }
-        return "DOS".into();
-    }
-
-    // в”Ђв”Ђв”Ђ ELF в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    if data.starts_with(b"\x7FELF") {
-        return "ELF".into();
-    }
-
-    // в”Ђв”Ђв”Ђ WebAssembly в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    if data.len() >= 8 && &data[0..4] == b"\x00asm" {
-        return "WebAssembly".into();
-    }
-
-    // в”Ђв”Ђв”Ђ DEX (Android Dalvik Executable) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    if data.len() >= 8 && &data[0..4] == b"dex\n" {
-        return "DEX".into();
-    }
-
-    // в”Ђв”Ђв”Ђ COFF (no magic, heuristic detection) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    if coff_parser::is_coff(data) {
-        return "COFF".into();
-    }
-
-    // в”Ђв”Ђв”Ђ Intel HEX в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    if data.starts_with(b":") && data.len() > 10 {
-        // Intel HEX lines start with ':' and have specific format
-        let line = String::from_utf8_lossy(&data[..data.len().min(80)]);
-        if line.contains('\n') || line.len() >= 11 {
-            // Basic validation: :BBAAAATT[DD..]CC
-            return "Intel HEX".into();
-        }
-    }
-
-    // в”Ђв”Ђв”Ђ Motorola S-Record в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    if data.starts_with(b"S0") || data.starts_with(b"S1") || data.starts_with(b"S2") || data.starts_with(b"S3") {
-        return "Motorola S-Record".into();
-    }
-
-    // в”Ђв”Ђв”Ђ Mach-O в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    // Mach-O magic values:
-    //   0xFEEDFACE = MH_MAGIC    (32-bit, native byte order)
-    //   0xFEEDFACF = MH_MAGIC_64 (64-bit, native byte order)
-    //   0xCEFAEDFE = MH_CIGAM    (32-bit, swapped byte order)
-    //   0xCFFAEDFE = MH_CIGAM_64 (64-bit, swapped byte order)
-    //   0xCAFEBABE = FAT_MAGIC   (Universal/Fat binary)
-    //   0xBEBAFECA = FAT_CIGAM   (Universal/Fat binary, swapped)
-    if data.len() >= 4 {
-        let magic = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-        match magic {
-            // Fat/Universal binary (contains multiple architectures)
-            0xCAFEBABE | 0xBEBAFECA => return "Mach-O Fat".into(),
-            _ => {}
-        }
-        let magic_le = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        match magic_le {
-            0xFEEDFACE => return "Mach-O 32-bit".into(),
-            0xFEEDFACF => return "Mach-O 64-bit".into(),
-            _ => {}
-        }
-        // Check big-endian variants (MH_CIGAM / MH_CIGAM_64)
-        let magic_be = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-        match magic_be {
-            0xFEEDFACE => return "Mach-O 32-bit (BE)".into(),
-            0xFEEDFACF => return "Mach-O 64-bit (BE)".into(),
-            0xCEFAEDFE => return "Mach-O 32-bit (swapped)".into(),
-            0xCFFAEDFE => return "Mach-O 64-bit (swapped)".into(),
-            _ => {}
-        }
-    }
-
-    // в”Ђв”Ђв”Ђ Script files (shebang detection) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    if data.starts_with(b"#!") {
-        // Read first line to identify interpreter
-        let first_line_end = data.iter().position(|&b| b == b'\n').unwrap_or(data.len().min(256));
-        let first_line = String::from_utf8_lossy(&data[2..first_line_end]);
-        let line = first_line.to_lowercase();
-
-        if line.contains("python") || line.contains("python3") || line.contains("python2") {
-            return "Script/Python".into();
-        }
-        if line.contains("bash") || line.contains("sh") || line.contains("zsh") || line.contains("ksh") {
-            return "Script/Shell".into();
-        }
-        if line.contains("perl") {
-            return "Script/Perl".into();
-        }
-        if line.contains("ruby") {
-            return "Script/Ruby".into();
-        }
-        if line.contains("node") || line.contains("js") || line.contains("deno") {
-            return "Script/JavaScript".into();
-        }
-        if line.contains("php") {
-            return "Script/PHP".into();
-        }
-        if line.contains("lua") {
-            return "Script/Lua".into();
-        }
-        if line.contains("awk") {
-            return "Script/Awk".into();
-        }
-        return "Script/Unknown".into();
-    }
-
-    // в”Ђв”Ђв”Ђ Batch / PowerShell scripts (no shebang) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    // Batch files often start with @echo off or @rem
-    if data.starts_with(b"@echo") || data.starts_with(b"@ECHO") || data.starts_with(b"@rem") {
-        return "Script/Batch".into();
-    }
-
-    // PowerShell scripts often start with UTF-8 BOM or specific patterns
-    if data.len() >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
-        // UTF-8 BOM вЂ” could be PS1, check further
-        let body = &data[3..];
-        let preview = String::from_utf8_lossy(&body[..body.len().min(128)]).to_lowercase();
-        if preview.contains("param(") || preview.contains("function ") || preview.contains("invoke-") || preview.contains("get-") {
-            return "Script/PowerShell".into();
-        }
-    }
-
-    "unknown".into()
-}
-
-pub fn hex_sha256(data: &[u8]) -> String {
-    let digest = freakre_sha256(data);
-    // Manual hex encode (no external `hex` crate)
-    let mut s = String::with_capacity(64);
-    for b in &digest {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
-}
-
-fn hex_md5(data: &[u8]) -> String {
-    let digest = freakre_md5(data);
-    let mut s = String::with_capacity(32);
-    for b in &digest {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_finding(severity: Severity, module: &str) -> Finding {
-        Finding {
-            severity,
-            module: module.into(),
-            rule_id: "TEST".into(),
-            description: "test".into(),
-            details: None,
-        }
-    }
-
-    #[test]
-    fn test_clean_file_score() {
-        let findings: Vec<Finding> = vec![];
-        let score = calculate_suspicion_score(
-            &findings,
-            0.0,
-            0.0,
-            &[],
-            false,
-            0,
-            0.0, // no ML signal
-        );
-        assert_eq!(score, 0.0);
-    }
-
-    #[test]
-    fn test_single_critical_finding() {
-        let findings = vec![make_finding(Severity::Critical, "pe-parser")];
-        let score = calculate_suspicion_score(
-            &findings,
-            0.0,
-            0.0,
-            &[],
-            false,
-            0,
-            0.0,
-        );
-        assert!(score >= 0.20, "Critical finding should give at least 0.20, got {}", score);
-    }
-
-    #[test]
-    fn test_yara_match_boosts_score() {
-        let findings = vec![make_finding(Severity::High, "yara-lite")];
-        let score = calculate_suspicion_score(
-            &findings,
-            0.0,
-            0.0,
-            &[],
-            false,
-            0,
-            0.0,
-        );
-        assert!(score >= 0.15, "YARA match should give at least 0.15, got {}", score);
-    }
-
-    #[test]
-    fn test_shellcode_gives_strong_signal() {
-        let findings = vec![make_finding(Severity::High, "shellcode-analyzer")];
-        let score = calculate_suspicion_score(
-            &findings,
-            0.0,
-            0.0,
-            &[],
-            true, // has_shellcode
-            0,
-            0.0,
-        );
-        assert!(score >= 0.25, "Shellcode should give at least 0.25, got {}", score);
-    }
-
-    #[test]
-    fn test_high_entropy_executable_section() {
-        let sections = vec![SectionEntropy {
-            name: ".text".into(),
-            entropy: 7.5,
-            classification: "high".into(),
-        }];
-        let findings = vec![];
-        let score = calculate_suspicion_score(
-            &findings,
-            0.0,
-            0.0,
-            &sections,
-            false,
-            0,
-            0.0,
-        );
-        assert!(score >= 0.08, "High entropy in .text should add 0.08, got {}", score);
-    }
-
-    #[test]
-    fn test_correlated_xref_pairs() {
-        let findings = vec![];
-        let score = calculate_suspicion_score(
-            &findings,
-            0.0,
-            0.0,
-            &[],
-            false,
-            2, // 2 correlated pairs
-            0.0,
-        );
-        assert!(score >= 0.10, "2 xref pairs should add ~0.10, got {}", score);
-    }
-
-    #[test]
-    fn test_match_packer_markers() {
-        // UPX section names should resolve to UPX (Medium).
-        let (display, suffix, sev) = match_packer("UPX0").unwrap();
-        assert_eq!(display, "UPX");
-        assert_eq!(suffix, "UPX");
-        assert_eq!(sev, Severity::Medium);
-
-        // VMProtect virtual section в†’ High severity.
-        let (_, suffix, sev) = match_packer(".vmp0").unwrap();
-        assert_eq!(suffix, "VMPROTECT");
-        assert_eq!(sev, Severity::High);
-
-        // Themida в†’ High severity.
-        let (_, _, sev) = match_packer(".themida").unwrap();
-        assert_eq!(sev, Severity::High);
-
-        // Ordinary section names must not match anything.
-        assert!(match_packer(".text").is_none());
-        assert!(match_packer(".rdata").is_none());
-        assert!(match_packer(".rsrc").is_none());
-    }
-
-    #[test]
-    fn test_diminishing_returns_high_findings() {
-        let one_high = vec![make_finding(Severity::High, "pe-parser")];
-        let five_high = vec![
-            make_finding(Severity::High, "pe-parser"),
-            make_finding(Severity::High, "pe-parser"),
-            make_finding(Severity::High, "pe-parser"),
-            make_finding(Severity::High, "pe-parser"),
-            make_finding(Severity::High, "pe-parser"),
-        ];
-        let score_one = calculate_suspicion_score(&one_high, 0.0, 0.0, &[], false, 0, 0.0);
-        let score_five = calculate_suspicion_score(&five_high, 0.0, 0.0, &[], false, 0, 0.0);
-        // 5 high findings should not be 5x the score of 1
-        assert!(score_five < score_one * 3.0, "Diminishing returns not working");
-    }
-
-    #[test]
-    fn test_compounding_bonus() {
-        // Multiple signal categories active
-        let findings = vec![
-            make_finding(Severity::High, "pe-parser"),
-            make_finding(Severity::High, "yara-lite"),
-        ];
-        let sections = vec![SectionEntropy {
-            name: ".text".into(),
-            entropy: 7.5,
-            classification: "high".into(),
-        }];
-        let score = calculate_suspicion_score(
-            &findings,
-            0.5,   // import_score > 0.3
-            0.3,   // backdoor_score > 0.2
-            &sections,
-            true,  // has_shellcode
-            1,     // correlated pairs
-            0.0,
-        );
-        // With 6 signal categories active, should get both compounding bonuses
-        assert!(score >= 0.70, "Compounding should push score high, got {}", score);
-    }
-
-    #[test]
-    fn test_ml_signal_boosts_score() {
-        let findings = vec![];
-        let score = calculate_suspicion_score(
-            &findings,
-            0.0,
-            0.0,
-            &[],
-            false,
-            0,
-            0.9, // strong ML malicious signal
-        );
-        assert!(score >= 0.13, "ML signal (0.9 * 0.15) should add ~0.135, got {}", score);
-    }
-
-    #[test]
-    fn test_verdict_clean() {
-        let verdict = determine_verdict(0.0, None, 0.0, &[]);
-        assert_eq!(verdict, Verdict::Clean);
-    }
-
-    #[test]
-    fn test_verdict_malicious_from_critical() {
-        let findings = vec![make_finding(Severity::Critical, "pe-parser")];
-        let verdict = determine_verdict(0.5, Some(Severity::Critical), 0.0, &findings);
-        assert_eq!(verdict, Verdict::Malicious);
-    }
-
-    #[test]
-    fn test_verdict_malicious_from_shellcode() {
-        let findings = vec![make_finding(Severity::High, "shellcode-analyzer")];
-        let verdict = determine_verdict(0.4, Some(Severity::High), 0.0, &findings);
-        assert_eq!(verdict, Verdict::Malicious);
-    }
-
-    #[test]
-    fn test_verdict_malicious_from_yara() {
-        let findings = vec![make_finding(Severity::High, "yara-lite")];
-        let verdict = determine_verdict(0.3, Some(Severity::High), 0.0, &findings);
-        assert_eq!(verdict, Verdict::Malicious);
-    }
-
-    #[test]
-    fn test_verdict_ignores_yara_budget_notice() {
-        // The budget notice is not a signature hit: it must neither force a
-        // Malicious verdict nor count as a YARA match.
-        let mut notice = make_finding(Severity::Low, "yara-lite");
-        notice.rule_id = "YARA_MATCH_BUDGET".into();
-        let verdict = determine_verdict(0.0, Some(Severity::Low), 0.0, &[notice.clone()]);
-        assert_eq!(verdict, Verdict::Clean);
-        assert_eq!(
-            calculate_suspicion_score(&[notice], 0.0, 0.0, &[], false, 0, 0.0),
-            0.0
-        );
-    }
-
-    #[test]
-    fn test_verdict_suspicious() {
-        let findings = vec![make_finding(Severity::Medium, "pe-parser")];
-        let verdict = determine_verdict(0.25, Some(Severity::Medium), 0.0, &findings);
-        assert_eq!(verdict, Verdict::Suspicious);
-    }
-
-    #[test]
-    fn test_is_executable_section() {
-        assert!(is_executable_section(".text"));
-        assert!(is_executable_section("CODE"));
-        assert!(is_executable_section(".code"));
-        assert!(is_executable_section(".init"));
-        assert!(!is_executable_section(".data"));
-        assert!(!is_executable_section(".rdata"));
-        assert!(!is_executable_section(".rsrc"));
-    }
-
-    #[test]
-    fn test_detect_file_type() {
-        assert_eq!(detect_file_type(b"MZ\x90\x00"), "DOS");
-        assert_eq!(detect_file_type(b"\x7FELF"), "ELF");
-        assert_eq!(detect_file_type(b"AAAA"), "unknown");
-        assert_eq!(detect_file_type(b""), "unknown");
-
-        // Mach-O 64-bit (little-endian)
-        let mut macho64 = [0u8; 32];
-        macho64[0] = 0xCF; macho64[1] = 0xFA; macho64[2] = 0xED; macho64[3] = 0xFE;
-        assert_eq!(detect_file_type(&macho64), "Mach-O 64-bit");
-
-        // Mach-O 32-bit (little-endian)
-        let mut macho32 = [0u8; 32];
-        macho32[0] = 0xCE; macho32[1] = 0xFA; macho32[2] = 0xED; macho32[3] = 0xFE;
-        assert_eq!(detect_file_type(&macho32), "Mach-O 32-bit");
-
-        // Mach-O Fat binary
-        let mut fat = [0u8; 32];
-        fat[0] = 0xCA; fat[1] = 0xFE; fat[2] = 0xBA; fat[3] = 0xBE;
-        assert_eq!(detect_file_type(&fat), "Mach-O Fat");
-
-        // Python script
-        let py = b"#!/usr/bin/env python3\nprint('hello')";
-        assert_eq!(detect_file_type(py), "Script/Python");
-
-        // Shell script
-        let sh = b"#!/bin/bash\necho hello";
-        assert_eq!(detect_file_type(sh), "Script/Shell");
-
-        // Batch file
-        let bat = b"@echo off\necho hello";
-        assert_eq!(detect_file_type(bat), "Script/Batch");
-    }
-
-    #[test]
-    fn test_detect_file_type_truncated_pe_optional_header() {
-        // Regression: a PE whose optional-header magic is truncated must not
-        // index out of bounds (previously panicked and killed the scan batch).
-        let mut trunc = vec![0u8; 65];
-        trunc[0] = b'M';
-        trunc[1] = b'Z';
-        trunc[40..44].copy_from_slice(b"PE\0\0");
-        trunc[60..64].copy_from_slice(&40u32.to_le_bytes());
-        assert_eq!(detect_file_type(&trunc), "DOS");
-
-        // One more byte is enough to read the PE32 magic (0x10B LE).
-        let mut full = trunc.clone();
-        full.push(0);
-        full[64] = 0x0B;
-        full[65] = 0x01;
-        assert_eq!(detect_file_type(&full), "PE32");
     }
 }
