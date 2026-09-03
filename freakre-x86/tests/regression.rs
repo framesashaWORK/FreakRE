@@ -219,3 +219,167 @@ fn sanity_known_good_decodes_still_work() {
         "sub rsp, 0x28"
     );
 }
+
+// ── SSE / SSE2 / AVX coverage ───────────────────────────────────────────
+
+#[test]
+fn coverage_sse() {
+    // movaps xmm0, xmm1
+    assert_eq!(fmt(&[0x0F, 0x28, 0xC1], 0, Mode::X64), "movaps xmm0, xmm1");
+    // movups xmm0, oword ptr [rax]
+    assert_eq!(fmt(&[0x0F, 0x10, 0x00], 0, Mode::X64), "movups xmm0, oword ptr [rax]");
+    // addps xmm0, xmm1
+    assert_eq!(fmt(&[0x0F, 0x58, 0xC1], 0, Mode::X64), "addps xmm0, xmm1");
+    // movdqa xmm0, xmm1 (66 0F 6F C1)
+    assert_eq!(fmt(&[0x66, 0x0F, 0x6F, 0xC1], 0, Mode::X64), "movdqa xmm0, xmm1");
+    // pxor xmm0, xmm0 (66 0F EF C0)
+    assert_eq!(fmt(&[0x66, 0x0F, 0xEF, 0xC0], 0, Mode::X64), "pxor xmm0, xmm0");
+}
+
+#[test]
+fn coverage_avx() {
+    // vmovaps xmm0, xmm1
+    assert_eq!(fmt(&[0xC5, 0xF8, 0x28, 0xC1], 0, Mode::X64), "vmovaps xmm0, xmm1");
+    // vmovaps ymm0, ymm1 (L=1)
+    assert_eq!(fmt(&[0xC5, 0x84, 0x28, 0xC1], 0, Mode::X64), "vmovaps ymm0, ymm1");
+    // vaddps xmm1, xmm2, xmm3
+    assert_eq!(fmt(&[0xC5, 0xA8, 0x58, 0xCB], 0, Mode::X64), "vaddps xmm1, xmm2, xmm3");
+    // vzeroupper
+    assert_eq!(fmt(&[0xC5, 0xF8, 0x77], 0, Mode::X64), "vzeroupper");
+}
+
+#[test]
+fn coverage_evex() {
+    // vmovups zmm1, zword ptr [rax]  (62 E0 04 08 10 08)
+    assert_eq!(
+        fmt(&[0x62, 0xE0, 0x04, 0x08, 0x10, 0x08], 0, Mode::X64),
+        "vmovups zmm1, zword ptr [rax]"
+    );
+}
+
+// ── x87 FPU coverage ────────────────────────────────────────────────────
+
+#[test]
+fn coverage_fpu() {
+    // fld st(1)  (D9 C1, register form)
+    assert_eq!(fmt(&[0xD9, 0xC1], 0, Mode::X64), "fld st(1)");
+    // fadd dword ptr [rax]  (D8 00, memory form)
+    assert_eq!(fmt(&[0xD8, 0x00], 0, Mode::X64), "fadd dword ptr [rax]");
+    // faddp st(0), st(1)  (DE C1)
+    assert_eq!(fmt(&[0xDE, 0xC1], 0, Mode::X64), "faddp st(0), st(1)");
+}
+
+// ── Scalar opcode gaps ──────────────────────────────────────────────────
+
+#[test]
+fn coverage_scalar_gaps() {
+    assert_eq!(fmt(&[0xF4], 0, Mode::X64), "hlt");
+    assert_eq!(fmt(&[0x9E], 0, Mode::X64), "lahf");
+    assert_eq!(fmt(&[0x9F], 0, Mode::X64), "sahf");
+    // pause (rep nop)
+    assert_eq!(fmt(&[0xF3, 0x90], 0, Mode::X64), "pause");
+    // xadd ebx, eax  (r/m is the destination)
+    assert_eq!(fmt(&[0x0F, 0xC1, 0xC3], 0, Mode::X64), "xadd ebx, eax");
+    // cmpxchg ebx, eax  (r/m is the destination)
+    assert_eq!(fmt(&[0x0F, 0xB1, 0xC3], 0, Mode::X64), "cmpxchg ebx, eax");
+    // sete cl  (0F 94 C1)
+    assert_eq!(fmt(&[0x0F, 0x94, 0xC1], 0, Mode::X64), "sete cl");
+    // loopne short (E0 FE at 0x10 -> target 0x10)
+    let insn = dec(&[0xE0, 0xFE], 0x10, Mode::X64).unwrap();
+    assert_eq!(insn.mnemonic, Mnemonic::Loopne);
+    if let Operand::Rel(t) = insn.operands[0] {
+        assert_eq!(t, 0x10);
+    }
+}
+
+// ── AT&T syntax + bulk disassembly ──────────────────────────────────────
+
+use freakre_x86::format_instruction_att;
+
+#[test]
+fn att_syntax_basic() {
+    let insn = dec(&[0xB8, 0x78, 0x56, 0x34, 0x12], 0, Mode::X64).unwrap();
+    // mov eax, 0x12345678 -> AT&T: movl $0x12345678, %eax
+    assert_eq!(format_instruction_att(&insn), "movl $0x12345678, %eax");
+}
+
+#[test]
+fn bulk_disassemble_basic() {
+    let insns = freakre_x86::disassemble(&[0x90, 0xF4, 0x48, 0x89, 0xE5], 0x1000, true);
+    assert_eq!(insns.len(), 3);
+    assert_eq!(insns[0].mnemonic, Mnemonic::Nop);
+    assert_eq!(insns[1].mnemonic, Mnemonic::Hlt);
+    assert_eq!(insns[2].mnemonic, Mnemonic::Mov);
+}
+
+// ─── 16-bit mode ───
+
+#[test]
+fn x16_lengths() {
+    use Mode::X16 as M;
+    assert_eq!(decode_len(&[0x90], M).unwrap(), 1);
+    assert_eq!(decode_len(&[0xC3], M).unwrap(), 1);
+    // mov ax, imm16
+    assert_eq!(decode_len(&[0xB8, 0x34, 0x12], M).unwrap(), 3);
+    // push imm16
+    assert_eq!(decode_len(&[0x68, 0x34, 0x12], M).unwrap(), 3);
+    // call / jmp rel16
+    assert_eq!(decode_len(&[0xE8, 0x00, 0x00], M).unwrap(), 3);
+    assert_eq!(decode_len(&[0xE9, 0x00, 0x00], M).unwrap(), 3);
+    // operand-size override flips to 32-bit forms
+    assert_eq!(decode_len(&[0x66, 0xE8, 0x00, 0x00, 0x00, 0x00], M).unwrap(), 6);
+    assert_eq!(decode_len(&[0x66, 0xB8, 0x01, 0x02, 0x03, 0x04], M).unwrap(), 6);
+    // far jmp ptr16:16
+    assert_eq!(decode_len(&[0xEA, 0x00, 0x00, 0x00, 0x00], M).unwrap(), 5);
+    // jcc rel16
+    assert_eq!(decode_len(&[0x0F, 0x84, 0x10, 0x00], M).unwrap(), 4);
+    // 16-bit modrm: mov ax,[bx] / mov ax,[bp+4] / mov bx,[0x1234]
+    assert_eq!(decode_len(&[0x8B, 0x07], M).unwrap(), 2);
+    assert_eq!(decode_len(&[0x8B, 0x46, 0x04], M).unwrap(), 3);
+    assert_eq!(decode_len(&[0x8B, 0x1E, 0x34, 0x12], M).unwrap(), 4);
+}
+
+#[test]
+fn x16_decode() {
+    use Mode::X16 as M;
+    // mov ax, 0x1234
+    let i = dec(&[0xB8, 0x34, 0x12], 0, M).unwrap();
+    assert_eq!(fmt(&[0xB8, 0x34, 0x12], 0, M), "mov ax, 0x1234");
+    assert_eq!(i.byte_slice(), &[0xB8, 0x34, 0x12]);
+    // push bp / pop bp use 16-bit regs
+    assert_eq!(fmt(&[0x55], 0, M), "push bp");
+    assert_eq!(fmt(&[0x5D], 0, M), "pop bp");
+    // inc ax (0x40 is inc in 16-bit, REX in 64-bit)
+    assert_eq!(fmt(&[0x40], 0, M), "inc ax");
+    // mov ax, [bx+si]
+    assert_eq!(fmt(&[0x8B, 0x00], 0, M), "mov ax, word ptr [bx+si]");
+    // call rel16 target resolution: E8 01 00 at 0x100 -> 0x104
+    let c = dec(&[0xE8, 0x01, 0x00], 0x100, M).unwrap();
+    assert_eq!(c.mnemonic, Mnemonic::Call);
+    assert!(c.is_call());
+    assert_eq!(c.branch_target(), Some(0x104));
+    // far jmp has no operand but correct length
+    let f = dec(&[0xEA, 0x05, 0x00, 0x10, 0x00], 0, M).unwrap();
+    assert_eq!(f.mnemonic, Mnemonic::Jmp);
+    assert!(f.is_branch());
+    assert_eq!(f.length, 5);
+    // cbw in 16-bit mode
+    assert_eq!(fmt(&[0x98], 0, M), "cbw");
+    // 32-bit with 0x67 address override uses 16-bit modrm length
+    assert_eq!(decode_len(&[0x67, 0x8B, 0x07], Mode::X86).unwrap(), 3);
+    assert_eq!(fmt(&[0x67, 0x8B, 0x07], 0, Mode::X86), "mov eax, dword ptr [bx]");
+}
+
+#[test]
+fn helpers_byte_slice_and_branch() {
+    let c = dec(&[0xE8, 0x00, 0x01, 0x00, 0x00], 0x2000, Mode::X86).unwrap();
+    assert!(c.is_control_flow());
+    assert!(!c.is_branch());
+    assert_eq!(c.branch_target(), Some(0x2000 + 5 + 0x100));
+    let j = dec(&[0xEB, 0xFE], 0x1000, Mode::X86).unwrap();
+    assert!(j.is_branch() && j.mnemonic.is_unconditional_jump());
+    assert_eq!(j.branch_target(), Some(0x1000));
+    let n = dec(&[0x90], 0, Mode::X86).unwrap();
+    assert!(!n.is_control_flow());
+    assert_eq!(n.branch_target(), None);
+}

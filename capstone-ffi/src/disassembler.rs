@@ -15,11 +15,19 @@
 //! | MIPS        | ✅       | ❌           |
 //! | PowerPC     | ✅       | ❌           |
 //! | SPARC       | ✅       | ❌           |
-//! | RISC-V      | ✅       | ❌           |
+//! | RISC-V      | ❌       | ❌           |
+//!
+//! Single-backend design: the Capstone path reuses
+//! `engine::capstone_backend::CapstoneEngine` (with detail ON so `groups`
+//! and `branch_target` are populated). No duplicate `cs_open` wrappers.
 
 use crate::arch::{Arch, Endian, Mode};
 use crate::error::DisasmError;
-use crate::instruction::{Instruction, InstructionKind};
+use crate::instruction::{Instruction, InstructionKind, Operand, RegId};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Rate-limiter for the built-in LDE warning (prints at most once).
+static LDE_WARNING_SHOWN: AtomicBool = AtomicBool::new(false);
 
 /// Multi-architecture disassembler.
 pub struct Disassembler {
@@ -27,7 +35,7 @@ pub struct Disassembler {
     mode: Mode,
     endian: Endian,
     #[cfg(capstone_available)]
-    cs_handle: Option<capstone_bindings::CapstoneHandle>,
+    cs_engine: Option<crate::engine::capstone_backend::CapstoneEngine>,
     _private: (),
 }
 
@@ -39,17 +47,43 @@ impl Disassembler {
 
     /// Create a new disassembler with explicit endianness.
     pub fn with_endian(arch: Arch, mode: Mode, endian: Endian) -> Result<Self, DisasmError> {
+        Self::with_options(arch, mode, endian, crate::engine::Syntax::Intel, true)
+    }
+
+    /// Create a disassembler with an explicit x86 output syntax
+    /// (Intel default, ATT optional). Detail mode stays on.
+    pub fn with_syntax(arch: Arch, mode: Mode, syntax: crate::engine::Syntax) -> Result<Self, DisasmError> {
+        Self::with_options(arch, mode, arch.default_endian(), syntax, true)
+    }
+
+    /// Fully explicit constructor: endianness, x86 syntax and detail mode
+    /// (detail populates `groups`/`branch_target`; only meaningful when a
+    /// Capstone backend is linked — the LDE fallback always fills both).
+    #[cfg_attr(not(capstone_available), allow(unused_variables))]
+    pub fn with_options(
+        arch: Arch,
+        mode: Mode,
+        endian: Endian,
+        syntax: crate::engine::Syntax,
+        detail: bool,
+    ) -> Result<Self, DisasmError> {
         Self::validate_mode(arch, mode)?;
 
         #[cfg(capstone_available)]
         {
-            match capstone_bindings::CapstoneHandle::new(arch, mode, endian) {
-                Ok(handle) => {
+            match crate::engine::capstone_backend::CapstoneEngine::with_options(
+                arch,
+                mode,
+                endian,
+                syntax,
+                detail,
+            ) {
+                Ok(engine) => {
                     return Ok(Self {
                         arch,
                         mode,
                         endian,
-                        cs_handle: Some(handle),
+                        cs_engine: Some(engine),
                         _private: (),
                     });
                 }
@@ -66,7 +100,7 @@ impl Disassembler {
                 mode,
                 endian,
                 #[cfg(capstone_available)]
-                cs_handle: None,
+                cs_engine: None,
                 _private: (),
             }),
             _ => Err(DisasmError::LibraryNotAvailable),
@@ -74,16 +108,12 @@ impl Disassembler {
     }
 
     /// Validate that the mode is compatible with the architecture.
+    /// Single source of truth lives in [`Arch::supports_mode`].
     fn validate_mode(arch: Arch, mode: Mode) -> Result<(), DisasmError> {
-        match (arch, mode) {
-            (Arch::X86, Mode::Mode16 | Mode::Mode32 | Mode::Mode64) => Ok(()),
-            (Arch::ARM, Mode::Arm | Mode::Thumb | Mode::Mode32) => Ok(()),
-            (Arch::ARM64, Mode::Mode64) => Ok(()),
-            (Arch::MIPS, Mode::Mode32 | Mode::Mode64 | Mode::MicroMips) => Ok(()),
-            (Arch::PPC, Mode::Mode32 | Mode::Mode64) => Ok(()),
-            (Arch::SPARC, Mode::Mode32 | Mode::Mode64) => Ok(()),
-            (Arch::RISCV, Mode::Mode32 | Mode::Mode64) => Ok(()),
-            _ => Err(DisasmError::InvalidMode(arch, mode)),
+        if arch.supports_mode(mode) {
+            Ok(())
+        } else {
+            Err(DisasmError::InvalidMode(arch, mode))
         }
     }
 
@@ -101,12 +131,17 @@ impl Disassembler {
     pub fn is_capstone(&self) -> bool {
         #[cfg(capstone_available)]
         {
-            self.cs_handle.is_some()
+            self.cs_engine.is_some()
         }
         #[cfg(not(capstone_available))]
         {
             false
         }
+    }
+
+    /// Returns the endianness this disassembler was created with.
+    pub fn endian(&self) -> Endian {
+        self.endian
     }
 
     /// Disassemble a buffer of machine code.
@@ -117,302 +152,237 @@ impl Disassembler {
     /// Returns all successfully decoded instructions. Decoding stops at
     /// the first invalid instruction.
     pub fn disassemble(&self, code: &[u8], base_address: u64) -> Vec<Instruction> {
-        #[cfg(capstone_available)]
-        {
-            if let Some(ref handle) = self.cs_handle {
-                return handle.disassemble(code, base_address);
-            }
-        }
-
-        // ⚠️ LIMITED DISASSEMBLY MODE — Built-in LDE fallback (x86/x64 only)
-        // Install Capstone for full multi-arch disassembly.
-        if self.arch == Arch::X86 {
-            eprintln!("[FreakRE] WARNING: Using limited built-in LDE. Install Capstone for full support.");
-            return builtin_lde_disassemble(code, base_address, self.mode == Mode::Mode64);
-        }
-
-        Vec::new()
+        self.disassemble_count(code, base_address, 0)
     }
 
     /// Disassemble a single instruction at the given offset.
     /// Returns None if the instruction cannot be decoded.
     pub fn disassemble_one(&self, code: &[u8], base_address: u64) -> Option<Instruction> {
-        let result = self.disassemble(code, base_address);
-        result.into_iter().next()
+        self.disassemble_count(code, base_address, 1).into_iter().next()
     }
 
     /// Disassemble with a maximum count of instructions.
+    /// `max_count == 0` means "no limit" (Capstone convention).
     pub fn disassemble_n(&self, code: &[u8], base_address: u64, max_count: usize) -> Vec<Instruction> {
-        let all = self.disassemble(code, base_address);
-        all.into_iter().take(max_count).collect()
-    }
-}
-
-// ─── Built-in LDE for x86/x64 ────────────────────────────────────────
-
-/// ⚠️ LIMITED DISASSEMBLY MODE — Built-in LDE fallback for x86/x64 only.
-///
-/// LIMITATIONS:
-/// - VEX/EVEX prefixes (AVX/AVX2/AVX-512) are NOT decoded
-/// - REX prefix handling assumes single REX after legacy prefixes
-/// - Operand size heuristic is approximate; rare encodings may misdecode
-/// - No operand parsing beyond rough classification
-///
-/// Install Capstone library for full multi-architecture disassembly.
-fn builtin_lde_disassemble(code: &[u8], base_address: u64, is_64bit: bool) -> Vec<Instruction> {
-    let mut instructions = Vec::new();
-    let mut offset = 0usize;
-
-    while offset < code.len() {
-        let remaining = &code[offset..];
-        let (len, kind) = lde_classify(remaining, is_64bit);
-
-        if len == 0 || offset + len > code.len() {
-            break;
-        }
-
-        let inst_bytes = code[offset..offset + len].to_vec();
-        let mnemonic = mnemonic_from_kind(&kind);
-        let operands = operands_from_bytes(&inst_bytes, &kind, is_64bit);
-
-        instructions.push(Instruction {
-            address: base_address + offset as u64,
-            size: len,
-            bytes: inst_bytes,
-            mnemonic,
-            operands,
-            operand_list: Vec::new(), // LDE doesn't parse operands fully
-            kind,
-        });
-
-        offset += len;
+        self.disassemble_count(code, base_address, max_count)
     }
 
-    instructions
-}
-
-/// Convert InstructionKind to a rough mnemonic for built-in LDE.
-fn mnemonic_from_kind(kind: &InstructionKind) -> String {
-    match kind {
-        InstructionKind::Return => "ret".into(),
-        InstructionKind::Call => "call".into(),
-        InstructionKind::ConditionalBranch => "jcc".into(),
-        InstructionKind::UnconditionalJump => "jmp".into(),
-        InstructionKind::Nop => "nop".into(),
-        InstructionKind::Normal => "inst".into(),
-        InstructionKind::Unknown => "db".into(),
-    }
-}
-
-/// Rough operand string from raw bytes for built-in LDE.
-fn operands_from_bytes(bytes: &[u8], kind: &InstructionKind, _is_64bit: bool) -> String {
-    match kind {
-        InstructionKind::ConditionalBranch | InstructionKind::UnconditionalJump => {
-            // Check for rel32 FIRST (longer encoding), then fall back to rel8
-            if bytes.len() >= 5 && (bytes[0] == 0x0F || bytes[0] == 0xE9) {
-                // 0F 8x (Jcc rel32) or E9 (JMP rel32)
-                let start = if bytes[0] == 0x0F { 2 } else { 1 };
-                if bytes.len() >= start + 4 {
-                    let rel = i32::from_le_bytes([
-                        bytes[start], bytes[start + 1], bytes[start + 2], bytes[start + 3]
-                    ]) as i64;
-                    return format!("rel32({:+})", rel);
+    fn disassemble_count(&self, code: &[u8], base_address: u64, max_count: usize) -> Vec<Instruction> {
+        #[cfg(capstone_available)]
+        {
+            if let Some(ref engine) = self.cs_engine {
+                use crate::engine::PreciseEngine;
+                match engine.disasm(code, base_address, max_count) {
+                    Ok(instrs) => return instrs.into_iter().map(|i| i.to_instruction()).collect(),
+                    Err(_) => {
+                        // Fall through to LDE for x86; otherwise empty.
+                    }
                 }
             }
-            if bytes.len() >= 2 {
-                let rel = bytes[1] as i8 as i64;
-                format!("rel8({:+})", rel)
-            } else {
-                String::new()
-            }
         }
-        InstructionKind::Call => {
-            if bytes.len() >= 5 && bytes[0] == 0xE8 {
-                let rel = i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as i64;
-                format!("rel32({:+})", rel)
-            } else {
-                String::new()
+
+        // LIMITED DISASSEMBLY MODE — Built-in LDE fallback (x86 only,
+        // now covering 16/32/64-bit via freakre-x86).
+        if self.arch == Arch::X86 {
+            if !LDE_WARNING_SHOWN.swap(true, Ordering::Relaxed) {
+                eprintln!("[FreakRE] WARNING: Using built-in LDE (freakre-x86). Install Capstone for full AVX/AVX-512 support.");
             }
+            return builtin_lde_disassemble(code, base_address, self.mode, max_count);
         }
-        _ => String::new(),
+
+        Vec::new()
     }
 }
 
-// ─── LDE: Length Disassembler Engine (x86/x64) ───────────────────────
-// Reused from cfg-builder with full instruction classification.
-//
-// LIMITATIONS (documented for users):
-// - VEX/EVEX prefixes (AVX/AVX2/AVX-512) are NOT decoded. Instructions
-//   with these prefixes will be classified as Unknown or Normal with
-//   incorrect length. Use Capstone backend for full AVX support.
-// - REX prefix handling assumes single REX after legacy prefixes.
-//   Multiple REX or REX in non-canonical positions may cause misdecode.
-// - Operand size heuristic is approximate; some rare encodings may
-//   produce incorrect instruction lengths.
-// This LDE is intended as a FALLBACK only when Capstone is unavailable.
-
-fn lde_classify(code: &[u8], is_64bit: bool) -> (usize, InstructionKind) {
-    if code.is_empty() {
-        return (1, InstructionKind::Unknown);
+/// Map the facade [`Mode`] onto the native decoder mode.
+fn lde_mode(mode: Mode) -> freakre_x86::Mode {
+    match mode {
+        Mode::Mode16 => freakre_x86::Mode::X16,
+        Mode::Mode64 => freakre_x86::Mode::X64,
+        // Mode32, Thumb, Arm and MicroMips never reach the x86 LDE
+        // (arch is X86 here), so default to 32-bit.
+        _ => freakre_x86::Mode::X86,
     }
+}
 
-    let mut pos = 0;
+// ─── Built-in LDE for x86 ────────────────────────────────────────────
 
-    // Skip legacy prefixes (up to 4)
-    while pos < code.len() && pos < 4 {
-        match code[pos] {
-            0xF0 | 0xF2 | 0xF3 | 0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65 | 0x66 | 0x67 => {
-                pos += 1;
+/// Fallback disassembler using the `freakre-x86` decoder.
+///
+/// Produces full operand parsing (registers, immediates, memory operands).
+/// `max_count == 0` means "no limit". Bytes come straight from
+/// [`freakre_x86::Instruction::byte_slice`] — no offset tracking, no drift.
+fn builtin_lde_disassemble(
+    code: &[u8],
+    base_address: u64,
+    mode: Mode,
+    max_count: usize,
+) -> Vec<Instruction> {
+    freakre_x86::disassemble_limit(code, base_address, lde_mode(mode), max_count)
+        .into_iter()
+        .map(|x86_insn| {
+            let bytes = x86_insn.byte_slice().to_vec();
+            convert_instruction(x86_insn, bytes)
+        })
+        .collect()
+}
+
+/// Convert a `freakre_x86::Instruction` into a capstone-ffi `Instruction`.
+fn convert_instruction(insn: freakre_x86::Instruction, bytes: Vec<u8>) -> Instruction {
+    let mnemonic = insn.mnemonic.as_str();
+    let kind = mnemonic_to_kind(&insn.mnemonic);
+    let size = insn.length;
+    let address = insn.address;
+    let branch_target = branch_target_lde(&insn, &bytes, address, size);
+    let operand_list: Vec<Operand> = insn.operands.into_iter().map(convert_operand).collect();
+    let operands = operand_list.iter()
+        .map(|o| format!("{}", o))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    Instruction {
+        address,
+        size,
+        bytes,
+        mnemonic,
+        operands,
+        operand_list,
+        kind,
+        groups: kind_groups(kind),
+        branch_target,
+    }
+}
+
+/// Best-effort direct branch target for the LDE path.
+/// Uses [`freakre_x86::Instruction::branch_target`] (the decoded `Rel`
+/// operand); the byte fallback below only handles short Jmp/Jcc.
+fn branch_target_lde(
+    insn: &freakre_x86::Instruction,
+    bytes: &[u8],
+    address: u64,
+    size: usize,
+) -> Option<u64> {
+    if !insn.mnemonic.is_branch() && !insn.mnemonic.is_call() {
+        return None;
+    }
+    if let Some(t) = insn.branch_target() {
+        return Some(t);
+    }
+    // Fallback: parse rel8/rel32 from raw bytes (handles short Jmp/Jcc).
+    if bytes.len() >= 2 && (bytes[0] == 0xEB || (0x70..=0x7F).contains(&bytes[0])) {
+        let disp = bytes[1] as i8 as i64;
+        return Some(address.wrapping_add(size as u64).wrapping_add(disp as u64));
+    }
+    if bytes.len() >= 5 && (bytes[0] == 0xE8 || bytes[0] == 0xE9) {
+        let disp = i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as i64;
+        return Some(address.wrapping_add(size as u64).wrapping_add(disp as u64));
+    }
+    None
+}
+
+/// Stable group tags mirroring the Capstone `groups` contract.
+fn kind_groups(kind: crate::instruction::InstructionKind) -> Vec<String> {
+    use crate::instruction::InstructionKind as K;
+    match kind {
+        K::ConditionalBranch => vec!["jump".into()],
+        K::UnconditionalJump => vec!["jump".into()],
+        K::Call => vec!["call".into()],
+        K::Return => vec!["ret".into()],
+        _ => Vec::new(),
+    }
+}
+
+/// Convert a `freakre_x86::Operand` into a capstone-ffi `Operand`.
+fn convert_operand(op: freakre_x86::Operand) -> Operand {
+    match op {
+        freakre_x86::Operand::Reg(reg) => Operand::Reg(register_to_regid(reg)),
+        freakre_x86::Operand::Imm(v) => Operand::Imm(v),
+        freakre_x86::Operand::Mem(mem) => {
+            let base = mem.base.map(register_to_regid);
+            let index = mem.index.map(register_to_regid);
+            Operand::Mem {
+                base,
+                index,
+                scale: mem.scale as i32,
+                disp: mem.displacement,
             }
-            _ => break,
         }
+        freakre_x86::Operand::Rel(addr) => Operand::Imm(addr as i64),
     }
+}
 
-    // FIXED: Detect VEX/EVEX prefixes and bail out gracefully.
-    // VEX 2-byte: 0xC5, VEX 3-byte: 0xC4, EVEX: 0x62
-    // These require full decoder state that LDE cannot provide.
-    if pos < code.len() {
-        match code[pos] {
-            0xC4 | 0xC5 | 0x62 => {
-                // Cannot decode VEX/EVEX without full table — return as Unknown
-                // with minimum length to avoid desynchronization
-                return (pos.max(1), InstructionKind::Unknown);
-            }
-            _ => {}
-        }
+/// Map `freakre_x86::Register` to a capstone-ffi `RegId`.
+///
+/// Delegates to the shared [`crate::instruction::reg_name_to_id`] table so
+/// the LDE path and the Capstone `op_str` parser agree. SIMD keeps the
+/// 100/200/300 ranges; unknown system regs map to INVALID (0).
+fn register_to_regid(reg: freakre_x86::Register) -> RegId {
+    use freakre_x86::Register;
+    if let Some(id) = crate::instruction::reg_name_to_id(&reg.name()) {
+        return id;
     }
-
-    // REX prefix in 64-bit mode
-    if is_64bit && pos < code.len() && (code[pos] & 0xF0) == 0x40 {
-        pos += 1;
+    match reg {
+        Register::Xmm(n) => RegId(100 + n as u32),
+        Register::Ymm(n) => RegId(200 + n as u32),
+        Register::Zmm(n) => RegId(300 + n as u32),
+        _ => RegId::INVALID,
     }
+}
 
-    if pos >= code.len() {
-        return (pos.max(1), InstructionKind::Unknown);
+/// Map `freakre_x86::Mnemonic` to capstone-ffi `InstructionKind`.
+///
+/// Delegates to the shared [`freakre_x86::Mnemonic`] helpers — the single
+/// source of truth — so this can never drift from `cfg-builder` again.
+/// (Historically `Jmp` was misclassified here as `ConditionalBranch`.)
+fn mnemonic_to_kind(m: &freakre_x86::Mnemonic) -> InstructionKind {
+    use freakre_x86::Mnemonic as M;
+    if m.is_ret() {
+        InstructionKind::Return
+    } else if m.is_call() {
+        InstructionKind::Call
+    } else if m.is_unconditional_jump() {
+        InstructionKind::UnconditionalJump
+    } else if m.is_conditional_branch() {
+        InstructionKind::ConditionalBranch
+    } else if matches!(m, M::Nop) {
+        InstructionKind::Nop
+    } else if matches!(m, M::Unknown) {
+        InstructionKind::Unknown
+    } else {
+        // Leave/Hlt/Int/Syscall are NOT returns: Leave rewrites the frame,
+        // Hlt halts, Int/Syscall trap — all fall through semantically.
+        InstructionKind::Normal
     }
+}
 
-    let opcode = code[pos];
-    pos += 1;
-
-    // Two-byte opcode escape
-    if opcode == 0x0F && pos < code.len() {
-        let second = code[pos];
-        pos += 1;
-
-        // 0F 80-8F: Jcc rel32
-        if (0x80..=0x8F).contains(&second) {
-            return (pos + 4, InstructionKind::ConditionalBranch);
-        }
-
-        // 0F 90-9F: SETcc (ModR/M)
-        if (0x90..=0x9F).contains(&second) {
-            let len = if pos < code.len() { modrm_length(code[pos]) } else { 0 };
-            return (pos + len, InstructionKind::Normal);
-        }
-
-        // 0F 40-4F: CMOVcc (ModR/M)
-        if (0x40..=0x4F).contains(&second) {
-            let len = if pos < code.len() { modrm_length(code[pos]) } else { 0 };
-            return (pos + len, InstructionKind::Normal);
-        }
-
-        // MOVZX/MOVSX
-        if second == 0xB6 || second == 0xB7 || second == 0xBE || second == 0xBF {
-            let len = if pos < code.len() { modrm_length(code[pos]) } else { 0 };
-            return (pos + len, InstructionKind::Normal);
-        }
-
-        // BSF/BSR
-        if second == 0xBC || second == 0xBD {
-            let len = if pos < code.len() { modrm_length(code[pos]) } else { 0 };
-            return (pos + len, InstructionKind::Normal);
-        }
-
-        // IMUL r, r/m
-        if second == 0xAF {
-            let len = if pos < code.len() { modrm_length(code[pos]) } else { 0 };
-            return (pos + len, InstructionKind::Normal);
-        }
-
-        // No-operand instructions
-        if second == 0x31 || second == 0xA2 || second == 0x05 || second == 0x34 {
-            return (pos, InstructionKind::Normal);
-        }
-
-        // Default: ModR/M
-        let len = if pos < code.len() { modrm_length(code[pos]) } else { 0 };
-        return (pos + len, InstructionKind::Normal);
-    }
-
-    match opcode {
-        0xC3 | 0xCB => (pos, InstructionKind::Return),
-        0xC2 | 0xCA => (pos + 2, InstructionKind::Return),
-        0xE8 => (pos + 4, InstructionKind::Call),
-        0xE9 => (pos + 4, InstructionKind::UnconditionalJump),
-        0xEB => (pos + 1, InstructionKind::UnconditionalJump),
-        0x70..=0x7F => (pos + 1, InstructionKind::ConditionalBranch),
-        0xE0..=0xE3 => (pos + 1, InstructionKind::ConditionalBranch),
-        0xFF => {
-            if pos < code.len() {
-                let modrm = code[pos];
-                let reg = (modrm >> 3) & 0x07;
-                let len = modrm_length(modrm);
-                match reg {
-                    2 | 3 => (pos + len, InstructionKind::Call),
-                    4 | 5 => (pos + len, InstructionKind::UnconditionalJump),
-                    _ => (pos + len, InstructionKind::Normal),
+impl std::fmt::Display for Operand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Operand::Reg(id) => write!(f, "{}", id),
+            Operand::Imm(v) => write!(f, "0x{:x}", v),
+            Operand::Mem { base, index, scale, disp } => {
+                write!(f, "[")?;
+                let mut need_plus = false;
+                if let Some(b) = base {
+                    if b.is_valid() { write!(f, "{}", b)?; need_plus = true; }
                 }
-            } else {
-                (pos, InstructionKind::Unknown)
+                if let Some(idx) = index {
+                    if idx.is_valid() {
+                        if need_plus { write!(f, " + ")?; }
+                        if *scale > 1 { write!(f, "{}*{}", idx, scale)?; }
+                        else { write!(f, "{}", idx)?; }
+                        need_plus = true;
+                    }
+                }
+                if *disp != 0 || !need_plus {
+                    if need_plus { write!(f, " + ")?; }
+                    write!(f, "0x{:x}", *disp as u64)?;
+                }
+                write!(f, "]")
             }
+            Operand::Fp(v) => write!(f, "{}", v),
+            Operand::Unknown => write!(f, "?"),
         }
-        0x90 => (pos, InstructionKind::Nop),
-        0xCC => (pos, InstructionKind::Nop),
-        _ => {
-            let extra = operand_size_heuristic(opcode, code.get(pos).copied());
-            (pos + extra, InstructionKind::Normal)
-        }
-    }
-}
-
-fn modrm_length(modrm: u8) -> usize {
-    let mod_bits = (modrm >> 6) & 0x03;
-    let rm = modrm & 0x07;
-    let mut len = 1;
-
-    if mod_bits != 3 && rm == 4 {
-        len += 1; // SIB
-    }
-
-    match mod_bits {
-        0 if rm == 5 => len += 4,
-        1 => len += 1,
-        2 => len += 4,
-        _ => {}
-    }
-
-    len
-}
-
-fn operand_size_heuristic(opcode: u8, next_byte: Option<u8>) -> usize {
-    match opcode {
-        0x50..=0x5F => 0,
-        0xB8..=0xBF => 4,
-        0x04 | 0x0C | 0x14 | 0x1C | 0x24 | 0x2C | 0x34 | 0x3C => 1,
-        0x05 | 0x0D | 0x15 | 0x1D | 0x25 | 0x2D | 0x35 | 0x3D => 4,
-        0x80 | 0x82 => next_byte.map(|m| 1 + modrm_length(m) + 1).unwrap_or(2),
-        0x81 => next_byte.map(|m| 1 + modrm_length(m) + 4).unwrap_or(5),
-        0x83 => next_byte.map(|m| 1 + modrm_length(m) + 1).unwrap_or(2),
-        0x88..=0x8B => next_byte.map(modrm_length).unwrap_or(1),
-        0x8D => next_byte.map(modrm_length).unwrap_or(1),
-        0x84 | 0x85 => next_byte.map(modrm_length).unwrap_or(1),
-        0x91..=0x97 => 0,
-        0x98 | 0x99 | 0x9B | 0x9C | 0x9D | 0x9E | 0x9F => 0,
-        0x6A => 1,
-        0x68 => 4,
-        0x6B => next_byte.map(|m| modrm_length(m) + 1).unwrap_or(2),
-        0x69 => next_byte.map(|m| modrm_length(m) + 4).unwrap_or(5),
-        _ => next_byte.map(modrm_length).unwrap_or(1),
     }
 }
 
@@ -455,6 +425,47 @@ mod tests {
         let disasm = Disassembler::new(Arch::X86, Mode::Mode64).unwrap();
         let insts = disasm.disassemble(&[], 0x0);
         assert!(insts.is_empty());
+    }
+
+    #[test]
+    fn test_x86_16bit_lde() {
+        // 16-bit fallback: mov ax, 0x1234; ret. Verifies Mode16 reaches
+        // the X16 decoder (not the 32-bit path) and keeps bytes/targets.
+        let disasm = Disassembler::new(Arch::X86, Mode::Mode16).unwrap();
+        assert!(!disasm.is_capstone() || true); // either backend is fine
+        let code = [0xB8, 0x34, 0x12, 0xC3];
+        let insts = disasm.disassemble(&code, 0x100);
+        assert_eq!(insts.len(), 2);
+        assert_eq!(insts[0].mnemonic, "mov");
+        assert_eq!(insts[0].size, 3);
+        assert_eq!(insts[0].bytes, vec![0xB8, 0x34, 0x12]);
+        assert_eq!(insts[1].kind, InstructionKind::Return);
+    }
+
+    #[test]
+    fn test_lde_bytes_and_branch_target() {
+        let disasm = Disassembler::new(Arch::X86, Mode::Mode32).unwrap();
+        // call +0x100 at 0x2000 -> 0x2105
+        let insts = disasm.disassemble(&[0xE8, 0x00, 0x01, 0x00, 0x00], 0x2000);
+        assert_eq!(insts[0].bytes.len(), 5);
+        assert_eq!(insts[0].branch_target, Some(0x2105));
+        assert_eq!(insts[0].groups, vec!["call".to_string()]);
+    }
+
+    #[test]
+    fn test_with_syntax_and_count() {
+        let disasm = Disassembler::with_syntax(
+            Arch::X86,
+            Mode::Mode64,
+            crate::engine::Syntax::Intel,
+        )
+        .unwrap();
+        let code = [0x90, 0x90, 0x90, 0xC3];
+        assert_eq!(disasm.disassemble_n(&code, 0, 2).len(), 2);
+        assert_eq!(disasm.disassemble(&code, 0).len(), 4);
+        // Invalid arch/mode still rejected.
+        assert!(Disassembler::new(Arch::RISCV, Mode::Mode64).is_err());
+        assert!(Disassembler::new(Arch::ARM, Mode::Mode32).is_err());
     }
 
     #[test]

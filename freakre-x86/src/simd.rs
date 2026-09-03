@@ -1,0 +1,395 @@
+//! SIMD decoding: SSE/SSE2/SSE3/SSSE3/SSE4 (0F/0F38/0F3A) and VEX/EVEX (AVX/AVX2/AVX-512).
+//! Mnemonics are emitted as `Mnemonic::Raw` so the decoder never panics on
+//! unrecognized encodings (those fall through to `Unknown` with correct length
+//! already validated by the LDE).
+
+use crate::types::*;
+use crate::decoder::{decode_modrm, reg_for_index, Ctx};
+
+#[derive(Clone, Copy)]
+pub struct SimdState {
+    pub map: u8, // 0:0F, 1:0F38, 2:0F3A
+    pub pp: u8,  // 0 none, 1 0x66, 2 0xF3, 3 0xF2
+    pub w: bool,
+    pub vl: u8,  // 0:128, 1:256, 2:512
+    pub vvvv: Option<u8>,
+    pub r_bit: bool,
+    pub x_bit: bool,
+    pub b_bit: bool,
+    pub evex: bool,
+    pub mask: Option<u8>,
+}
+
+#[derive(Clone, Copy)]
+struct Def {
+    map: u8,
+    pp: u8,
+    op: u8,
+    name: &'static str,
+    form: u8, // 0: reg,rm ; 2: rm,reg (store)
+    mem: u8,  // 0 vector(vl), 1 dword, 2 qword, 3 word, 4 byte
+    vex3: bool,
+    imm: bool,
+    reg_is_xmm: bool,
+    rm_is_xmm: bool,
+}
+
+const DEFS: &[Def] = &[
+    // ─── 0F map: data movement ───────────────────────────────────────
+    Def { map: 0, pp: 0, op: 0x10, name: "movups", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x10, name: "movupd", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x10, name: "movss", form: 0, mem: 1, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x10, name: "movsd", form: 0, mem: 2, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x11, name: "movups", form: 2, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x11, name: "movupd", form: 2, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x11, name: "movss", form: 2, mem: 1, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x11, name: "movsd", form: 2, mem: 2, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x12, name: "movhlps", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x12, name: "movlpd", form: 0, mem: 2, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x12, name: "movsldup", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x12, name: "movddup", form: 0, mem: 2, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x13, name: "movlps", form: 2, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x17, name: "movhps", form: 2, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x14, name: "unpcklps", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x14, name: "unpcklpd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x15, name: "unpckhps", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x15, name: "unpckhpd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x16, name: "movlhps", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x16, name: "movhpd", form: 0, mem: 2, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x16, name: "movshdup", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x28, name: "movaps", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x28, name: "movapd", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x29, name: "movaps", form: 2, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x29, name: "movapd", form: 2, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+
+    // ─── 0F map: conversions ─────────────────────────────────────────
+    Def { map: 0, pp: 0, op: 0x2A, name: "cvtpi2ps", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x2A, name: "cvtpi2pd", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x2A, name: "cvtsi2ss", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: false },
+    Def { map: 0, pp: 3, op: 0x2A, name: "cvtsi2sd", form: 0, mem: 2, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: false },
+    Def { map: 0, pp: 0, op: 0x2B, name: "movntps", form: 2, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x2B, name: "movntpd", form: 2, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x2C, name: "cvttps2pi", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x2C, name: "cvttpd2pi", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x2C, name: "cvttss2si", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: false, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x2C, name: "cvttsd2si", form: 0, mem: 2, vex3: true, imm: false, reg_is_xmm: false, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x2D, name: "cvtps2pi", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x2D, name: "cvtpd2pi", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x2D, name: "cvtss2si", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: false, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x2D, name: "cvtsd2si", form: 0, mem: 2, vex3: true, imm: false, reg_is_xmm: false, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x2E, name: "ucomiss", form: 0, mem: 1, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x2E, name: "ucomisd", form: 0, mem: 2, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x2F, name: "comiss", form: 0, mem: 1, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x2F, name: "comisd", form: 0, mem: 2, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+
+    // ─── 0F map: logical / arithmetic / compare ──────────────────────
+    Def { map: 0, pp: 0, op: 0x51, name: "sqrtps", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x51, name: "sqrtpd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x51, name: "sqrtss", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x51, name: "sqrtsd", form: 0, mem: 2, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x54, name: "andps", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x54, name: "andpd", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x55, name: "andnps", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x55, name: "andnpd", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x56, name: "orps", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x56, name: "orpd", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x57, name: "xorps", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x57, name: "xorpd", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x58, name: "addps", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x58, name: "addpd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x58, name: "addss", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x58, name: "addsd", form: 0, mem: 2, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x59, name: "mulps", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x59, name: "mulpd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x59, name: "mulss", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x59, name: "mulsd", form: 0, mem: 2, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x5A, name: "cvtps2pd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x5A, name: "cvtpd2ps", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x5A, name: "cvtss2sd", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x5A, name: "cvtsd2ss", form: 0, mem: 2, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x5B, name: "cvtdq2ps", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x5B, name: "cvtps2dq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x5B, name: "cvttps2dq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x5B, name: "cvttpd2dq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x5C, name: "subps", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x5C, name: "subpd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x5C, name: "subss", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x5C, name: "subsd", form: 0, mem: 2, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x5D, name: "minps", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x5D, name: "minpd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x5D, name: "minss", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x5D, name: "minsd", form: 0, mem: 2, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x5E, name: "divps", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x5E, name: "divpd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x5E, name: "divss", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x5E, name: "divsd", form: 0, mem: 2, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x5F, name: "maxps", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x5F, name: "maxpd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x5F, name: "maxss", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x5F, name: "maxsd", form: 0, mem: 2, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+
+    // ─── 0F map: packed integer (66) ────────────────────────────────
+    Def { map: 0, pp: 1, op: 0x60, name: "punpcklbw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x61, name: "punpcklwd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x62, name: "punpckldq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x63, name: "packsswb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x64, name: "pcmpgtb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x65, name: "pcmpgtw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x66, name: "pcmpgtd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x67, name: "packuswb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x68, name: "punpckhbw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x69, name: "punpckhwd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x6A, name: "punpckhdq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x6B, name: "packssdw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x6C, name: "punpcklqdq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x6D, name: "punpckhqdq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x6E, name: "movd", form: 0, mem: 1, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: false },
+    Def { map: 0, pp: 1, op: 0x6F, name: "movdqa", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 0, op: 0x70, name: "pshufw", form: 0, mem: 0, vex3: false, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x70, name: "pshufd", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0x70, name: "pshuflw", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 3, op: 0x70, name: "pshufhw", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x71, name: "psllw", form: 0, mem: 0, vex3: false, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x72, name: "pslld", form: 0, mem: 0, vex3: false, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x73, name: "psllq", form: 0, mem: 0, vex3: false, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x74, name: "pcmpeqb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x75, name: "pcmpeqw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x76, name: "pcmpeqd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0x7E, name: "movd", form: 2, mem: 1, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: false },
+    Def { map: 0, pp: 1, op: 0x7F, name: "movdqa", form: 2, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xC2, name: "cmpps", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xC4, name: "pinsrw", form: 0, mem: 1, vex3: false, imm: true, reg_is_xmm: true, rm_is_xmm: false },
+    Def { map: 0, pp: 3, op: 0xC4, name: "pinsrw", form: 0, mem: 1, vex3: false, imm: true, reg_is_xmm: true, rm_is_xmm: false },
+    Def { map: 0, pp: 1, op: 0xC5, name: "pextrw", form: 0, mem: 1, vex3: false, imm: true, reg_is_xmm: true, rm_is_xmm: false },
+    Def { map: 0, pp: 3, op: 0xC5, name: "pextrw", form: 0, mem: 1, vex3: false, imm: true, reg_is_xmm: true, rm_is_xmm: false },
+    Def { map: 0, pp: 0, op: 0xC6, name: "shufps", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xC6, name: "shufpd", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xD1, name: "psrlw", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xD2, name: "psrld", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xD3, name: "psrlq", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xD4, name: "paddq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xD5, name: "pmullw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xDB, name: "pand", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xDF, name: "pandn", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xE0, name: "pavgb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xE1, name: "pavgw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xE4, name: "pmulhuw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xE5, name: "pmulhw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xE6, name: "cvtpd2dq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 2, op: 0xE6, name: "cvttpd2dq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xE7, name: "movntdq", form: 2, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xE8, name: "psubsb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xE9, name: "psubsw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xEA, name: "pminsw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xEB, name: "por", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xEC, name: "paddsb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xED, name: "paddsw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xEE, name: "pmaxsw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xEF, name: "pxor", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xF1, name: "psllw", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xF2, name: "pslld", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xF3, name: "psllq", form: 0, mem: 0, vex3: false, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xF4, name: "pmuludq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xF5, name: "pmaddwd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xF6, name: "psadbw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xF8, name: "psubb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xF9, name: "psubw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xFA, name: "psubd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xFB, name: "psubq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xFC, name: "paddb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xFD, name: "paddw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 0, pp: 1, op: 0xFE, name: "paddd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+
+    // ─── 0F38 map (SSSE3 / SSE4) ─────────────────────────────────────
+    Def { map: 1, pp: 1, op: 0x00, name: "pshufb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x01, name: "phaddw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x02, name: "phaddd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x03, name: "phaddsw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x04, name: "pmaddubsw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x05, name: "phsubw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x06, name: "phsubd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x07, name: "phsubsw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x08, name: "psignb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x09, name: "psignw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x0A, name: "psignd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x0B, name: "pmulhrsw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x0E, name: "pblendw", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 2, op: 0x0D, name: "blendvps", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 2, op: 0x0E, name: "pblendvb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 2, op: 0x14, name: "blendvps", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 2, op: 0x15, name: "blendvpd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x17, name: "ptest", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x1C, name: "pabsb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x1D, name: "pabsw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x1E, name: "pabsd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x20, name: "pmovsxbw", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x21, name: "pmovsxbd", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x22, name: "pmovsxbq", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x23, name: "pmovsxwd", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x24, name: "pmovsxwq", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x25, name: "pmovsxdq", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x28, name: "pmuldq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x29, name: "pcmpeqq", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x2B, name: "packusdw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x30, name: "pmovzxbw", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x31, name: "pmovzxbd", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x32, name: "pmovzxbq", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x33, name: "pmovzxwd", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x34, name: "pmovzxwq", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x35, name: "pmovzxdq", form: 0, mem: 1, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x38, name: "pminsb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x39, name: "pminsd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x3A, name: "pminuw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x3B, name: "pminud", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x3C, name: "pmaxsb", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x3D, name: "pmaxsd", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x3E, name: "pmaxuw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x3F, name: "pmaxud", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x40, name: "pmulld", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0x41, name: "phminposuw", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0xDB, name: "aesimc", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0xDC, name: "aesenc", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0xDD, name: "aesenclast", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0xDE, name: "aesdec", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 1, op: 0xDF, name: "aesdeclast", form: 0, mem: 0, vex3: true, imm: false, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 1, pp: 0, op: 0xF0, name: "movbe", form: 0, mem: 1, vex3: false, imm: false, reg_is_xmm: false, rm_is_xmm: true },
+    Def { map: 1, pp: 0, op: 0xF1, name: "movbe", form: 2, mem: 1, vex3: false, imm: false, reg_is_xmm: false, rm_is_xmm: true },
+
+    // ─── 0F3A map (SSE4 / round / blend / insert) ────────────────────
+    Def { map: 2, pp: 1, op: 0x08, name: "roundps", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 1, op: 0x09, name: "roundpd", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 2, op: 0x0A, name: "roundss", form: 0, mem: 1, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 3, op: 0x0B, name: "roundsd", form: 0, mem: 2, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 1, op: 0x0C, name: "blendps", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 1, op: 0x0D, name: "blendpd", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 1, op: 0x0E, name: "pblendw", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 1, op: 0x0F, name: "palignr", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 1, op: 0x14, name: "pextrb", form: 0, mem: 1, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: false },
+    Def { map: 2, pp: 1, op: 0x15, name: "pextrw", form: 0, mem: 1, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: false },
+    Def { map: 2, pp: 1, op: 0x16, name: "pextrd", form: 0, mem: 1, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: false },
+    Def { map: 2, pp: 1, op: 0x20, name: "pinsrb", form: 0, mem: 1, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: false },
+    Def { map: 2, pp: 1, op: 0x21, name: "insertps", form: 0, mem: 1, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 1, op: 0x22, name: "pinsrd", form: 0, mem: 1, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: false },
+    Def { map: 2, pp: 1, op: 0x40, name: "dpps", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 1, op: 0x41, name: "dppd", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 1, op: 0x42, name: "mpsadbw", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 1, op: 0x60, name: "pcmpestrm", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 1, op: 0x61, name: "pcmpestri", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 1, op: 0x62, name: "pcmpistrm", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+    Def { map: 2, pp: 1, op: 0x63, name: "pcmpistri", form: 0, mem: 0, vex3: true, imm: true, reg_is_xmm: true, rm_is_xmm: true },
+];
+
+fn find_def(map: u8, pp: u8, op: u8) -> Option<&'static Def> {
+    DEFS.iter().find(|d| d.map == map && d.pp == pp && d.op == op)
+}
+
+fn simd_reg(idx: u8, vl: u8) -> Register {
+    match vl {
+        0 => Register::Xmm(idx),
+        1 => Register::Ymm(idx),
+        _ => Register::Zmm(idx),
+    }
+}
+
+fn simd_mem_size(kind: u8, vl: u8) -> OperandSize {
+    match kind {
+        1 => OperandSize::Dword,
+        2 => OperandSize::Qword,
+        3 => OperandSize::Word,
+        4 => OperandSize::Byte,
+        _ => match vl {
+            0 => OperandSize::Oword,
+            1 => OperandSize::Yword,
+            _ => OperandSize::Zword,
+        },
+    }
+}
+
+fn gpr_reg(idx: u8, w: bool, is_64: bool) -> Register {
+    let size = if w && is_64 { OperandSize::Qword } else { OperandSize::Dword };
+    reg_for_index(idx, false, size)
+}
+
+/// Decode a SIMD (SSE / AVX / AVX-512) instruction described by `st`.
+/// Returns `None` when the opcode/prefix combination is not in the table,
+/// letting the caller fall back to `Unknown` with the LDE-validated length.
+pub(crate) fn decode_simd(st: &SimdState, bytes: &[u8], pos: usize, ctx: Ctx) -> Option<(Mnemonic, Vec<Operand>)> {
+    if pos >= bytes.len() {
+        return None;
+    }
+    let op = bytes[pos];
+    let def = find_def(st.map, st.pp, op)?;
+    if pos + 1 >= bytes.len() {
+        return None;
+    }
+    let modrm = bytes[pos + 1];
+    let _mod = (modrm >> 6) & 3;
+    let reg_f = (modrm >> 3) & 7;
+    let rm_f = modrm & 7;
+    let reg_idx = reg_f | ((st.r_bit as u8) << 3);
+    let rm_idx = rm_f | ((st.b_bit as u8) << 3);
+
+    let reg_op = if def.reg_is_xmm {
+        Operand::Reg(simd_reg(reg_idx, st.vl))
+    } else {
+        Operand::Reg(gpr_reg(reg_idx, st.w, ctx.is_64))
+    };
+
+    let rex_mem = Some(RexPrefix { w: false, r: st.r_bit, x: st.x_bit, b: st.b_bit });
+    let (_ign, rm_parsed, next) =
+        decode_modrm(bytes, pos + 1, ctx, rex_mem, OperandSize::Dword, OperandSize::Dword).ok()?;
+
+    let rm_op = match rm_parsed {
+        Operand::Mem(mut m) => {
+            m.size = simd_mem_size(def.mem, st.vl);
+            Operand::Mem(m)
+        }
+        Operand::Reg(_) => {
+            if def.rm_is_xmm {
+                Operand::Reg(simd_reg(rm_idx, st.vl))
+            } else {
+                Operand::Reg(gpr_reg(rm_idx, st.w, ctx.is_64))
+            }
+        }
+        _ => return None,
+    };
+
+    let form = if st.vvvv.is_some() && def.vex3 { 3 } else { def.form };
+    let mut operands = Vec::with_capacity(4);
+    match form {
+        3 => {
+            let vop = Operand::Reg(simd_reg(st.vvvv.unwrap(), st.vl));
+            operands.push(reg_op);
+            operands.push(vop);
+            operands.push(rm_op);
+        }
+        2 => {
+            operands.push(rm_op);
+            operands.push(reg_op);
+        }
+        _ => {
+            operands.push(reg_op);
+            operands.push(rm_op);
+        }
+    }
+
+    if def.imm {
+        let imm = *bytes.get(next)? as i8;
+        operands.push(Operand::Imm(imm as i64));
+    }
+
+    if let Some(k) = st.mask {
+        if k != 0 {
+            operands.push(Operand::Reg(Register::K(k)));
+        }
+    }
+
+    let vprefix = if st.evex || st.vvvv.is_some() { "v" } else { "" };
+    let name = format!("{}{}", vprefix, def.name);
+    Some((Mnemonic::Raw(name), operands))
+}
+
+/// Build a `SimdState` for the SSE (non-VEX) 0F/0F38/0F3A maps.
+pub fn sse_state(map: u8, pp: u8, w: bool, r_bit: bool, x_bit: bool, b_bit: bool) -> SimdState {
+    SimdState { map, pp, w, vl: 0, vvvv: None, r_bit, x_bit, b_bit, evex: false, mask: None }
+}

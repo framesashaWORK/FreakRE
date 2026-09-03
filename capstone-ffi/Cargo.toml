@@ -6,12 +6,12 @@ description = "Capstone disassembly framework FFI bindings with multi-architectu
 license = "MIT"
 
 [dependencies]
+freakre-x86 = { path = "../freakre-x86" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 
 [build-dependencies]
 pkg-config = "0.3"
-bindgen = "0.69"
 
 # [dev-dependencies]
 # criterion = "0.5"

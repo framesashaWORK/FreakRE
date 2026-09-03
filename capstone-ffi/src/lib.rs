@@ -85,14 +85,15 @@ pub mod capstone_bindings;
 
 pub use arch::{Arch, Mode, Endian};
 pub use error::DisasmError;
-pub use instruction::{Instruction, Operand, RegId};
+pub use instruction::{Instruction, InstructionKind, Operand, RegId, reg_name_to_id};
 pub use disassembler::Disassembler;
 
 // Engine-neutral precise-disassembly facade.
 #[cfg(capstone_available)]
 pub use engine::CapstoneEngine;
 pub use engine::{
-    best_engine, best_engine_for, EngineError, Instr, PreciseEngine, StubEngine, Syntax,
+    best_engine, best_engine_for, try_best_engine_for, EngineError, Instr, PreciseEngine,
+    StubEngine, Syntax,
 };
 
 /// Result type for disassembly operations

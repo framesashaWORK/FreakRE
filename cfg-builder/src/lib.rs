@@ -187,20 +187,27 @@ impl ControlFlowGraph {
 // ─── Instruction classification via freakre-x86 ─────────────────────
 
 /// Map a `freakre_x86::Mnemonic` to our control-flow `InstructionKind`.
+///
+/// Delegates to the shared [`freakre_x86::Mnemonic`] helpers — the single
+/// source of truth (also used by `capstone-ffi`) — plus the CFG-local rule
+/// that HLT/UD2 terminate a basic block like a return.
 fn mnemonic_to_kind(m: &freakre_x86::Mnemonic) -> InstructionKind {
-    use freakre_x86::Mnemonic::*;
-    match m {
-        Jmp => InstructionKind::UnconditionalJump,
-        Jcc | Ja | Jae | Jb | Jbe | Je | Jg | Jge | Jl | Jle | Jna | Jnae | Jnb | Jnbe | Jne
-        | Jng | Jnge | Jnl | Jnle | Jno | Jnp | Jns | Jnz | Jo | Jp | Js | Jz => {
-            InstructionKind::ConditionalBranch
-        }
-        Call => InstructionKind::Call,
-        Ret => InstructionKind::Return,
-        Nop => InstructionKind::Nop,
+    use freakre_x86::Mnemonic as M;
+    if m.is_unconditional_jump() {
+        InstructionKind::UnconditionalJump
+    } else if m.is_conditional_branch() {
+        InstructionKind::ConditionalBranch
+    } else if m.is_call() {
+        InstructionKind::Call
+    } else if m.is_ret() {
+        InstructionKind::Return
+    } else if matches!(m, M::Nop) {
+        InstructionKind::Nop
+    } else if matches!(m, M::Hlt | M::Ud2) {
         // HLT / UD2 terminate the basic block (no fall-through).
-        Hlt | Ud2 => InstructionKind::Return,
-        _ => InstructionKind::Normal,
+        InstructionKind::Return
+    } else {
+        InstructionKind::Normal
     }
 }
 

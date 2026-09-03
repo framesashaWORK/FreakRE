@@ -1,14 +1,13 @@
 //! Raw FFI bindings to the Capstone disassembly engine.
 //!
-//! These bindings are only compiled when `capstone_available` cfg is set
-//! (determined by build.rs). They provide a safe Rust wrapper around the
-//! C Capstone API.
+//! Only compiled when `capstone_available` is set (see build.rs).
+//! Single source of truth for the C ABI; the only safe wrapper lives in
+//! `engine::capstone_backend` (owns `InsnGuard` + `cs_free` discipline).
+//! `disassembler::Disassembler` reuses that backend — no duplicate handles.
 
 #![cfg(capstone_available)]
 
-use crate::arch::{Arch, Endian, Mode};
-use crate::error::DisasmError;
-use crate::instruction::{Instruction, InstructionKind, Operand, RegId};
+use crate::instruction::{InstructionKind, Operand, RegId};
 
 // ─── Raw C FFI declarations ──────────────────────────────────────────
 //
@@ -127,142 +126,11 @@ pub(crate) const CS_OPT_SYNTAX_INTEL: usize = 1;
 /// cs_opt_value::CS_OPT_SYNTAX_ATT
 pub(crate) const CS_OPT_SYNTAX_ATT: usize = 2;
 
-// ─── Safe wrapper ────────────────────────────────────────────────────
+// Note: Capstone handles are NOT thread-safe for concurrent disassembly.
+// We intentionally do NOT implement Send/Sync. Wrap in Mutex or use
+// per-thread handles.
 
-pub struct CapstoneHandle {
-    handle: CsHandle,
-    arch: Arch,
-    mode: Mode,
-}
-
-impl CapstoneHandle {
-    pub fn new(arch: Arch, mode: Mode, endian: Endian) -> Result<Self, DisasmError> {
-        let cs_arch = match arch {
-            Arch::X86 => CS_ARCH_X86,
-            Arch::ARM => CS_ARCH_ARM,
-            Arch::ARM64 => CS_ARCH_ARM64,
-            Arch::MIPS => CS_ARCH_MIPS,
-            Arch::PPC => CS_ARCH_PPC,
-            Arch::SPARC => CS_ARCH_SPARC,
-            Arch::RISCV => CS_ARCH_RISCV,
-        };
-
-        let mut cs_mode: u32 = match mode {
-            Mode::Mode16 => CS_MODE_16,
-            Mode::Mode32 => CS_MODE_32,
-            Mode::Mode64 => CS_MODE_64,
-            Mode::Thumb => CS_MODE_THUMB,
-            Mode::Arm => CS_MODE_ARM,
-            Mode::MicroMips => CS_MODE_MICRO | CS_MODE_32,
-        };
-
-        // Apply endianness
-        match endian {
-            Endian::Little => cs_mode |= CS_MODE_LITTLE_ENDIAN,
-            Endian::Big => cs_mode |= CS_MODE_BIG_ENDIAN,
-        }
-
-        let mut handle: CsHandle = std::ptr::null_mut();
-        let err = unsafe { cs_open(cs_arch, cs_mode, &mut handle) };
-        if err != 0 || handle.is_null() {
-            return Err(DisasmError::InitFailed(format!(
-                "cs_open failed with error code {}",
-                err
-            )));
-        }
-
-        // Enable detail mode for instruction classification
-        unsafe {
-            cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
-        }
-
-        // FIXED: Runtime size check to detect CsInsn layout mismatch between
-        // compile-time struct definition and linked Capstone library version.
-        // A mismatch would cause reading garbage from wrong offsets → UB.
-        let actual_size = std::mem::size_of::<CsInsn>();
-        // Capstone 4.x/5.x cs_insn is 248 bytes on 64-bit platforms.
-        // Allow 240-256 range to accommodate minor platform differences.
-        if !(240..=256).contains(&actual_size) {
-            unsafe { cs_close(&mut handle); }
-            return Err(DisasmError::InitFailed(format!(
-                "CsInsn size mismatch: expected 240-256 bytes, got {}. \
-                 This indicates a Capstone version incompatibility. \
-                 Please rebuild with the correct Capstone headers.",
-                actual_size
-            )));
-        }
-
-        Ok(Self { handle, arch, mode })
-    }
-
-    pub fn disassemble(&self, code: &[u8], base_address: u64) -> Vec<Instruction> {
-        if code.is_empty() {
-            return Vec::new();
-        }
-
-        let mut insn_ptr: *mut CsInsn = std::ptr::null_mut();
-        let count = unsafe {
-            cs_disasm(
-                self.handle,
-                code.as_ptr(),
-                code.len(),
-                base_address,
-                0, // 0 = disassemble all
-                &mut insn_ptr,
-            )
-        };
-
-        if count == 0 || insn_ptr.is_null() {
-            return Vec::new();
-        }
-
-        let mut instructions = Vec::with_capacity(count);
-        let insn_slice = unsafe { std::slice::from_raw_parts(insn_ptr, count) };
-
-        for cs_insn in insn_slice {
-            // Safety: clamp size to prevent OOB read from malformed/truncated cs_insn
-            let safe_size = (cs_insn.size as usize).min(cs_insn.bytes.len());
-            let bytes = cs_insn.bytes[..safe_size].to_vec();
-            let mnemonic = cstr_to_string(&cs_insn.mnemonic);
-            let operands = cstr_to_string(&cs_insn.op_str);
-
-            let kind = classify_by_groups(self.handle, cs_insn as *const CsInsn);
-
-            let operand_list = parse_operands(&operands);
-            instructions.push(Instruction {
-                address: cs_insn.address,
-                size: cs_insn.size as usize,
-                bytes,
-                mnemonic,
-                operands,
-                operand_list,
-                kind,
-            });
-        }
-
-        unsafe {
-            cs_free(insn_ptr, count);
-        }
-
-        instructions
-    }
-}
-
-impl Drop for CapstoneHandle {
-    fn drop(&mut self) {
-        if !self.handle.is_null() {
-            unsafe {
-                cs_close(&mut self.handle);
-            }
-        }
-    }
-}
-
-// Note: Capstone handles are NOT guaranteed thread-safe for concurrent disassembly.
-// We intentionally do NOT implement Send/Sync to prevent data races.
-// If sharing is needed, wrap in Mutex or use per-thread handles.
-
-// ─── Helper functions ────────────────────────────────────────────────
+// ─── Shared helpers (used by engine::capstone_backend) ───────────────
 
 /// Extract a NUL-terminated string from a fixed-size Capstone char array.
 /// Fully bounds-checked: never reads past the array end.
@@ -271,68 +139,158 @@ pub(crate) fn cstr_to_string(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
-/// Classify a Capstone instruction ID into InstructionKind.
+/// Parse Capstone `op_str` into structured operands.
 ///
-/// Capstone provides architecture-specific instruction IDs. We use known
-/// ranges and groups to classify control flow instructions. For full
-/// accuracy, we'd need the generated instruction enum headers.
-fn classify_cs_instruction(id: u32, arch: Arch) -> InstructionKind {
-    match arch {
-        Arch::X86 => classify_x86(id),
-        Arch::ARM => classify_arm(id),
-        Arch::ARM64 => classify_arm64(id),
-        Arch::MIPS => classify_mips(id),
-        _ => InstructionKind::Normal, // Other architectures default to Normal
-    }
-}
-
-fn parse_operands(op_str: &str) -> Vec<Operand> {
+/// Uses the shared [`crate::instruction::reg_name_to_id`] table so ids match
+/// the LDE path. Memory operands extract base/index/scale/disp with a small
+/// heuristic parser instead of returning an empty stub.
+pub(crate) fn parse_operands(op_str: &str) -> Vec<Operand> {
     if op_str.trim().is_empty() {
         return Vec::new();
     }
-    op_str
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| {
-            // Immediate: 0x... or decimal
-            if s.starts_with("0x") || s.starts_with("-0x") {
-                if let Ok(v) = i64::from_str_radix(s.trim_start_matches('-').trim_start_matches("0x"), 16) {
-                    let v = if s.starts_with('-') { -v } else { v };
-                    return Operand::Imm(v);
-                }
-            }
-            if let Ok(v) = s.parse::<i64>() {
-                return Operand::Imm(v);
-            }
-            // Memory: contains '[' and ']'
-            if s.contains('[') && s.contains(']') {
-                // Simplified: extract base/index/scale/disp via heuristics
-                // For now, return a generic Mem with no base/index
-                return Operand::Mem {
-                    base: None,
-                    index: None,
-                    scale: 1,
-                    disp: 0,
-                };
-            }
-            // Register: check if it looks like a register (al, eax, rax, r8, etc.)
-            if s.chars().all(|c| c.is_alphanumeric() || c == '_' ) && s.len() <= 6 {
-                // Hash the register name to a RegId for now
-                let hash = s.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
-                // Ensure non-zero
-                let id = if hash == 0 { 1 } else { hash };
-                return Operand::Reg(RegId(id));
-            }
-            Operand::Unknown
-        })
-        .collect()
+    // Split top-level commas (ignore commas inside brackets).
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut cur = String::new();
+    for ch in op_str.chars() {
+        match ch {
+            '[' => { depth += 1; cur.push(ch); }
+            ']' => { depth = depth.saturating_sub(1); cur.push(ch); }
+            ',' if depth == 0 => { parts.push(cur.trim().to_string()); cur.clear(); }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() {
+        parts.push(cur.trim().to_string());
+    }
+    parts.into_iter().filter(|s| !s.is_empty()).map(|s| parse_single_operand(&s)).collect()
 }
 
-/// Classify instruction using Capstone's group API instead of hardcoded IDs.
-/// This is version-independent and works across Capstone 4.x and 5.x.
-fn classify_by_groups(handle: CsHandle, insn: *const CsInsn) -> InstructionKind {
-    // Safety: handle and insn are valid during disassemble() scope
+fn parse_single_operand(s: &str) -> Operand {
+    let t = s.trim();
+    // Strip segment prefix ("es:[eax]" -> "[eax]").
+    let inner_mem = mem_inner(t);
+    if let Some(inner) = inner_mem {
+        return parse_mem_inner(&inner);
+    }
+    // Hex immediate (allow trailing comments stripped by caller).
+    let first = t.split_whitespace().next().unwrap_or(t);
+    let (neg, hex) = match first.strip_prefix("-0x").or(first.strip_prefix("-0X")) {
+        Some(h) => (true, h),
+        None => match first.strip_prefix("0x").or(first.strip_prefix("0X")) {
+            Some(h) => (false, h),
+            None => (false, ""),
+        },
+    };
+    if !hex.is_empty() {
+        // Stop at first non-hex char (e.g. "0x10+" cases).
+        let digits: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+        if !digits.is_empty() {
+            if let Ok(v) = i64::from_str_radix(&digits, 16) {
+                return Operand::Imm(if neg { -v } else { v });
+            }
+        }
+    }
+    if let Ok(v) = first.parse::<i64>() {
+        return Operand::Imm(v);
+    }
+    // '#' immediates (ARM: "#-8", "#0x10").
+    if let Some(rest) = first.strip_prefix('#') {
+        return parse_single_operand(rest);
+    }
+    // Known register name -> stable id.
+    if let Some(id) = crate::instruction::reg_name_to_id(first) {
+        return Operand::Reg(id);
+    }
+    // Short alphanumeric token: likely a register on another arch.
+    // Deterministic hash fallback (non-zero, stable across runs).
+    if first.len() <= 8 && first.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+        let hash = first.bytes().fold(0x811c_9dc5u32, |acc, b| {
+            acc.wrapping_mul(0x0100_0193).wrapping_add(b as u32)
+        });
+        return Operand::Reg(RegId(if hash == 0 { 1 } else { hash }));
+    }
+    Operand::Unknown
+}
+
+/// If `t` contains a `[...]` memory expression, return its inner text.
+fn mem_inner(t: &str) -> Option<String> {
+    let l = t.find('[')?;
+    let r = t.rfind(']')?;
+    if r > l {
+        Some(t[l + 1..r].to_string())
+    } else {
+        None
+    }
+}
+
+fn parse_mem_inner(inner: &str) -> Operand {
+    let mut base: Option<RegId> = None;
+    let mut index: Option<RegId> = None;
+    let mut scale: i32 = 1;
+    let mut disp: i64 = 0;
+    // Split on '+' first, keep '-' attached to displacement.
+    for part in inner.split('+') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        // index*scale form.
+        if let Some((reg, sc)) = p.split_once('*') {
+            let reg = reg.trim();
+            let sc = sc.trim().parse::<i32>().unwrap_or(1);
+            if let Some(id) = crate::instruction::reg_name_to_id(reg) {
+                if base.is_none() {
+                    base = Some(id);
+                } else if index.is_none() {
+                    index = Some(id);
+                    scale = sc;
+                }
+                continue;
+            }
+        }
+        // rip-relative / plain displacement.
+        if p.starts_with("0x") || p.starts_with("-0x") || p.parse::<i64>().is_ok() {
+            let v = parse_single_operand(p);
+            if let Operand::Imm(d) = v {
+                disp = disp.wrapping_add(d);
+                continue;
+            }
+        }
+        // "reg - 0x10" inside brackets.
+        if let Some((reg, rest)) = p.split_once('-') {
+            let reg = reg.trim();
+            if let Some(id) = crate::instruction::reg_name_to_id(reg) {
+                if base.is_none() {
+                    base = Some(id);
+                } else if index.is_none() {
+                    index = Some(id);
+                }
+                let v = parse_single_operand(rest.trim());
+                if let Operand::Imm(d) = v {
+                    disp = disp.wrapping_sub(d);
+                }
+                continue;
+            }
+        }
+        if let Some(id) = crate::instruction::reg_name_to_id(p) {
+            if base.is_none() {
+                base = Some(id);
+            } else if index.is_none() {
+                index = Some(id);
+            }
+            continue;
+        }
+    }
+    Operand::Mem { base, index, scale, disp }
+}
+
+/// Classify via Capstone groups + mnemonic fallback.
+///
+/// Groups are authoritative for ret/call/int. For jumps the generic group
+/// cannot separate cond/uncond (both are `JUMP`), so `jmp`/`b` (bare) map to
+/// `UnconditionalJump` and any other jump mnemonic to `ConditionalBranch`.
+pub(crate) fn classify_by_groups(handle: CsHandle, insn: *const CsInsn, mnemonic: &str) -> InstructionKind {
     unsafe {
         if cs_insn_group(handle, insn, CS_GRP_RET) {
             return InstructionKind::Return;
@@ -341,16 +299,32 @@ fn classify_by_groups(handle: CsHandle, insn: *const CsInsn) -> InstructionKind 
             return InstructionKind::Call;
         }
         if cs_insn_group(handle, insn, CS_GRP_JUMP) {
-            // Distinguish conditional vs unconditional by checking
-            // BRANCH_RELATIVE group or falling through to Normal
-            if cs_insn_group(handle, insn, CS_GRP_BRANCH_RELATIVE) {
-                return InstructionKind::ConditionalBranch;
+            let m = mnemonic.to_ascii_lowercase();
+            if m == "jmp" || m == "b" || m == "bx" {
+                return InstructionKind::UnconditionalJump;
             }
-            return InstructionKind::UnconditionalJump;
+            return InstructionKind::ConditionalBranch;
         }
-        if cs_insn_group(handle, insn, CS_GRP_INT) {
-            return InstructionKind::Normal; // Interrupts treated as normal
-        }
+        // int/iret/privilege: no dedicated InstructionKind — Normal.
     }
     InstructionKind::Normal
+}
+
+/// Parse a direct branch target from `op_str` when Capstone renders it as an
+/// absolute address (`"0x401005"`). Returns `None` for indirect branches.
+pub(crate) fn parse_branch_target(kind: InstructionKind, op_str: &str) -> Option<u64> {
+    if !matches!(
+        kind,
+        InstructionKind::ConditionalBranch | InstructionKind::UnconditionalJump | InstructionKind::Call
+    ) {
+        return None;
+    }
+    let first = op_str.split(',').next()?.trim();
+    let first = first.split_whitespace().next()?;
+    let hex = first.strip_prefix("0x").or_else(|| first.strip_prefix("0X"))?;
+    let digits: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    u64::from_str_radix(&digits, 16).ok()
 }

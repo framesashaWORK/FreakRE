@@ -9,9 +9,49 @@ pub struct Instruction {
     pub rex: Option<RexPrefix>,
     pub length: usize,
     pub address: u64,
+    /// Raw encoded bytes (first `length` entries are valid, rest zeroed).
+    pub bytes: [u8; 15],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl Instruction {
+    /// Raw encoded bytes of this instruction.
+    #[inline]
+    pub fn byte_slice(&self) -> &[u8] {
+        &self.bytes[..self.length.min(15)]
+    }
+
+    /// Absolute target of a direct branch/call (`Operand::Rel`), if any.
+    #[inline]
+    pub fn branch_target(&self) -> Option<u64> {
+        self.operands.iter().find_map(|op| match op {
+            Operand::Rel(t) => Some(*t),
+            _ => None,
+        })
+    }
+
+    #[inline]
+    pub fn is_call(&self) -> bool {
+        self.mnemonic.is_call()
+    }
+
+    #[inline]
+    pub fn is_ret(&self) -> bool {
+        self.mnemonic.is_ret()
+    }
+
+    #[inline]
+    pub fn is_branch(&self) -> bool {
+        self.mnemonic.is_branch()
+    }
+
+    /// True for any control-flow transfer (call/jump/branch/ret).
+    #[inline]
+    pub fn is_control_flow(&self) -> bool {
+        self.mnemonic.is_control_flow()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mnemonic {
     // Data movement
     Mov, Movzx, Movsx, Movsxd, Lea, Push, Pop, Xchg, Cmovcc,
@@ -39,13 +79,69 @@ pub enum Mnemonic {
     Cmovno, Cmovnp, Cmovns, Cmovnz, Cmovo, Cmovp, Cmovpe, Cmovpo, Cmovs, Cmovz,
     Ja, Jae, Jb, Jbe, Je, Jg, Jge, Jl, Jle, Jna, Jnae, Jnb, Jnbe,
     Jne, Jng, Jnge, Jnl, Jnle, Jno, Jnp, Jns, Jnz, Jo, Jp, Js, Jz,
+    // x87 FPU (escape 0xD8..0xDF) and flag/string extras
+    Xadd, Cmpxchg, Cmpxchg8b,
+    Loop, Loope, Loopne, Jecxz,
+    // Catch-all for mnemonics without a dedicated variant (SSE/AVX/FPU/...).
+    Raw(String),
     // Unknown / unimplemented
     Unknown,
 }
 
 impl Mnemonic {
-    pub fn as_str(&self) -> &'static str {
-        match self {
+    /// True for direct/indirect calls.
+    #[inline]
+    pub fn is_call(&self) -> bool {
+        matches!(self, Self::Call)
+    }
+
+    /// True for returns (far returns included; `leave` is NOT a return).
+    #[inline]
+    pub fn is_ret(&self) -> bool {
+        matches!(self, Self::Ret)
+    }
+
+    /// True for unconditional jumps (`jmp` only).
+    #[inline]
+    pub fn is_unconditional_jump(&self) -> bool {
+        matches!(self, Self::Jmp)
+    }
+
+    /// True for conditional branches (`jcc` family, all `j<cc>` aliases,
+    /// loop variants and `jecxz`).
+    #[inline]
+    pub fn is_conditional_branch(&self) -> bool {
+        matches!(
+            self,
+            Self::Jcc
+                | Self::Ja | Self::Jae | Self::Jb | Self::Jbe | Self::Je
+                | Self::Jg | Self::Jge | Self::Jl | Self::Jle | Self::Jna
+                | Self::Jnae | Self::Jnb | Self::Jnbe | Self::Jne | Self::Jng
+                | Self::Jnge | Self::Jnl | Self::Jnle | Self::Jno | Self::Jnp
+                | Self::Jns | Self::Jnz | Self::Jo | Self::Jp | Self::Js
+                | Self::Jz | Self::Loop | Self::Loope | Self::Loopne
+                | Self::Jecxz
+        )
+    }
+
+    /// True for any branch (conditional or unconditional).
+    #[inline]
+    pub fn is_branch(&self) -> bool {
+        self.is_unconditional_jump() || self.is_conditional_branch()
+    }
+
+    /// True for any control-flow transfer (call/branch/ret).
+    ///
+    /// Single source of truth — downstream crates (`capstone-ffi`,
+    /// `cfg-builder`) must use these helpers instead of their own
+    /// mnemonic matches so classifications never drift again.
+    #[inline]
+    pub fn is_control_flow(&self) -> bool {
+        self.is_call() || self.is_branch() || self.is_ret()
+    }
+
+    pub fn as_str(&self) -> String {
+        let s: &'static str = match self {
             Self::Mov => "mov", Self::Movzx => "movzx", Self::Movsx => "movsx",
             Self::Movsxd => "movsxd", Self::Lea => "lea", Self::Push => "push",
             Self::Pop => "pop", Self::Xchg => "xchg",
@@ -94,8 +190,12 @@ impl Mnemonic {
             Self::Scasb => "scasb", Self::Scasw => "scasw", Self::Scasd => "scasd", Self::Scasq => "scasq",
             Self::Cmpsb => "cmpsb", Self::Cmpsw => "cmpsw", Self::Cmpsd => "cmpsd", Self::Cmpsq => "cmpsq",
             Self::Jcc => "jcc", Self::Cmovcc => "cmovcc",
+            Self::Xadd => "xadd", Self::Cmpxchg => "cmpxchg", Self::Cmpxchg8b => "cmpxchg8b",
+            Self::Loop => "loop", Self::Loope => "loope", Self::Loopne => "loopne", Self::Jecxz => "jecxz",
+            Self::Raw(r) => return r.clone(),
             Self::Unknown => "db",
-        }
+        };
+        s.to_string()
     }
 }
 
@@ -121,31 +221,80 @@ pub enum Register {
     R8b, R9b, R10b, R11b, R12b, R13b, R14b, R15b,
     Rip, Eip,
     Cs, Ds, Es, Fs, Gs, Ss,
+    // SIMD / FPU / system
+    Xmm(u8), Ymm(u8), Zmm(u8),
+    Mm(u8), St(u8), K(u8),
+    Cr(u8), Dr(u8), Tr(u8),
 }
 
 impl Register {
-    pub fn name(&self) -> &'static str {
+    pub fn name(&self) -> String {
         match self {
-            Self::Al => "al", Self::Cl => "cl", Self::Dl => "dl", Self::Bl => "bl",
-            Self::Ah => "ah", Self::Ch => "ch", Self::Dh => "dh", Self::Bh => "bh",
-            Self::Spl => "spl", Self::Bpl => "bpl", Self::Sil => "sil", Self::Dil => "dil",
-            Self::Ax => "ax", Self::Cx => "cx", Self::Dx => "dx", Self::Bx => "bx",
-            Self::Sp => "sp", Self::Bp => "bp", Self::Si => "si", Self::Di => "di",
-            Self::Eax => "eax", Self::Ecx => "ecx", Self::Edx => "edx", Self::Ebx => "ebx",
-            Self::Esp => "esp", Self::Ebp => "ebp", Self::Esi => "esi", Self::Edi => "edi",
-            Self::Rax => "rax", Self::Rcx => "rcx", Self::Rdx => "rdx", Self::Rbx => "rbx",
-            Self::Rsp => "rsp", Self::Rbp => "rbp", Self::Rsi => "rsi", Self::Rdi => "rdi",
-            Self::R8 => "r8", Self::R9 => "r9", Self::R10 => "r10", Self::R11 => "r11",
-            Self::R12 => "r12", Self::R13 => "r13", Self::R14 => "r14", Self::R15 => "r15",
-            Self::R8d => "r8d", Self::R9d => "r9d", Self::R10d => "r10d", Self::R11d => "r11d",
-            Self::R12d => "r12d", Self::R13d => "r13d", Self::R14d => "r14d", Self::R15d => "r15d",
-            Self::R8w => "r8w", Self::R9w => "r9w", Self::R10w => "r10w", Self::R11w => "r11w",
-            Self::R12w => "r12w", Self::R13w => "r13w", Self::R14w => "r14w", Self::R15w => "r15w",
-            Self::R8b => "r8b", Self::R9b => "r9b", Self::R10b => "r10b", Self::R11b => "r11b",
-            Self::R12b => "r12b", Self::R13b => "r13b", Self::R14b => "r14b", Self::R15b => "r15b",
-            Self::Rip => "rip", Self::Eip => "eip",
-            Self::Cs => "cs", Self::Ds => "ds", Self::Es => "es",
-            Self::Fs => "fs", Self::Gs => "gs", Self::Ss => "ss",
+            Self::Xmm(n) => format!("xmm{}", n),
+            Self::Ymm(n) => format!("ymm{}", n),
+            Self::Zmm(n) => format!("zmm{}", n),
+            Self::Mm(n) => format!("mm{}", n),
+            Self::St(n) => format!("st({})", n),
+            Self::K(n) => format!("k{}", n),
+            Self::Cr(n) => format!("cr{}", n),
+            Self::Dr(n) => format!("dr{}", n),
+            Self::Tr(n) => format!("tr{}", n),
+            other => {
+                let s: &'static str = match other {
+                    Self::Al => "al", Self::Cl => "cl", Self::Dl => "dl", Self::Bl => "bl",
+                    Self::Ah => "ah", Self::Ch => "ch", Self::Dh => "dh", Self::Bh => "bh",
+                    Self::Spl => "spl", Self::Bpl => "bpl", Self::Sil => "sil", Self::Dil => "dil",
+                    Self::Ax => "ax", Self::Cx => "cx", Self::Dx => "dx", Self::Bx => "bx",
+                    Self::Sp => "sp", Self::Bp => "bp", Self::Si => "si", Self::Di => "di",
+                    Self::Eax => "eax", Self::Ecx => "ecx", Self::Edx => "edx", Self::Ebx => "ebx",
+                    Self::Esp => "esp", Self::Ebp => "ebp", Self::Esi => "esi", Self::Edi => "edi",
+                    Self::Rax => "rax", Self::Rcx => "rcx", Self::Rdx => "rdx", Self::Rbx => "rbx",
+                    Self::Rsp => "rsp", Self::Rbp => "rbp", Self::Rsi => "rsi", Self::Rdi => "rdi",
+                    Self::R8 => "r8", Self::R9 => "r9", Self::R10 => "r10", Self::R11 => "r11",
+                    Self::R12 => "r12", Self::R13 => "r13", Self::R14 => "r14", Self::R15 => "r15",
+                    Self::R8d => "r8d", Self::R9d => "r9d", Self::R10d => "r10d", Self::R11d => "r11d",
+                    Self::R12d => "r12d", Self::R13d => "r13d", Self::R14d => "r14d", Self::R15d => "r15d",
+                    Self::R8w => "r8w", Self::R9w => "r9w", Self::R10w => "r10w", Self::R11w => "r11w",
+                    Self::R12w => "r12w", Self::R13w => "r13w", Self::R14w => "r14w", Self::R15w => "r15w",
+                    Self::R8b => "r8b", Self::R9b => "r9b", Self::R10b => "r10b", Self::R11b => "r11b",
+                    Self::R12b => "r12b", Self::R13b => "r13b", Self::R14b => "r14b", Self::R15b => "r15b",
+                    Self::Rip => "rip", Self::Eip => "eip",
+                    Self::Cs => "cs", Self::Ds => "ds", Self::Es => "es",
+                    Self::Fs => "fs", Self::Gs => "gs", Self::Ss => "ss",
+                    _ => "?",
+                };
+                s.to_string()
+            }
+        }
+    }
+
+    pub fn size(&self) -> Option<OperandSize> {
+        match self {
+            Self::Al | Self::Cl | Self::Dl | Self::Bl
+            | Self::Ah | Self::Ch | Self::Dh | Self::Bh
+            | Self::Spl | Self::Bpl | Self::Sil | Self::Dil
+            | Self::R8b | Self::R9b | Self::R10b | Self::R11b
+            | Self::R12b | Self::R13b | Self::R14b | Self::R15b => Some(OperandSize::Byte),
+            Self::Ax | Self::Cx | Self::Dx | Self::Bx
+            | Self::Sp | Self::Bp | Self::Si | Self::Di
+            | Self::R8w | Self::R9w | Self::R10w | Self::R11w
+            | Self::R12w | Self::R13w | Self::R14w | Self::R15w => Some(OperandSize::Word),
+            Self::Eax | Self::Ecx | Self::Edx | Self::Ebx
+            | Self::Esp | Self::Ebp | Self::Esi | Self::Edi
+            | Self::R8d | Self::R9d | Self::R10d | Self::R11d
+            | Self::R12d | Self::R13d | Self::R14d | Self::R15d => Some(OperandSize::Dword),
+            Self::Rax | Self::Rcx | Self::Rdx | Self::Rbx
+            | Self::Rsp | Self::Rbp | Self::Rsi | Self::Rdi
+            | Self::R8 | Self::R9 | Self::R10 | Self::R11
+            | Self::R12 | Self::R13 | Self::R14 | Self::R15
+            | Self::Rip | Self::Eip => Some(OperandSize::Qword),
+            Self::Xmm(_) => Some(OperandSize::Oword),
+            Self::Ymm(_) => Some(OperandSize::Yword),
+            Self::Zmm(_) => Some(OperandSize::Zword),
+            Self::Mm(_) => Some(OperandSize::Qword),
+            Self::St(_) => Some(OperandSize::Qword),
+            Self::K(_) | Self::Cr(_) | Self::Dr(_) | Self::Tr(_) => Some(OperandSize::Qword),
+            _ => None,
         }
     }
 }
@@ -162,7 +311,7 @@ pub struct MemOperand {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperandSize {
-    Byte, Word, Dword, Qword, Fword, Tbyte, Oword, Unknown,
+    Byte, Word, Dword, Qword, Fword, Tbyte, Oword, Yword, Zword, Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -191,8 +340,32 @@ pub struct RexPrefix {
 /// Disassembly mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
+    X16,   // 16-bit real mode (DOS/MBR/bootloaders)
     X86,   // 32-bit
     X64,   // 64-bit
+}
+
+impl Mode {
+    /// Default operand width in bits for this mode.
+    #[inline]
+    pub fn default_operand_bits(self) -> u8 {
+        match self {
+            Mode::X16 => 16,
+            Mode::X86 => 32,
+            Mode::X64 => 32, // 64-bit needs REX.W for 64-bit operands
+        }
+    }
+
+    /// Default address width in bits for this mode.
+    #[inline]
+    pub fn default_address_bits(self) -> u8 {
+        match self {
+            Mode::X16 => 16,
+            Mode::X86 => 32,
+            // In long mode 0x67 toggles 64 -> 32 (never to 16).
+            Mode::X64 => 64,
+        }
+    }
 }
 
 /// Decode error (never panics).

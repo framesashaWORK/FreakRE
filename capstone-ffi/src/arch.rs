@@ -46,6 +46,24 @@ pub enum Endian {
 }
 
 impl Arch {
+    /// Single source of truth for valid arch/mode pairs.
+    ///
+    /// RISCV is rejected everywhere until real `CS_MODE_RISCV*` constants
+    /// exist in the binding table (opening it with x86 mode bits would be
+    /// silent UB). ARM accepts only `Arm`/`Thumb` — the legacy `Mode32`
+    /// alias is NOT valid here.
+    pub fn supports_mode(&self, mode: Mode) -> bool {
+        matches!(
+            (*self, mode),
+            (Arch::X86, Mode::Mode16 | Mode::Mode32 | Mode::Mode64)
+                | (Arch::ARM, Mode::Arm | Mode::Thumb)
+                | (Arch::ARM64, Mode::Mode64)
+                | (Arch::MIPS, Mode::Mode32 | Mode::Mode64 | Mode::MicroMips)
+                | (Arch::PPC, Mode::Mode32 | Mode::Mode64)
+                | (Arch::SPARC, Mode::Mode32 | Mode::Mode64)
+        )
+    }
+
     /// Default mode for this architecture.
     pub fn default_mode(&self) -> Mode {
         match self {

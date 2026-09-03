@@ -64,22 +64,67 @@ pub enum EngineError {
 
 /// A disassembled instruction, expressed entirely in engine-neutral terms.
 ///
-/// Deliberately minimal: address/size plus textual mnemonic and operand
-/// string. `groups` carries coarse classification tags ("jump", "call",
-/// "ret", "int", "iret", "privilege") when the backend supports them;
-/// it is empty unless the engine was created with detail enabled.
+/// Address/size/bytes plus textual mnemonic and operand string. `groups`
+/// carries coarse classification tags ("jump", "call", "ret", ...) when the
+/// backend runs with detail enabled. `branch_target` holds the resolved
+/// absolute target for direct branches/calls (Capstone renders it in
+/// `op_str`; parsed here so callers don't re-parse strings).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Instr {
     /// Virtual address of the instruction.
     pub address: u64,
     /// Encoded length in bytes.
     pub size: usize,
+    /// Raw bytes (clamped to the real size).
+    #[serde(default)]
+    pub bytes: Vec<u8>,
     /// Mnemonic without operands (e.g. `"mov"`).
     pub mnemonic: String,
     /// Operand string as rendered by the engine (e.g. `"rbp, rsp"`).
     pub op_str: String,
     /// Coarse instruction groups (may be empty).
     pub groups: Vec<String>,
+    /// Resolved direct branch/call target (absolute VA), if any.
+    #[serde(default)]
+    pub branch_target: Option<u64>,
+}
+
+impl Instr {
+    /// Convert into the legacy rich [`crate::instruction::Instruction`].
+    /// Re-parses `op_str` with the shared operand parser and maps groups
+    /// to [`crate::instruction::InstructionKind`].
+    pub fn to_instruction(&self) -> crate::instruction::Instruction {
+        use crate::instruction::{Instruction, InstructionKind};
+        let kind = if self.groups.iter().any(|g| g == "ret") {
+            InstructionKind::Return
+        } else if self.groups.iter().any(|g| g == "call") {
+            InstructionKind::Call
+        } else if self.groups.iter().any(|g| g == "jump") {
+            let m = self.mnemonic.to_ascii_lowercase();
+            if m == "jmp" || m == "b" || m == "bx" {
+                InstructionKind::UnconditionalJump
+            } else {
+                InstructionKind::ConditionalBranch
+            }
+        } else {
+            InstructionKind::Normal
+        };
+        #[cfg(capstone_available)]
+        let operand_list = crate::capstone_bindings::parse_operands(&self.op_str);
+        #[cfg(not(capstone_available))]
+        let operand_list = Vec::new();
+        Instruction {
+            address: self.address,
+            size: self.size,
+            bytes: self.bytes.clone(),
+            mnemonic: self.mnemonic.clone(),
+            operands: self.op_str.clone(),
+            operand_list,
+            kind,
+            groups: self.groups.clone(),
+            branch_target: self.branch_target,
+        }
+    }
 }
 
 /// Object-safe contract for precise multi-architecture disassemblers.
@@ -118,28 +163,39 @@ pub fn best_engine() -> Box<dyn PreciseEngine> {
     best_engine_for(Arch::X86, Mode::Mode64)
 }
 
+/// Try to build the best precise engine, preserving the real error.
+///
+/// Unlike [`best_engine_for`] this does NOT swallow `Init`/`Unsupported`
+/// failures — use it when you need to log *why* precise mode is missing.
+pub fn try_best_engine_for(arch: Arch, mode: Mode) -> Result<Box<dyn PreciseEngine>, EngineError> {
+    #[cfg(capstone_available)]
+    {
+        match crate::engine::capstone_backend::CapstoneEngine::new(arch, mode) {
+            Ok(e) => return Ok(Box::new(e)),
+            Err(e) => return Err(e),
+        }
+    }
+    #[cfg(not(capstone_available))]
+    {
+        let _ = (arch, mode);
+        Err(EngineError::Unavailable)
+    }
+}
+
 /// Returns the best available precise engine for `arch`/`mode`.
 ///
 /// * With libcapstone present at build time → [`CapstoneEngine`].
 /// * Without → [`StubEngine`]; calls fail with
 ///   [`EngineError::Unavailable`] so callers can degrade gracefully.
 ///
-/// If engine construction unexpectedly fails even though capstone was
-/// linked (broken install), a [`StubEngine`] is returned rather than
-/// panicking; the failure surfaces at first use as `Err(Init(..))`
-/// semantics via `Unavailable` + caller diagnostics.
+/// Construction failures (broken install / unsupported combo) also fall
+/// back to [`StubEngine`] instead of panicking; use
+/// [`try_best_engine_for`] when the underlying cause matters.
 pub fn best_engine_for(arch: Arch, mode: Mode) -> Box<dyn PreciseEngine> {
-    #[cfg(capstone_available)]
-    {
-        if let Ok(engine) = crate::engine::capstone_backend::CapstoneEngine::new(arch, mode) {
-            return Box::new(engine);
-        }
+    match try_best_engine_for(arch, mode) {
+        Ok(e) => e,
+        Err(_) => Box::new(StubEngine),
     }
-    #[cfg(not(capstone_available))]
-    {
-        let _ = (arch, mode);
-    }
-    Box::new(StubEngine)
 }
 
 // ─── Stub backend ────────────────────────────────────────────────────
@@ -191,9 +247,9 @@ pub mod capstone_backend {
     use super::{EngineError, Instr, PreciseEngine};
     use crate::arch::{Arch, Endian, Mode};
     use crate::capstone_bindings::{
-        cstr_to_string, cs_close, cs_disasm, cs_free, cs_insn_group, cs_open, cs_option, CsHandle,
-        CsInsn, CS_GRP_CALL, CS_GRP_INT, CS_GRP_IRET, CS_GRP_JUMP, CS_GRP_PRIVILEGE, CS_GRP_RET,
-        CS_OPT_DETAIL, CS_OPT_OFF, CS_OPT_ON, CS_OPT_SYNTAX, CS_OPT_SYNTAX_ATT,
+        cstr_to_string, cs_close, cs_disasm, cs_free, cs_open, cs_option, parse_branch_target,
+        CsHandle, CsInsn, CS_GRP_CALL, CS_GRP_INT, CS_GRP_IRET, CS_GRP_JUMP, CS_GRP_PRIVILEGE,
+        CS_GRP_RET, CS_OPT_DETAIL, CS_OPT_OFF, CS_OPT_ON, CS_OPT_SYNTAX, CS_OPT_SYNTAX_ATT,
         CS_OPT_SYNTAX_INTEL, CS_ARCH_ARM, CS_ARCH_ARM64, CS_ARCH_MIPS, CS_ARCH_PPC, CS_ARCH_SPARC,
         CS_ARCH_X86, CS_MODE_16, CS_MODE_32, CS_MODE_64, CS_MODE_ARM, CS_MODE_BIG_ENDIAN,
         CS_MODE_LITTLE_ENDIAN, CS_MODE_MICRO, CS_MODE_THUMB,
@@ -367,20 +423,10 @@ pub mod capstone_backend {
             unsafe { cs_option(self.handle, CS_OPT_DETAIL, value) };
         }
 
-        /// Restrict to arch/mode pairs whose binding constants actually
-        /// exist (see task scope: x86 16/32/64, ARM/Thumb, AArch64, MIPS,
-        /// PPC, SPARC).
+        /// Single source of truth: [`Arch::supports_mode`]. RISCV stays
+        /// rejected until real `CS_MODE_RISCV*` constants exist.
         fn validate(arch: Arch, mode: Mode) -> Result<(), EngineError> {
-            let ok = matches!(
-                (arch, mode),
-                (Arch::X86, Mode::Mode16 | Mode::Mode32 | Mode::Mode64)
-                    | (Arch::ARM, Mode::Arm | Mode::Thumb)
-                    | (Arch::ARM64, Mode::Mode64)
-                    | (Arch::MIPS, Mode::Mode32 | Mode::Mode64 | Mode::MicroMips)
-                    | (Arch::PPC, Mode::Mode32 | Mode::Mode64)
-                    | (Arch::SPARC, Mode::Mode32 | Mode::Mode64)
-            );
-            if ok {
+            if arch.supports_mode(mode) {
                 Ok(())
             } else {
                 Err(EngineError::Unsupported(arch, mode))
@@ -424,6 +470,11 @@ pub mod capstone_backend {
             if code.is_empty() {
                 return Ok(Vec::new());
             }
+            // OOM guard: Capstone allocates the whole array up front.
+            // 16k instructions is plenty for one UI page / CFG chunk;
+            // callers needing more should page the input.
+            const MAX_BATCH: usize = 16_384;
+            let count = if count == 0 { 0 } else { count.min(MAX_BATCH) };
 
             let mut raw: *mut CsInsn = std::ptr::null_mut();
             // FFI: allocates the insn array; ownership transfers to us on
@@ -472,12 +523,23 @@ pub mod capstone_backend {
                         insn.address
                     )));
                 }
+                let mnemonic = cstr_to_string(&insn.mnemonic);
+                let op_str = cstr_to_string(&insn.op_str);
+                let groups = self.collect_groups(insn);
+                let kind = crate::capstone_bindings::classify_by_groups(
+                    self.handle,
+                    insn as *const CsInsn,
+                    &mnemonic,
+                );
+                let branch_target = parse_branch_target(kind, &op_str);
                 out.push(Instr {
                     address: insn.address,
                     size,
-                    mnemonic: cstr_to_string(&insn.mnemonic),
-                    op_str: cstr_to_string(&insn.op_str),
-                    groups: self.collect_groups(insn),
+                    bytes: insn.bytes[..size].to_vec(),
+                    mnemonic,
+                    op_str,
+                    groups,
+                    branch_target,
                 });
             }
             // guard.drop() frees the array exactly once here.
