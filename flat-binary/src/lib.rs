@@ -52,7 +52,8 @@ impl FlatBinary {
 
     /// Read word (16-bit LE) at offset
     pub fn read_word_le(&self, offset: usize) -> Option<u16> {
-        if offset + 2 > self.data.len() {
+        let end = offset.checked_add(2)?;
+        if end > self.data.len() {
             return None;
         }
         Some(u16::from_le_bytes([self.data[offset], self.data[offset + 1]]))
@@ -60,7 +61,8 @@ impl FlatBinary {
 
     /// Read double word (32-bit LE) at offset
     pub fn read_dword_le(&self, offset: usize) -> Option<u32> {
-        if offset + 4 > self.data.len() {
+        let end = offset.checked_add(4)?;
+        if end > self.data.len() {
             return None;
         }
         Some(u32::from_le_bytes([
@@ -73,7 +75,8 @@ impl FlatBinary {
 
     /// Read quad word (64-bit LE) at offset
     pub fn read_qword_le(&self, offset: usize) -> Option<u64> {
-        if offset + 8 > self.data.len() {
+        let end = offset.checked_add(8)?;
+        if end > self.data.len() {
             return None;
         }
         let mut bytes = [0u8; 8];
@@ -136,15 +139,23 @@ impl FlatBinary {
             return false;
         }
 
-        // Shellcode typically has:
-        // 1. High entropy (above 4.0)
-        // 2. Few or no null bytes in the first portion
-        // 3. Common shellcode patterns
-
-        let entropy = self.entropy();
-        if entropy < 4.0 {
+        // Skip text-like files: if most bytes are printable ASCII, this is not shellcode
+        let printable_count = self.data.iter()
+            .take(256)
+            .filter(|&&b| (0x20..=0x7E).contains(&b) || b == 0x09 || b == 0x0A || b == 0x0D)
+            .count();
+        let total = self.data.len().min(256);
+        if total > 0 && (printable_count as f64 / total as f64) > 0.85 {
             return false;
         }
+
+        // Shellcode typically has:
+        // 1. High entropy (above 4.0) OR
+        // 2. Known instruction byte patterns (even with lower entropy, e.g. ARM RET-only)
+        // 3. Few or no null bytes in the first portion
+        // 4. Common shellcode patterns
+
+        let entropy = self.entropy();
 
         // Check first 32 bytes for nulls
         let null_count = self.data.iter().take(32).filter(|&&b| b == 0).count();
@@ -152,7 +163,58 @@ impl FlatBinary {
             return false;
         }
 
-        true
+        // High entropy = likely shellcode
+        if entropy >= 4.0 {
+            return true;
+        }
+
+        // Low entropy but known architecture patterns = still shellcode (e.g. ARM RET-only)
+        if self.has_shellcode_instruction_patterns() {
+            return true;
+        }
+
+        false
+    }
+
+    /// Check for known shellcode instruction byte patterns across architectures.
+    /// Returns true even with low entropy (e.g. AArch64 RET-only, x86 NOP sled).
+    fn has_shellcode_instruction_patterns(&self) -> bool {
+        let d = &self.data;
+        let len = d.len();
+        if len < 4 { return false; }
+
+        // x86: INT 0x80 (CD 80) — Linux syscall
+        if d.windows(2).any(|w| w == [0xCD, 0x80]) { return true; }
+        // x86/x64: SYSCALL (0F 05)
+        if d.windows(2).any(|w| w == [0x0F, 0x05]) { return true; }
+        // x86: NOP sled (90 90 90 90)
+        if d.windows(4).any(|w| w == [0x90, 0x90, 0x90, 0x90]) { return true; }
+        // x86: JMP rel8 (EB xx) — multi-byte, more specific than single-byte
+        if d.windows(2).any(|w| w[0] == 0xEB) { return true; }
+        // x86: CALL rel32 (E8 xx xx xx) — multi-byte, more specific
+        if d.windows(4).any(|w| w[0] == 0xE8) { return true; }
+
+        // ARM (32-bit, big-endian): B/BL with condition (Ex xx xx xx)
+        if d.windows(4).any(|w| w[3] >= 0xEA && w[3] <= 0xEB) { return true; }
+        // ARM: SVC #0 (00 00 00 EF)
+        if d.windows(4).any(|w| w == [0x00, 0x00, 0x00, 0xEF]) { return true; }
+
+        // AArch64 (little-endian): B/BL (14/94 xx xx xx in LE → byte[3] is opcode)
+        if d.windows(4).any(|w| w[3] == 0x14 || w[3] == 0x94) { return true; }
+        // AArch64: BLR Xn (3F 03 xx F8 in LE)
+        if d.windows(4).any(|w| w == [0x3F, 0x03, 0x00, 0xF8] ||
+                               w == [0x3F, 0x03, 0x01, 0xF8] ||
+                               w == [0x3F, 0x03, 0x02, 0xF8] ||
+                               w == [0x3F, 0x03, 0x03, 0xF8]) { return true; }
+        // AArch64: RET (C0 03 5F D6 in LE)
+        if d.windows(4).any(|w| w == [0xC0, 0x03, 0x5F, 0xD6]) { return true; }
+        // AArch64: SVC #0 (01 00 00 D4)
+        if d.windows(4).any(|w| w == [0x01, 0x00, 0x00, 0xD4]) { return true; }
+
+        // MIPS: SYSCALL (0C 00 00 0C) — little-endian
+        if d.windows(4).any(|w| w == [0x0C, 0x00, 0x00, 0x0C]) { return true; }
+
+        false
     }
 
     /// Common shellcode signatures
@@ -179,6 +241,26 @@ impl FlatBinary {
         if self.data.windows(2).any(|w| w == [0x0F, 0x05]) {
             // syscall - Linux x64 syscall
             return Some("Linux x64 shellcode (syscall)");
+        }
+
+        // AArch64 shellcode patterns (little-endian)
+        if self.data.windows(4).any(|w| w == [0xC0, 0x03, 0x5F, 0xD6]) {
+            // RET — AArch64 shellcode often ends with RET
+            return Some("AArch64 shellcode (RET)");
+        }
+        if self.data.windows(4).any(|w| w == [0x01, 0x00, 0x00, 0xD4]) {
+            // SVC #0 — AArch64 syscall
+            return Some("AArch64 shellcode (SVC)");
+        }
+
+        // ARM (32-bit, big-endian) shellcode patterns
+        if self.data.windows(4).any(|w| w == [0x00, 0x00, 0x00, 0xEF]) {
+            // SVC #0 — ARM32 syscall
+            return Some("ARM32 shellcode (SVC)");
+        }
+        if self.data.windows(4).any(|w| w == [0x00, 0x00, 0xA0, 0xE3]) {
+            // MOV R0, #0 — ARM32 register setup
+            return Some("ARM32 shellcode (MOV R0, #0)");
         }
 
         None
@@ -304,7 +386,10 @@ impl IntelHex {
                 0x03 => IntelHexRecordType::StartSegmentAddress,
                 0x04 => IntelHexRecordType::ExtendedLinearAddress,
                 0x05 => IntelHexRecordType::StartLinearAddress,
-                _ => continue, // Unknown, skip
+                other => {
+                    eprintln!("Intel HEX: unknown record type 0x{:02X}, skipping", other);
+                    continue;
+                }
             };
 
             let data_start = 8;
@@ -329,8 +414,10 @@ impl IntelHex {
 
             match record_type {
                 IntelHexRecordType::Data => {
-                    let addr = base_address + address as u32;
-                    let end = addr as usize + record_data.len();
+                    let addr = base_address.checked_add(address as u32)
+                        .ok_or(FlatBinaryError::OutOfBounds)?;
+                    let end = (addr as usize).checked_add(record_data.len())
+                        .ok_or(FlatBinaryError::OutOfBounds)?;
                     if end > MAX_OUTPUT_SIZE {
                         return Err(FlatBinaryError::OutOfBounds);
                     }
@@ -362,6 +449,10 @@ impl IntelHex {
             }
 
             records.push(record);
+        }
+
+        if records.is_empty() {
+            return Err(FlatBinaryError::OutOfBounds);
         }
 
         Ok(IntelHex { records, data, start_address })
@@ -433,7 +524,10 @@ impl SRecord {
                 b'7' => SRecordType::S7,
                 b'8' => SRecordType::S8,
                 b'9' => SRecordType::S9,
-                _ => continue,
+                other => {
+                    eprintln!("S-Record: unknown record type {:?}, skipping", other);
+                    continue;
+                }
             };
 
             let byte_count = u8::try_from(hex_to_u64(&bytes[2..4]).ok_or(FlatBinaryError::OutOfBounds)?)
@@ -478,7 +572,8 @@ impl SRecord {
 
             match record_type {
                 SRecordType::S1 | SRecordType::S2 | SRecordType::S3 => {
-                    let end = address as usize + record_data.len();
+                    let end = (address as usize).checked_add(record_data.len())
+                        .ok_or(FlatBinaryError::OutOfBounds)?;
                     if end > MAX_OUTPUT_SIZE {
                         return Err(FlatBinaryError::OutOfBounds);
                     }
@@ -494,6 +589,10 @@ impl SRecord {
             }
 
             records.push(entry);
+        }
+
+        if records.is_empty() {
+            return Err(FlatBinaryError::OutOfBounds);
         }
 
         Ok(SRecord { records, data, start_address })

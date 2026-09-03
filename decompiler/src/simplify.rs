@@ -1082,25 +1082,78 @@ fn collapse_ternaries(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
     }
 }
 
+/// Collect every `goto` target label reachable anywhere in `stmts` (including
+/// those nested inside `if`/`while`/`for`/`switch`/`try` bodies). A label must
+/// be kept iff *any* `goto` in the whole subtree references it — using only the
+/// current list level would drop a label targeted by a `goto` sitting inside a
+/// nested `if` (the classic irreducible-CFG fallback shape).
+fn collect_goto_targets(stmts: &[Stmt], out: &mut HashSet<String>) {
+    for s in stmts {
+        match s {
+            Stmt::Goto { label } => {
+                out.insert(label.clone());
+            }
+            Stmt::If { then_body, else_body, .. } => {
+                collect_goto_targets(then_body, out);
+                if let Some(eb) = else_body {
+                    collect_goto_targets(eb, out);
+                }
+            }
+            Stmt::While { body, .. }
+            | Stmt::DoWhile { body, .. }
+            | Stmt::For { body, .. } => collect_goto_targets(body, out),
+            Stmt::Block(inner) => collect_goto_targets(inner, out),
+            Stmt::Switch { cases, default, .. } => {
+                for c in cases {
+                    collect_goto_targets(&c.body, out);
+                }
+                if let Some(d) = default {
+                    collect_goto_targets(d, out);
+                }
+            }
+            Stmt::TryCatch { try_body, catch_body, .. } => {
+                collect_goto_targets(try_body, out);
+                collect_goto_targets(catch_body, out);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Drop unreachable tails, remove redundant gotos, and inline single-predecessor
 /// labels. Tallies the corresponding `SimplifyStats` counters.
+///
+/// `targets` is the *globally* collected set of labels referenced by any `goto`
+/// in the entire function. It is computed once by the entry point and threaded
+/// down so that a label whose only jumper lives inside a different (nested or
+/// outer) block is still preserved instead of being mis-reported as dead.
 fn cleanup_gotos(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
+    let mut targets: HashSet<String> = HashSet::new();
+    collect_goto_targets(stmts, &mut targets);
+    cleanup_gotos_with(stmts, stats, &targets);
+}
+
+fn cleanup_gotos_with(
+    stmts: &mut Vec<Stmt>,
+    stats: &mut SimplifyStats,
+    targets: &HashSet<String>,
+) {
     for stmt in stmts.iter_mut() {
         match stmt {
             Stmt::If { then_body, else_body, .. } => {
-                cleanup_gotos(then_body, stats);
-                if let Some(eb) = else_body { cleanup_gotos(eb, stats); }
+                cleanup_gotos_with(then_body, stats, targets);
+                if let Some(eb) = else_body { cleanup_gotos_with(eb, stats, targets); }
             }
-            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => cleanup_gotos(body, stats),
-            Stmt::For { body, .. } => cleanup_gotos(body, stats),
-            Stmt::Block(inner) => cleanup_gotos(inner, stats),
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => cleanup_gotos_with(body, stats, targets),
+            Stmt::For { body, .. } => cleanup_gotos_with(body, stats, targets),
+            Stmt::Block(inner) => cleanup_gotos_with(inner, stats, targets),
             Stmt::Switch { cases, default, .. } => {
-                for c in cases.iter_mut() { cleanup_gotos(&mut c.body, stats); }
-                if let Some(d) = default { cleanup_gotos(d, stats); }
+                for c in cases.iter_mut() { cleanup_gotos_with(&mut c.body, stats, targets); }
+                if let Some(d) = default { cleanup_gotos_with(d, stats, targets); }
             }
             Stmt::TryCatch { try_body, catch_body, .. } => {
-                cleanup_gotos(try_body, stats);
-                cleanup_gotos(catch_body, stats);
+                cleanup_gotos_with(try_body, stats, targets);
+                cleanup_gotos_with(catch_body, stats, targets);
             }
             _ => {}
         }
@@ -1132,9 +1185,9 @@ fn cleanup_gotos(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
             stats.gotos_removed += 1;
             if let Stmt::Label { name } = &stmts[j] {
                 let name = name.clone();
-                let still_referenced = stmts
-                    .iter()
-                    .any(|s| matches!(s, Stmt::Goto { label } if label == &name));
+                // Use the *global* target set: a label kept alive by a `goto`
+                // anywhere in the function must not be inlined away here.
+                let still_referenced = targets.contains(&name);
                 if !still_referenced {
                     stmts.remove(j);
                     stats.labels_inlined += 1;
@@ -1145,13 +1198,13 @@ fn cleanup_gotos(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
         j += 1;
     }
 
-    // Remove labels that are never targeted by a `goto` in this list.
-    let referenced: HashSet<String> = stmts
-        .iter()
-        .filter_map(|s| if let Stmt::Goto { label } = s { Some(label.clone()) } else { None })
-        .collect();
+    // Remove labels that are never targeted by a `goto` *anywhere in the
+    // function*. `targets` is the globally collected set, so a label whose only
+    // jumper lives inside a nested `if`/`while`/`else` (the classic
+    // irreducible-CFG fallback shape) is still preserved instead of being
+    // mis-flagged as dead and leaving a dangling `goto`.
     let before = stmts.len();
-    stmts.retain(|s| !matches!(s, Stmt::Label { name } if !referenced.contains(name)));
+    stmts.retain(|s| !matches!(s, Stmt::Label { name } if !targets.contains(name)));
     stats.unused_labels_removed += before - stmts.len();
 }
 
@@ -1755,7 +1808,6 @@ mod tests {
 #[cfg(test)]
 mod lognot_pipeline_probe {
     use super::*;
-    use crate::ast::*;
 
     #[test]
     fn probe_inline_then_fold() {

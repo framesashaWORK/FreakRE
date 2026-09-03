@@ -268,6 +268,7 @@ impl NfaBuilder {
                     b'n' => vec![(0x0A, 0x0A)],
                     b't' => vec![(0x09, 0x09)],
                     b'r' => vec![(0x0D, 0x0D)],
+                    b'/' => vec![(b'/', b'/')],
                     other => {
                         if self.case_insensitive {
                             let lc = other.to_ascii_lowercase();

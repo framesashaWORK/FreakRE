@@ -340,7 +340,11 @@ mod tests {
 
         let sec = 0xF8 + 16 * 8;
         data[sec..sec + 6].copy_from_slice(b".rdata");
-        data[sec + 8..sec + 12].copy_from_slice(&0x1000u32.to_le_bytes()); // VirtualSize
+        // VirtualSize must cover the file-backed data: rva_to_offset only
+        // resolves RVAs inside [VA, VA+VirtualSize) that are file-backed.
+        // A smaller VirtualSize would make trailing test tables unresolvable
+        // (correctly per the loader model — zero-padded tail has no file bytes).
+        data[sec + 8..sec + 12].copy_from_slice(&raw_size.max(0x1000).to_le_bytes()); // VirtualSize
         data[sec + 12..sec + 16].copy_from_slice(&0x1000u32.to_le_bytes()); // VA
         data[sec + 16..sec + 20].copy_from_slice(&raw_size.to_le_bytes()); // RawSize
         data[sec + 20..sec + 24].copy_from_slice(&0x600u32.to_le_bytes()); // RawOffset

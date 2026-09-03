@@ -115,7 +115,7 @@ pub fn parse_ident(data: &[u8], _warnings: &mut Vec<ElfWarning>) -> Result<ElfId
 #[inline]
 #[must_use]
 pub fn read_u16<const BE: bool>(data: &[u8], offset: usize) -> Option<u16> {
-    if offset + 2 > data.len() {
+    if data.len() < offset || data.len() - offset < 2 {
         return None;
     }
     let bytes: [u8; 2] = [data[offset], data[offset + 1]];
@@ -131,7 +131,7 @@ pub fn read_u16<const BE: bool>(data: &[u8], offset: usize) -> Option<u16> {
 #[inline]
 #[must_use]
 pub fn read_u32<const BE: bool>(data: &[u8], offset: usize) -> Option<u32> {
-    if offset + 4 > data.len() {
+    if data.len() < offset || data.len() - offset < 4 {
         return None;
     }
     let bytes: [u8; 4] = [
@@ -152,7 +152,7 @@ pub fn read_u32<const BE: bool>(data: &[u8], offset: usize) -> Option<u32> {
 #[inline]
 #[must_use]
 pub fn read_u64<const BE: bool>(data: &[u8], offset: usize) -> Option<u64> {
-    if offset + 8 > data.len() {
+    if data.len() < offset || data.len() - offset < 8 {
         return None;
     }
     let bytes: [u8; 8] = [

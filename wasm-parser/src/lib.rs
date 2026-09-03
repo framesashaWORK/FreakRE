@@ -293,6 +293,8 @@ pub enum WasmError {
     InvalidExportKind(u8),
     InvalidImportKind(u8),
     InvalidLeb,
+    InvalidSectionSize { id: u8, size: u32 },
+    SectionMismatch { expected: usize, found: usize },
     Unsupported(String),
     Io(std::io::Error),
 }
@@ -309,6 +311,16 @@ impl fmt::Display for WasmError {
             Self::InvalidExportKind(b) => write!(f, "Invalid export kind: 0x{:02x}", b),
             Self::InvalidImportKind(b) => write!(f, "Invalid import kind: 0x{:02x}", b),
             Self::InvalidLeb => write!(f, "LEB128 integer does not fit in u32"),
+            Self::InvalidSectionSize { id, size } => {
+                write!(f, "Section {} has invalid size: {}", id, size)
+            }
+            Self::SectionMismatch { expected, found } => {
+                write!(
+                    f,
+                    "Section count mismatch: expected {} entries, found {}",
+                    expected, found
+                )
+            }
             Self::Unsupported(what) => write!(f, "Unsupported WASM feature: {}", what),
             Self::Io(e) => write!(f, "I/O error: {}", e),
         }
@@ -339,7 +351,10 @@ fn read_leb128_u32(data: &[u8], offset: &mut usize) -> Result<u32, WasmError> {
         }
         shift += 7;
         if shift >= 35 {
-            return Err(WasmError::UnexpectedEnd);
+            return Err(WasmError::InvalidLeb);
+        }
+        if result > u32::MAX as u64 {
+            return Err(WasmError::InvalidLeb);
         }
     }
 }
@@ -444,7 +459,10 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
         };
 
         if section_end > data.len() {
-            return Err(WasmError::UnexpectedEnd);
+            return Err(WasmError::InvalidSectionSize {
+                id: section_id,
+                size: section_size as u32,
+            });
         }
 
         match section_id {
@@ -550,14 +568,7 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
                     let vt = read_value_type(data, &mut offset)?;
                     let mutable = data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)? != 0;
                     offset += 1;
-                    // Read init expression until 0x0B (end opcode)
-                    let expr_start = offset;
-                    while offset < section_end {
-                        let b = data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)?;
-                        offset += 1;
-                        if b == 0x0B { break; }
-                    }
-                    let init_expr = data[expr_start..offset].to_vec();
+                    let init_expr = read_init_expr(data, &mut offset, section_end)?;
                     module.globals.push(Global {
                         typ: GlobalType { value_type: vt, mutable },
                         init_expr,
@@ -683,7 +694,16 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
                     let code = data[offset..body_end].to_vec();
                     offset = body_end;
 
-                    let type_idx = func_type_indices.get(i as usize).copied().unwrap_or(0);
+                    let type_idx = func_type_indices
+                        .get(i as usize)
+                        .copied()
+                        .ok_or_else(|| {
+                            WasmError::Unsupported(format!(
+                                "Function section index {} out of range (have {} type indices)",
+                                i,
+                                func_type_indices.len()
+                            ))
+                        })?;
                     module.functions.push(Function { type_idx, locals, code });
                 }
             }
@@ -730,6 +750,13 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
 
         // Ensure we're at section end
         offset = section_end;
+    }
+
+    if func_type_indices.len() != module.functions.len() {
+        return Err(WasmError::SectionMismatch {
+            expected: func_type_indices.len(),
+            found: module.functions.len(),
+        });
     }
 
     Ok(module)

@@ -82,6 +82,22 @@ pub struct FileReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub flat_binary_info: Option<FlatBinaryInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub script_info: Option<ScriptInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pdf_info: Option<PdfInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dotnet_info: Option<DotnetInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pyc_info: Option<PycInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub firmware_info: Option<FirmwareInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memdump_info: Option<MemdumpInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dll_info: Option<DllInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub architecture_info: Option<ArchitectureInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub backdoor_report: Option<BackdoorSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shellcode_report: Option<ShellcodeSummary>,
@@ -223,6 +239,143 @@ pub struct FlatBinaryInfo {
     pub shellcode_type: Option<String>,
     pub is_intel_hex: bool,
     pub is_srecord: bool,
+}
+
+/// Architecture detected from a binary (raw shellcode, embedded PE, or scan
+/// of a binary blob). Used to report ARM/AArch64 support and to pick the
+/// right instruction decoder for downstream analysis.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchitectureInfo {
+    pub arch: String,             // "x86" / "x86_64" / "ARM" / "AArch64" / "unknown"
+    pub endian: String,           // "little" / "big" / "mixed"
+    pub bitness: u8,              // 32 / 64
+    pub confidence: f32,          // 0.0 - 1.0
+    pub indicators: Vec<String>,  // reasons
+}
+
+/// Summary of a script-language analysis (PowerShell / AutoIt / AHK / BAT / VBS).
+#[derive(Debug, Clone, Serialize)]
+pub struct ScriptInfo {
+    pub kind: String,
+    pub line_count: usize,
+    pub comment_count: usize,
+    pub avg_line_length: f32,
+    pub obfuscation_score: f32,
+    pub finding_count: usize,
+    pub highest_severity: String,
+    pub suspicious_calls: Vec<String>,
+    pub iocs: Vec<ScriptIoc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScriptIoc {
+    pub kind: String,
+    pub value: String,
+}
+
+/// Summary of a PDF analysis.
+#[derive(Debug, Clone, Serialize)]
+pub struct PdfInfo {
+    pub version: String,
+    pub is_encrypted: bool,
+    pub is_linearized: bool,
+    pub has_xfa: bool,
+    pub has_javascript: bool,
+    pub has_open_action: bool,
+    pub has_launch_action: bool,
+    pub has_embedded_files: bool,
+    pub has_acroform: bool,
+    pub object_count: usize,
+    pub page_count: usize,
+    pub uri_count: usize,
+    pub suspicious_uris: Vec<String>,
+    pub embedded_magic: Vec<String>,
+    pub finding_count: usize,
+    pub highest_severity: String,
+}
+
+/// Summary of a .NET / CLR analysis.
+#[derive(Debug, Clone, Serialize)]
+pub struct DotnetInfo {
+    pub metadata_version: Option<String>,
+    pub runtime_version: Option<String>,
+    pub entry_point_token: Option<String>,
+    pub flags: Vec<String>,
+    pub strong_name_signed: bool,
+    pub module_name: Option<String>,
+    pub assembly_ref_count: usize,
+    pub type_ref_count: usize,
+    pub method_def_count: usize,
+    pub member_ref_count: usize,
+    pub user_string_count: usize,
+    pub assembly_refs: Vec<String>,
+    pub suspicious_strings: Vec<String>,
+    pub finding_count: usize,
+    pub highest_severity: String,
+}
+
+/// Summary of a Python .pyc / PyInstaller analysis.
+#[derive(Debug, Clone, Serialize)]
+pub struct PycInfo {
+    pub kind: String,
+    pub python_version: Option<String>,
+    pub source_path: Option<String>,
+    pub is_pyinstaller: bool,
+    pub code_size: Option<usize>,
+    pub imports: Vec<String>,
+    pub high_risk_imports: Vec<String>,
+    pub urls: Vec<String>,
+    pub archive_entry_count: usize,
+    pub archive_entries_sample: Vec<String>,
+    pub finding_count: usize,
+    pub highest_severity: String,
+}
+
+/// Summary of a UEFI/BIOS firmware analysis.
+#[derive(Debug, Clone, Serialize)]
+pub struct FirmwareInfo {
+    pub kind: String,
+    pub volume_count: usize,
+    pub gpt_partition_count: usize,
+    pub mbr_partition_count: usize,
+    pub embedded_pe_count: usize,
+    pub findings: Vec<String>,
+}
+
+/// Summary of a memory-dump analysis.
+#[derive(Debug, Clone, Serialize)]
+pub struct MemdumpInfo {
+    pub kind: String,
+    pub stream_count: usize,
+    pub embedded_pe_count: usize,
+    pub raw_mz_hits: usize,
+    pub embedded_pe: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DllInfo {
+    pub dll_type: String,
+    pub architecture: String,
+    pub is_dotnet: bool,
+    pub is_resource_only: bool,
+    pub is_com: bool,
+    pub is_wdm_driver: bool,
+    pub is_injectable: bool,
+    pub calling_conventions: Vec<String>,
+    pub exports: Vec<String>,
+    pub dll_name: Option<String>,
+    pub export_count: usize,
+    pub import_count: usize,
+    pub characteristics: Vec<String>,
+    pub suspicion_score: f64,
+    pub findings: Vec<DllFindingInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DllFindingInfo {
+    pub severity: String,
+    pub rule_id: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

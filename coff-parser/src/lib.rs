@@ -96,8 +96,7 @@ pub struct Symbol {
 }
 
 impl Symbol {
-    #[allow(clippy::bad_bit_mask)] // preserved as-is; fixing the mask would change runtime behavior
-    pub fn is_function(&self) -> bool { (self.typ & 0x0F) == 0x20 }
+    pub fn is_function(&self) -> bool { self.typ & 0x20 != 0 }
     pub fn is_defined(&self) -> bool { self.section_number > 0 }
     pub fn is_external(&self) -> bool { self.section_number == 0 && self.storage_class == 2 }
 }
@@ -353,7 +352,10 @@ pub fn parse_coff(data: &[u8]) -> Result<CoffFile, CoffError> {
         symbols.push(symbol);
 
         i += 1 + aux;
-        sym_offset += (1 + aux as usize) * 18;
+        sym_offset = match sym_offset.checked_add((1 + aux as usize) * 18) {
+            Some(v) => v,
+            None => return Err(CoffError::TruncatedSymbols),
+        };
     }
 
     // Relocations per section
@@ -362,6 +364,9 @@ pub fn parse_coff(data: &[u8]) -> Result<CoffFile, CoffError> {
         let mut relocs = Vec::new();
         let ptr = section.pointer_to_relocations as usize;
         let count = section.number_of_relocations as usize;
+        if count > 100_000 {
+            return Err(CoffError::TruncatedSymbols);
+        }
         for j in 0..count {
             let r_off = ptr + j * 10;
             if r_off + 10 > data.len() { break; }

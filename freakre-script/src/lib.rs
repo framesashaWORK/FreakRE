@@ -34,7 +34,7 @@
 //! | `xor_bytes` | `xor_bytes(s, key)` | Repeating-key XOR over UTF-8 bytes; empty key is an error |
 //! | `contains_any` | `contains_any(s, t)` | True if any string in array-part of `t` occurs in `s` |
 //! | `count_occurrences` | `(s, needle)` | Non-overlapping substring count |
-//! | `extract_between` | `(s, start, end)` | Text after `start` up to next `end`; `nil` when markers are missing |
+//! | `extract_between` | `(s, start, end)` | Text after `start` up to next `end` (`nil` when markers are missing; an `end` glued to `start` yields the whole rest) |
 //! | `min` / `max` | `(...)` | Variadic extremum; integer-precise for all-integer input; NaN is an error |
 //! | `abs` | `abs(n)` | Absolute value (integer overflow is an error, not a wrap) |
 //! | `floor` / `ceil` | `(n)` | Round to integer |

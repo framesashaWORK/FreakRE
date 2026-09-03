@@ -685,15 +685,12 @@ impl CEmitter {
             }
             _ => Ty::i32(),
         };
-        let sign = if op == BinOp::Sub { "-" } else { "" };
         let ptr_ty = format!("{} *", self.type_to_c(&pointee));
         self.output.push_str(&format!(
-            "*({})({} {} 0x{:X}) /* {}0x{:X} */",
+            "*({})({} {} 0x{:X})",
             ptr_ty,
             base,
             op.as_str(),
-            offset,
-            sign,
             offset
         ));
         true
@@ -920,6 +917,7 @@ mod tests {
             emitter.output
         };
         assert!(c.contains("*(int32_t *)(a + 0xC)"), "{}", c);
-        assert!(c.contains("/* 0xC */"), "{}", c);
+        // Offset comments disabled
+        // assert!(c.contains("/* 0xC */"), "{}", c);
     }
 }

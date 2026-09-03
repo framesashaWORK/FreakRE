@@ -117,8 +117,15 @@ pub fn parse_program_headers_64<const BE: bool>(
     let mut headers = Vec::with_capacity(ph_num as usize);
 
     for i in 0..ph_num as usize {
-        let base = ph_offset as usize + i * entry_size;
-        if base + entry_size > data.len() {
+        let Some(base) = i.checked_mul(entry_size)
+            .and_then(|o| (ph_offset as usize).checked_add(o))
+        else {
+            break;
+        };
+        let Some(end) = base.checked_add(entry_size) else {
+            break;
+        };
+        if end > data.len() {
             break;
         }
 
@@ -214,8 +221,15 @@ pub fn parse_program_headers_32<const BE: bool>(
     let mut headers = Vec::with_capacity(ph_num as usize);
 
     for i in 0..ph_num as usize {
-        let base = ph_offset as usize + i * entry_size;
-        if base + entry_size > data.len() {
+        let Some(base) = i.checked_mul(entry_size)
+            .and_then(|o| (ph_offset as usize).checked_add(o))
+        else {
+            break;
+        };
+        let Some(end) = base.checked_add(entry_size) else {
+            break;
+        };
+        if end > data.len() {
             break;
         }
 

@@ -149,6 +149,16 @@ impl MachineType {
     pub fn is_64bit(self) -> bool {
         matches!(self, MachineType::Amd64 | MachineType::Arm64)
     }
+
+    pub fn to_raw(self) -> u16 {
+        match self {
+            MachineType::I386 => 0x014C,
+            MachineType::Amd64 => 0x8664,
+            MachineType::Arm => 0x01C0,
+            MachineType::Arm64 => 0xAA64,
+            MachineType::Unknown(v) => v,
+        }
+    }
 }
 
 impl fmt::Display for MachineType {
@@ -471,7 +481,10 @@ impl<'a> PeFile<'a> {
         let clamped_num_ddr = (num_ddr as usize).min(128);
         let mut data_directories = Vec::with_capacity(clamped_num_ddr);
         for i in 0..clamped_num_ddr {
-            let off = ddr_off + i * 8;
+            let off = match ddr_off.checked_add(i * 8) {
+                Some(o) => o,
+                None => break,
+            };
             if off + 8 > data.len() { break; }
             data_directories.push(DataDirectory {
                 virtual_address: read_u32(data, off),
@@ -485,7 +498,15 @@ impl<'a> PeFile<'a> {
         let clamped_num_sections = (number_of_sections as usize).min(96);
         let actual_num_ddr = (num_ddr as usize).min(u32::MAX as usize / 8);
         let section_table_off = ddr_off + actual_num_ddr.saturating_mul(8);
-        let sections_end = section_table_off + clamped_num_sections * 40;
+        let sections_end = match section_table_off.checked_add(clamped_num_sections * 40) {
+            Some(e) => e,
+            None => {
+                return Err(PeError::TooSmallForSections {
+                    needed: usize::MAX,
+                    have: data.len(),
+                })
+            }
+        };
         if sections_end > data.len() {
             return Err(PeError::TooSmallForSections {
                 needed: sections_end,
@@ -495,7 +516,16 @@ impl<'a> PeFile<'a> {
 
         let mut sections = Vec::with_capacity(clamped_num_sections);
         for i in 0..clamped_num_sections {
-            sections.push(SectionHeader::parse(data, section_table_off + i * 40)?);
+            let sec_off = match section_table_off.checked_add(i * 40) {
+                Some(o) => o,
+                None => {
+                    return Err(PeError::TooSmallForSections {
+                        needed: usize::MAX,
+                        have: data.len(),
+                    })
+                }
+            };
+            sections.push(SectionHeader::parse(data, sec_off)?);
         }
 
         // --- Warnings ---
@@ -592,14 +622,15 @@ impl<'a> PeFile<'a> {
     /// so RVAs in the virtual tail cannot resolve onto unrelated file bytes.
     pub fn rva_to_offset(&self, rva: u32) -> Option<usize> {
         for sec in &self.sections {
-            let sec_end = match sec.virtual_address.checked_add(sec.raw_data_size) {
+            let virt_end = match sec.virtual_address.checked_add(sec.virtual_size) {
                 Some(end) => end,
                 None => continue,
             };
-            if rva >= sec.virtual_address && rva < sec_end {
+            if rva >= sec.virtual_address && rva < virt_end {
                 let offset_in_section = rva - sec.virtual_address;
-                // Use checked_add to prevent integer overflow; a bad section
-                // must not abort resolution for the remaining sections.
+                if offset_in_section >= sec.raw_data_size {
+                    continue;
+                }
                 let file_offset = match (sec.raw_data_offset as usize)
                     .checked_add(offset_in_section as usize)
                 {
@@ -722,8 +753,14 @@ impl<'a> PeFile<'a> {
             if hdr_end > end {
                 break;
             }
-            let page_rva = read_u32(self.data, pos);
-            let size_of_block = read_u32(self.data, pos + 4);
+            let page_rva = match try_read_u32(self.data, pos) {
+                Some(v) => v,
+                None => break,
+            };
+            let size_of_block = match try_read_u32(self.data, pos + 4) {
+                Some(v) => v,
+                None => break,
+            };
             if size_of_block < 8 {
                 break;
             }
@@ -909,8 +946,11 @@ impl<'a> PeFile<'a> {
             .filter_map(|s| (s.raw_data_offset as usize).checked_add(s.raw_data_size as usize))
             .max()
             .unwrap_or(0);
-        if self.data.len() > last_section_end + 0x200 {
-            // Only report overlay if > 512 bytes (to avoid noise from alignment)
+        let threshold = match last_section_end.checked_add(0x200) {
+            Some(t) => t,
+            None => return 0,
+        };
+        if self.data.len() > threshold {
             self.data.len() - last_section_end
         } else {
             0
@@ -925,7 +965,8 @@ impl<'a> PeFile<'a> {
             .filter_map(|s| (s.raw_data_offset as usize).checked_add(s.raw_data_size as usize))
             .max()
             .unwrap_or(0);
-        if self.data.len() > last_section_end + 0x200 {
+        let threshold = last_section_end.checked_add(0x200)?;
+        if self.data.len() > threshold {
             Some(&self.data[last_section_end..])
         } else {
             None
@@ -1166,6 +1207,104 @@ impl<'a> PeFile<'a> {
         }
 
         dlls
+    }
+
+    // ─── Export Table ────────────────────────────────────────────────
+
+    /// Get the Export Directory RVA and size from the data directories.
+    pub fn export_directory(&self) -> Option<(u32, u32)> {
+        let dd = self.data_directories.get(IMAGE_DIRECTORY_ENTRY_EXPORT)?;
+        if dd.is_empty() { return None; }
+        Some((dd.virtual_address, dd.size))
+    }
+
+    /// Parse the export table and return (dll_name, exported_functions).
+    /// Each export is (ordinal, name_or_ordinal, rva).
+    pub fn exports(&self) -> (Option<String>, Vec<(u16, String, u32)>) {
+        let (rva, _size) = match self.export_directory() {
+            Some(d) => d,
+            None => return (None, Vec::new()),
+        };
+
+        let offset = match self.rva_to_offset(rva) {
+            Some(o) => o,
+            None => return (None, Vec::new()),
+        };
+
+        if offset + 40 > self.data.len() {
+            return (None, Vec::new());
+        }
+
+        // IMAGE_EXPORT_DIRECTORY layout:
+        //  0: Characteristics (u32, usually 0)
+        //  4: TimeDateStamp (u32)
+        //  8: MajorVersion (u16)
+        // 10: MinorVersion (u16)
+        // 12: Name (u32, RVA to DLL name)
+        // 16: Base (u32, ordinal base)
+        // 20: NumberOfFunctions (u32)
+        // 24: NumberOfNames (u32)
+        // 28: AddressOfFunctions (u32, RVA)
+        // 32: AddressOfNames (u32, RVA)
+        // 36: AddressOfNameOrdinals (u32, RVA)
+        let name_rva = read_u32(self.data, offset + 12);
+        let base = read_u32(self.data, offset + 16) as u16;
+        let num_functions = read_u32(self.data, offset + 20).min(8192);
+        let num_names = read_u32(self.data, offset + 24).min(8192);
+        let addr_functions = read_u32(self.data, offset + 28);
+        let addr_names = read_u32(self.data, offset + 32);
+        let addr_ordinals = read_u32(self.data, offset + 36);
+
+        let dll_name = if name_rva != 0 {
+            self.read_cstring_at_rva(name_rva, 256)
+        } else {
+            None
+        };
+
+        // Convert AddressOfFunctions RVA to file offset
+        let func_off = self.rva_to_offset(addr_functions);
+        let name_off = self.rva_to_offset(addr_names);
+        let ord_off = self.rva_to_offset(addr_ordinals);
+
+        let mut exports = Vec::new();
+
+        if let (Some(fo), Some(no), Some(oo)) = (func_off, name_off, ord_off) {
+            // Build ordinal→name map from named exports
+            let mut ordinal_to_name: std::collections::HashMap<u16, String> = std::collections::HashMap::new();
+            for i in 0..num_names {
+                let name_ptr_rva = read_u32(self.data, no + i as usize * 4);
+                let ordinal_idx = if oo + i as usize * 2 + 2 <= self.data.len() {
+                    read_u16(self.data, oo + i as usize * 2)
+                } else {
+                    continue;
+                };
+                if let Some(name) = self.read_cstring_at_rva(name_ptr_rva, 256) {
+                    ordinal_to_name.insert(ordinal_idx, name);
+                }
+            }
+
+            // Enumerate all exported functions
+            for i in 0..num_functions {
+                let func_rva = if fo + i as usize * 4 + 4 <= self.data.len() {
+                    read_u32(self.data, fo + i as usize * 4)
+                } else {
+                    continue;
+                };
+                if func_rva == 0 { continue; } // unused ordinal slot
+                let ordinal = base.wrapping_add(i as u16);
+                let name = ordinal_to_name.get(&(i as u16))
+                    .cloned()
+                    .unwrap_or_else(|| format!("ord_{}", ordinal));
+                exports.push((ordinal, name, func_rva));
+            }
+        }
+
+        (dll_name, exports)
+    }
+
+    /// Return just the export names (convenience).
+    pub fn export_names(&self) -> Vec<String> {
+        self.exports().1.into_iter().map(|(_, name, _)| name).collect()
     }
 }
 

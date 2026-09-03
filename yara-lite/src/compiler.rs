@@ -36,6 +36,8 @@ pub struct CompiledHexPattern {
     pub tokens: Vec<HexToken>,
     /// Minimum literal prefix length for quick rejection.
     pub min_literal_len: usize,
+    /// Minimum total bytes the pattern can match (jumps contribute their min).
+    pub min_len: usize,
 }
 
 #[derive(Debug)]
@@ -135,12 +137,14 @@ pub fn compile_rule(rule: &Rule) -> Result<CompiledRule, CompileError> {
                     .iter()
                     .take_while(|t| matches!(t, HexToken::Literal(_)))
                     .count();
+                let min_len = compute_hex_min_len(&hp.tokens);
                 hex_patterns.insert(
                     sdef.identifier.clone(),
                     CompiledHexPattern {
                         identifier: sdef.identifier.clone(),
                         tokens: hp.tokens.clone(),
                         min_literal_len,
+                        min_len,
                     },
                 );
             }
@@ -177,7 +181,31 @@ fn expand_text_variants(text: &[u8], mods: &Modifiers) -> Vec<Vec<u8>> {
         variants.push(wide);
     }
 
+    // XOR modifier: add 256 variants (pattern XORed with each possible byte key 0-255)
+    if mods.xor {
+        for key in 0u8..=255 {
+            let xored: Vec<u8> = text.iter().map(|&b| b ^ key).collect();
+            variants.push(xored);
+        }
+    }
+
     variants
+}
+
+/// Compute the minimum number of bytes a hex pattern can match.
+fn compute_hex_min_len(tokens: &[HexToken]) -> usize {
+    let mut len = 0;
+    for tok in tokens {
+        match tok {
+            HexToken::Literal(_) | HexToken::Wildcard | HexToken::NibbleWildcard { .. } => len += 1,
+            HexToken::Alternation(_) => {
+                // Each alt is a single HexToken; min is 1 byte (all alternatives consume 1 byte)
+                len += 1;
+            }
+            HexToken::Jump { min, .. } => len += min,
+        }
+    }
+    len
 }
 
 /// Build an Aho-Corasick automaton from text patterns across multiple rules.

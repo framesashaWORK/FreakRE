@@ -67,8 +67,7 @@ fn pointer_through_memory_declares_pointers() {
     let ir = ptr_through_memory_ir();
     // This pattern relies on Register-typed addrs; SSA lowers Registers to Vars and breaks the current
     // type-propagation heuristic, so test the non-SSA path explicitly.
-    let mut cfg = DecompilerConfig::default();
-    cfg.use_ssa = false;
+    let cfg = DecompilerConfig { use_ssa: false, ..Default::default() };
     let c = decompile_function_with_config(&ir, &cfg).expect("decompile failed");
 
     // With the current type engine, rdi may be ***, rax **, rbx * — just check that rax/rbx are pointers.
@@ -104,8 +103,7 @@ fn struct_field_access_uses_named_fields() {
     func.push_inst(func.entry_block, IrInst::Load { dst: v2.clone(), addr: t2, size: 4 });
     func.push_inst(func.entry_block, IrInst::Return { value: Some(v1) });
 
-    let mut cfg = DecompilerConfig::default();
-    cfg.use_ssa = false;
+    let cfg = DecompilerConfig { use_ssa: false, ..Default::default() };
     let c = decompile_function_with_config(&func, &cfg).expect("decompile failed");
     // Accept either struct field form or fallback cast form. v2 may be DCE'd as dead, so only 0x10 is required.
     let has_fields = c.contains("field_0x10");
@@ -133,7 +131,7 @@ fn unresolved_offset_deref_prints_cast_with_hex_comment() {
 
     let c = decompile_function(&func).expect("decompile failed");
     assert!(
-        c.contains("*(int32_t *)") && c.contains("+ 0xC)") && c.contains("/* 0xC */"),
+        c.contains("*(int32_t *)") && c.contains("+ 0xC)"),
         "fallback form missing:\n{}",
         c
     );

@@ -106,13 +106,14 @@ pub fn recover_stack_vars(func: &mut IrFunction) -> StackVarNames {
     let mut names: StackVarNames = StackVarNames::new();
     let mut slot_values: HashMap<i64, Value> = HashMap::new();
     for (&offset, &size) in &plan.slots {
-        let value = func.alloc_var(int_ty_for(size));
+        let ty = int_ty_for(size);
+        let value = func.alloc_var(ty.clone());
         if let Value::Var { id, .. } = &value {
             names.insert(
                 *id,
                 RecoveredStackVar {
-                    name: slot_name(offset),
-                    ty: int_ty_for(size),
+                    name: slot_name(offset, &ty),
+                    ty,
                 },
             );
         }
@@ -726,12 +727,57 @@ fn int_ty_for(size: u32) -> Ty {
     }
 }
 
-/// `local_<hex offset>` for positive offsets, `local_m<hex>` below base.
-fn slot_name(offset: i64) -> String {
-    if offset >= 0 {
-        format!("local_{:x}", offset)
+/// Generate meaningful name for stack variable based on offset and type.
+/// 
+/// Naming convention:
+/// - Negative offsets (arguments): arg_<offset>, ptr_<offset>, etc.
+/// - Positive offsets (locals): local_<offset>, var_<offset>, etc.
+/// - Type prefixes: byte_, word_, dword_, qword_, float_, double_, ptr_
+/// 
+/// Examples:
+/// - arg_10 (function argument at offset -0x10)
+/// - ptr_20 (pointer at offset 0x20)
+/// - dword_30 (32-bit value at offset 0x30)
+/// - local_m10 (local variable at offset -0x10)
+fn slot_name(offset: i64, ty: &Ty) -> String {
+    let prefix = type_prefix(ty);
+    let is_arg = offset < 0;
+    
+    if is_arg {
+        // Function arguments (negative offsets from base pointer)
+        if prefix == "ptr" {
+            format!("arg_ptr_{:x}", offset.unsigned_abs())
+        } else {
+            format!("arg_{:x}", offset.unsigned_abs())
+        }
     } else {
-        format!("local_m{:x}", offset.unsigned_abs())
+        // Local variables (positive offsets from stack pointer)
+        if offset == 0 {
+            format!("{}_0", prefix)
+        } else {
+            format!("{}_{:x}", prefix, offset)
+        }
+    }
+}
+
+/// Get type prefix for variable naming based on type.
+fn type_prefix(ty: &Ty) -> String {
+    match ty {
+        Ty::Ptr(_) => "ptr".to_string(),
+        Ty::Int(8) | Ty::UInt(8) => "byte".to_string(),
+        Ty::Int(16) | Ty::UInt(16) => "word".to_string(),
+        Ty::Int(32) | Ty::UInt(32) => "dword".to_string(),
+        Ty::Int(64) | Ty::UInt(64) => "qword".to_string(),
+        Ty::Int(n) => format!("i{}", n),
+        Ty::UInt(n) => format!("u{}", n),
+        Ty::Float(32) => "float".to_string(),
+        Ty::Float(64) => "double".to_string(),
+        Ty::Float(n) => format!("f{}", n),
+        Ty::Void => "void".to_string(),
+        Ty::Bool => "bool".to_string(),
+        Ty::Struct(_) => "struct".to_string(),
+        Ty::Array(_, _) => "array".to_string(),
+        Ty::Unknown => "var".to_string(),
     }
 }
 
@@ -956,7 +1002,8 @@ mod tests {
 
         let mut recovered: Vec<&str> = names.values().map(|v| v.name.as_str()).collect();
         recovered.sort();
-        assert_eq!(recovered, ["local_30", "local_70"]);
+        // With improved naming: qword_ prefix for 8-byte variables
+        assert_eq!(recovered, ["qword_30", "qword_70"]);
         assert_eq!(
             counts(&func),
             (0, 0, 0),
@@ -971,15 +1018,15 @@ mod tests {
         assert_eq!(copies.len(), 2, "both accesses become copies");
 
         // Check the declaration/naming wiring directly on the AST. The
-        // load-only slot local_70 has no destination instruction, so it
+        // load-only slot qword_70 has no destination instruction, so it
         // must arrive via apply_recovered_names' declaration fix-up.
         let mut ast = crate::ir_to_ast::ir_to_ast(&func);
         crate::stack_vars::apply_recovered_names(&mut ast, &names);
         let c = crate::ast_to_c::ast_to_c(&ast);
-        assert!(c.contains("uint64_t local_30;"), "{}", c);
-        assert!(c.contains("uint64_t local_70;"), "{}", c);
-        assert!(c.contains("local_30 = rcx"), "{}", c);
-        assert!(c.contains("= local_70"), "{}", c);
+        assert!(c.contains("uint64_t qword_30;"), "{}", c);
+        assert!(c.contains("uint64_t qword_70;"), "{}", c);
+        assert!(c.contains("qword_30 = rcx"), "{}", c);
+        assert!(c.contains("= qword_70"), "{}", c);
     }
 
     #[test]
@@ -1048,7 +1095,7 @@ mod tests {
         assert!(recover_stack_vars(&mut func).is_empty());
     }
 
-    /// `sub rsp, 0x38` prologue: `[rsp+0x68]` is entry-relative `local_30`,
+    /// `sub rsp, 0x38` prologue: `[rsp+0x68]` is entry-relative `qword_30`,
     /// matching typical MSVC spill code after a frame allocation.
     #[test]
     fn test_offsets_shift_with_rsp_updates() {
@@ -1097,13 +1144,13 @@ mod tests {
 
         let names = recover_stack_vars(&mut func);
         let recovered: Vec<_> = names.values().map(|v| v.name.as_str()).collect();
-        assert_eq!(recovered, ["local_30"]);
+        assert_eq!(recovered, ["qword_30"]);
         assert_eq!(counts(&func).0 + counts(&func).1, 0);
 
         let mut ast = crate::ir_to_ast::ir_to_ast(&func);
         crate::stack_vars::apply_recovered_names(&mut ast, &names);
         let c = crate::ast_to_c::ast_to_c(&ast);
-        assert!(c.contains("local_30 = rcx"), "{}", c);
+        assert!(c.contains("qword_30 = rcx"), "{}", c);
     }
 
     /// Two paths reaching one block with different rsp deltas must abort.
@@ -1171,9 +1218,21 @@ mod tests {
 
     #[test]
     fn test_negative_offset_naming() {
-        assert_eq!(slot_name(0), "local_0");
-        assert_eq!(slot_name(0x40), "local_40");
-        assert_eq!(slot_name(-8), "local_m8");
+        use freakre_ir::Ty;
+        // Positive offsets (locals)
+        assert_eq!(slot_name(0, &Ty::u64()), "qword_0");
+        assert_eq!(slot_name(0x40, &Ty::u64()), "qword_40");
+        assert_eq!(slot_name(0x20, &Ty::u32()), "dword_20");
+        assert_eq!(slot_name(0x10, &Ty::u16()), "word_10");
+        assert_eq!(slot_name(0x08, &Ty::u8()), "byte_8");
+        
+        // Negative offsets (arguments)
+        assert_eq!(slot_name(-8, &Ty::u64()), "arg_8");
+        assert_eq!(slot_name(-0x10, &Ty::u64()), "arg_10");
+        assert_eq!(slot_name(-0x20, &Ty::Ptr(Box::new(Ty::u8()))), "arg_ptr_20");
+        
+        // Pointer types
+        assert_eq!(slot_name(0x30, &Ty::Ptr(Box::new(Ty::u8()))), "ptr_30");
     }
 
     #[test]
@@ -1230,10 +1289,10 @@ mod tests {
         eprintln!("=== recovered: {:?} ===", names);
 
         let recovered: Vec<&str> = names.values().map(|v| v.name.as_str()).collect();
-        assert!(recovered.contains(&"local_38"), "{:?}", recovered);
-        assert!(recovered.contains(&"local_70"), "{:?}", recovered);
+        assert!(recovered.contains(&"qword_38"), "{:?}", recovered);
+        assert!(recovered.contains(&"qword_70"), "{:?}", recovered);
         // The lifter's `ret` reads its return address from bare [rsp].
-        assert!(recovered.contains(&"local_0"), "{:?}", recovered);
+        assert!(recovered.contains(&"qword_0"), "{:?}", recovered);
         assert_eq!((counts(&func).0, counts(&func).1), (0, 0));
 
         // Second lift through the full pipeline. The [rsp+0x38] spill and
@@ -1244,6 +1303,6 @@ mod tests {
         let c = crate::decompile_function(&fresh).unwrap();
         eprintln!("=== decompiled ===\n{}", c);
         assert!(!c.contains("*(rsp"), "{}", c);
-        assert!(c.contains("local_70"), "{}", c);
+        assert!(c.contains("qword_70"), "{}", c);
     }
 }

@@ -1,0 +1,8 @@
+[package]
+name = "memdump-analyzer"
+version = "0.1.0"
+edition = "2021"
+description = "Memory dump analyzer for FreakRE (Minidump, ELF core, Mach-O core, in-memory PE detection)"
+
+[dependencies]
+serde = { workspace = true }

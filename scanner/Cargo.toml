@@ -44,6 +44,13 @@ ml-detection = { path = "../ml-detection" }
 freakre-x86 = { path = "../freakre-x86" }
 freakre-ir = { path = "../freakre-ir", optional = true }
 decompiler = { path = "../decompiler", optional = true }
+script-analyzer = { path = "../script-analyzer" }
+pdf-analyzer = { path = "../pdf-analyzer" }
+dotnet-analyzer = { path = "../dotnet-analyzer" }
+pyc-parser = { path = "../pyc-parser" }
+firmware-analyzer = { path = "../firmware-analyzer" }
+memdump-analyzer = { path = "../memdump-analyzer" }
+dll-analyzer = { path = "../dll-analyzer" }
 
 # Own zero-dep replacements
 freakre-hash = { path = "../freakre-hash" }

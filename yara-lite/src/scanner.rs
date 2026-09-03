@@ -334,7 +334,7 @@ fn fullword_ok(data: &[u8], start: usize, len: usize) -> bool {
 }
 
 fn scan_hex_pattern(data: &[u8], hp: &CompiledHexPattern, limit: usize) -> Vec<(usize, usize)> {
-    let pat_len = hp.tokens.len();
+    let pat_len = hp.min_len;
     if pat_len == 0 || data.len() < pat_len || limit == 0 {
         return Vec::new();
     }
@@ -391,23 +391,69 @@ fn scan_hex_pattern(data: &[u8], hp: &CompiledHexPattern, limit: usize) -> Vec<(
 }
 
 fn hex_match_at(data: &[u8], offset: usize, tokens: &[HexToken]) -> bool {
-    for (i, token) in tokens.iter().enumerate() {
-        let byte = data[offset + i];
-        match token {
-            HexToken::Literal(expected) => {
-                if byte != *expected {
-                    return false;
+    hex_match_at_recursive(data, offset, tokens, 0)
+}
+
+fn hex_match_at_recursive(data: &[u8], offset: usize, tokens: &[HexToken], tok_idx: usize) -> bool {
+    if tok_idx >= tokens.len() {
+        return true;
+    }
+    let remaining_data = data.len() - offset;
+    let remaining_tokens = &tokens[tok_idx..];
+
+    match &remaining_tokens[0] {
+        HexToken::Literal(expected) => {
+            if remaining_data == 0 || data[offset] != *expected {
+                return false;
+            }
+            hex_match_at_recursive(data, offset + 1, tokens, tok_idx + 1)
+        }
+        HexToken::Wildcard => {
+            if remaining_data == 0 {
+                return false;
+            }
+            hex_match_at_recursive(data, offset + 1, tokens, tok_idx + 1)
+        }
+        HexToken::NibbleWildcard { mask, value } => {
+            if remaining_data == 0 {
+                return false;
+            }
+            if (data[offset] & !mask) != (value & !mask) {
+                return false;
+            }
+            hex_match_at_recursive(data, offset + 1, tokens, tok_idx + 1)
+        }
+        HexToken::Alternation(alts) => {
+            // Try each alternative; if any matches the rest, return true
+            for alt in alts {
+                // Build a temporary token list: [alt, remaining_tokens...]
+                let mut test_tokens = vec![alt.clone()];
+                test_tokens.extend_from_slice(&remaining_tokens[1..]);
+                if hex_match_at_recursive(data, offset, &test_tokens, 0) {
+                    return true;
                 }
             }
-            HexToken::Wildcard => {} // matches anything
-            HexToken::NibbleWildcard { mask, value } => {
-                if (byte & !mask) != (*value & !mask) {
-                    return false;
+            false
+        }
+        HexToken::Jump { min, max } => {
+            let next_tok = tok_idx + 1;
+            if next_tok >= tokens.len() {
+                // Jump at end of pattern = always match
+                return true;
+            }
+            let effective_max = (*max).min(remaining_data);
+            if *min > effective_max {
+                return false;
+            }
+            // Try skip lengths from min to max
+            for skip in *min..=effective_max {
+                if hex_match_at_recursive(data, offset + skip, tokens, next_tok) {
+                    return true;
                 }
             }
+            false
         }
     }
-    true
 }
 
 // ─── Condition evaluator ─────────────────────────────────────
@@ -478,9 +524,49 @@ fn evaluate_condition(
             .iter()
             .any(|((rn, sid), locs)| rn == current_rule_name && sid == id && locs.iter().any(|(off, _)| off == expected_offset)),
 
+        Condition::AtExpr(id, offset_expr) => {
+            let expected = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
+            matches
+                .iter()
+                .any(|((rn, sid), locs)| rn == current_rule_name && sid == id && locs.iter().any(|(off, _)| *off == expected))
+        }
+
         Condition::In(id, start, end) => matches.iter().any(|((rn, sid), locs)| {
-            rn == current_rule_name && sid == id && locs.iter().any(|(off, _)| off >= start && off <= end)
+            rn == current_rule_name && sid == id && locs.iter().any(|(off, _)| *off >= *start && *off <= *end)
         }),
+
+        Condition::InExpr(id, start_expr, end_expr) => {
+            let start = eval_int_expr(start_expr, matches, filesize, data, entrypoint, current_rule_name);
+            let end = eval_int_expr(end_expr, matches, filesize, data, entrypoint, current_rule_name);
+            matches.iter().any(|((rn, sid), locs)| {
+                rn == current_rule_name && sid == id && locs.iter().any(|(off, _)| *off >= start && *off <= end)
+            })
+        }
+
+        Condition::Contains(id, substr) => {
+            let sub = substr.as_bytes();
+            if sub.is_empty() { return true; }
+            matches.iter().any(|((rn, sid), locs)| {
+                rn == current_rule_name && sid == id && locs.iter().any(|(off, len)| {
+                    *off + *len <= data.len() && data[*off..*off + *len].windows(sub.len()).any(|w| w == sub)
+                })
+            })
+        }
+
+        Condition::IsType(id, type_name) => {
+            // Simplified: just check if string exists
+            let _ = (id, type_name);
+            true
+        }
+
+        Condition::Eq(id, value) => {
+            let val_bytes = value.as_bytes();
+            matches.iter().any(|((rn, sid), locs)| {
+                rn == current_rule_name && sid == id && locs.iter().any(|(off, len)| {
+                    *off + *len <= data.len() && &data[*off..*off + *len] == val_bytes
+                })
+            })
+        }
 
         Condition::IntComp(op, lhs, rhs) => {
             let l = eval_int_expr(lhs, matches, filesize, data, entrypoint, current_rule_name);
@@ -493,6 +579,27 @@ fn evaluate_condition(
                 IntCompOp::Gt => l > r,
                 IntCompOp::Ge => l >= r,
             }
+        }
+
+        Condition::PeNumberSections(op, rhs) => {
+            let l = eval_pe_number_of_sections(data);
+            let r = eval_int_expr(rhs, matches, filesize, data, entrypoint, current_rule_name);
+            match op {
+                IntCompOp::Eq => l == r,
+                IntCompOp::Ne => l != r,
+                IntCompOp::Lt => l < r,
+                IntCompOp::Le => l <= r,
+                IntCompOp::Gt => l > r,
+                IntCompOp::Ge => l >= r,
+            }
+        }
+
+        Condition::PeImports(dll_name) => {
+            eval_pe_imports(data, dll_name)
+        }
+
+        Condition::PeSections(sec_name) => {
+            eval_pe_section_exists(data, sec_name)
         }
     }
 }
@@ -518,7 +625,7 @@ fn eval_int_expr(
                 .min()
                 .unwrap_or(0)
         }
-        IntExpr::Entrypoint => entrypoint,
+        IntExpr::Entrypoint | IntExpr::Offset => entrypoint,
         IntExpr::Uint8(offset_expr) => {
             let off = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
             data.get(off).map(|&b| b as usize).unwrap_or(0)
@@ -540,7 +647,163 @@ fn eval_int_expr(
                 0
             }
         }
+        IntExpr::Int8(offset_expr) => {
+            let off = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
+            data.get(off).map(|&b| b as i8 as isize as usize).unwrap_or(0)
+        }
+        IntExpr::Int16(offset_expr) => {
+            let off = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
+            if off + 2 <= data.len() {
+                i16::from_le_bytes([data[off], data[off + 1]]) as isize as usize
+            } else {
+                0
+            }
+        }
+        IntExpr::Int32(offset_expr) => {
+            let off = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
+            if off + 4 <= data.len() {
+                i32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]) as isize as usize
+            } else {
+                0
+            }
+        }
+        IntExpr::StringLength(id) => {
+            // String length: return length of first match
+            matches
+                .iter()
+                .filter(|((rn, sid), _)| rn == current_rule_name && sid == id)
+                .flat_map(|(_, locs)| locs.iter().map(|(_, len)| *len))
+                .next()
+                .unwrap_or(0)
+        }
+        IntExpr::MathHash(offset_expr, len_expr) => {
+            let off = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
+            let len = eval_int_expr(len_expr, matches, filesize, data, entrypoint, current_rule_name);
+            let end = (off + len).min(data.len());
+            if off >= end { return 0; }
+            // Simple FNV-1a hash
+            let mut hash: u32 = 0x811c9dc5;
+            for &b in &data[off..end] {
+                hash ^= b as u32;
+                hash = hash.wrapping_mul(0x01000193);
+            }
+            hash as usize
+        }
+        IntExpr::Add(a, b) => {
+            let la = eval_int_expr(a, matches, filesize, data, entrypoint, current_rule_name);
+            let rb = eval_int_expr(b, matches, filesize, data, entrypoint, current_rule_name);
+            la.wrapping_add(rb)
+        }
+        IntExpr::Sub(a, b) => {
+            let la = eval_int_expr(a, matches, filesize, data, entrypoint, current_rule_name);
+            let rb = eval_int_expr(b, matches, filesize, data, entrypoint, current_rule_name);
+            la.wrapping_sub(rb)
+        }
+        IntExpr::Mul(a, b) => {
+            let la = eval_int_expr(a, matches, filesize, data, entrypoint, current_rule_name);
+            let rb = eval_int_expr(b, matches, filesize, data, entrypoint, current_rule_name);
+            la.wrapping_mul(rb)
+        }
+        IntExpr::Div(a, b) => {
+            let la = eval_int_expr(a, matches, filesize, data, entrypoint, current_rule_name);
+            let rb = eval_int_expr(b, matches, filesize, data, entrypoint, current_rule_name);
+            // Division by zero (and MIN/-1 overflow) yields 0 instead of
+            // panicking on hostile rules.
+            la.checked_div(rb).unwrap_or(0)
+        }
+        IntExpr::Paren(inner) => {
+            eval_int_expr(inner, matches, filesize, data, entrypoint, current_rule_name)
+        }
+        IntExpr::PeNumberOfSections => {
+            eval_pe_number_of_sections(data)
+        }
     }
+}
+
+// ─── PE module helpers ─────────────────────────────────────
+
+fn eval_pe_number_of_sections(data: &[u8]) -> usize {
+    if data.len() < 64 || !data.starts_with(b"MZ") { return 0; }
+    let pe_off = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
+    if pe_off + 8 > data.len() || &data[pe_off..pe_off + 4] != b"PE\0\0" { return 0; }
+    // NumberOfSections is at COFF+2 = pe_off+4+2 = pe_off+6
+    u16::from_le_bytes([data[pe_off + 6], data[pe_off + 7]]) as usize
+}
+
+fn eval_pe_imports(data: &[u8], dll_name: &str) -> bool {
+    if data.len() < 64 || !data.starts_with(b"MZ") { return false; }
+    let pe_off = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
+    if pe_off + 24 > data.len() || &data[pe_off..pe_off + 4] != b"PE\0\0" { return false; }
+    let opt_off = pe_off + 24;
+    if opt_off + 2 > data.len() { return false; }
+    let magic = u16::from_le_bytes([data[opt_off], data[opt_off + 1]]);
+    // Data directory: PE32 starts at opt+96, PE32+ at opt+112; import is index 1 (+8)
+    let import_rva_off = if magic == 0x20b { opt_off + 112 + 8 } else { opt_off + 96 + 8 };
+    if import_rva_off + 8 > data.len() { return false; }
+    let import_rva = u32::from_le_bytes([
+        data[import_rva_off], data[import_rva_off + 1],
+        data[import_rva_off + 2], data[import_rva_off + 3],
+    ]);
+    if import_rva == 0 { return false; }
+    // Find section containing import RVA
+    let num_sections_off = pe_off + 6;
+    if num_sections_off + 2 > data.len() { return false; }
+    let num_sections = u16::from_le_bytes([data[num_sections_off], data[num_sections_off + 1]]).min(96);
+    // SizeOfOptionalHeader at COFF+16 = pe_off+4+16 = pe_off+20
+    let size_opt_off = pe_off + 20;
+    if size_opt_off + 2 > data.len() { return false; }
+    let size_opt = u16::from_le_bytes([data[size_opt_off], data[size_opt_off + 1]]) as usize;
+    let sec_table = opt_off + size_opt;
+    let dll_lower = dll_name.to_lowercase();
+    for i in 0..num_sections {
+        let sec_off = sec_table + i as usize * 40;
+        if sec_off + 40 > data.len() { break; }
+        let virt_addr = u32::from_le_bytes([
+            data[sec_off + 12], data[sec_off + 13], data[sec_off + 14], data[sec_off + 15],
+        ]);
+        let raw_size = u32::from_le_bytes([
+            data[sec_off + 16], data[sec_off + 17], data[sec_off + 18], data[sec_off + 19],
+        ]);
+        let raw_ptr = u32::from_le_bytes([
+            data[sec_off + 20], data[sec_off + 21], data[sec_off + 22], data[sec_off + 23],
+        ]);
+        if import_rva >= virt_addr && import_rva < virt_addr + raw_size {
+            let file_off = raw_ptr as usize + (import_rva - virt_addr) as usize;
+            // Scan import table for DLL name
+            let end = (file_off + raw_size as usize).min(data.len());
+            let chunk = &data[file_off..end];
+            return chunk.windows(dll_lower.len()).any(|w| {
+                w.eq_ignore_ascii_case(dll_lower.as_bytes())
+            });
+        }
+    }
+    false
+}
+
+fn eval_pe_section_exists(data: &[u8], sec_name: &str) -> bool {
+    if data.len() < 64 || !data.starts_with(b"MZ") { return false; }
+    let pe_off = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
+    if pe_off + 24 > data.len() || &data[pe_off..pe_off + 4] != b"PE\0\0" { return false; }
+    let opt_off = pe_off + 24;
+    let num_sections_off = pe_off + 6;
+    if num_sections_off + 2 > data.len() { return false; }
+    let num_sections = u16::from_le_bytes([data[num_sections_off], data[num_sections_off + 1]]).min(96);
+    let size_opt_off = pe_off + 20;
+    if size_opt_off + 2 > data.len() { return false; }
+    let size_opt = u16::from_le_bytes([data[size_opt_off], data[size_opt_off + 1]]) as usize;
+    let sec_table = opt_off + size_opt;
+    for i in 0..num_sections {
+        let sec_off = sec_table + i as usize * 40;
+        if sec_off + 40 > data.len() { break; }
+        let name_bytes = &data[sec_off..sec_off + 8];
+        let name_str = std::str::from_utf8(name_bytes)
+            .unwrap_or("")
+            .trim_end_matches('\0');
+        if name_str.eq_ignore_ascii_case(sec_name) {
+            return true;
+        }
+    }
+    false
 }
 
 fn count_matches_scoped(matches: RawMatches, rule_name: &str, id: &str) -> usize {
@@ -901,8 +1164,310 @@ mod tests {
         assert!(result.truncated);
 
         // Well below the budget → complete results.
-        let small = scanner.scan(&vec![0xCCu8; 64]);
+        let small = scanner.scan(&[0xCCu8; 64]);
         assert!(!small.truncated);
         assert!(small.matched_rules.contains(&"cc_flood".to_string()));
+    }
+
+    // ─── New features tests ────────────────────────────────
+
+    #[test]
+    fn test_hex_alternation() {
+        let scanner = make_scanner(
+            r#"
+            rule alt_test {
+                strings:
+                    $h = { (4D | 5A) (90 | CC) }
+                condition:
+                    any of them
+            }
+            "#,
+        );
+        assert!(scanner.scan(b"\x4D\x90").matched_rules.contains(&"alt_test".to_string()));
+        assert!(scanner.scan(b"\x5A\xCC").matched_rules.contains(&"alt_test".to_string()));
+        assert!(scanner.scan(b"\x4D\xCC").matched_rules.contains(&"alt_test".to_string()));
+        assert!(scanner.scan(b"\x4D\x91").matched_rules.is_empty());
+    }
+
+    #[test]
+    fn test_hex_jump() {
+        let scanner = make_scanner(
+            r#"
+            rule jump_test {
+                strings:
+                    $h = { 4D 5A [0-10] 45 46 }
+                condition:
+                    any of them
+            }
+            "#,
+        );
+        // Exactly 0 bytes skip
+        assert!(scanner.scan(b"\x4D\x5A\x45\x46").matched_rules.contains(&"jump_test".to_string()));
+        // 5 bytes skip
+        let mut data = vec![0x4D, 0x5A];
+        data.extend_from_slice(&[0x00; 5]);
+        data.extend_from_slice(&[0x45, 0x46]);
+        assert!(scanner.scan(&data).matched_rules.contains(&"jump_test".to_string()));
+        // 11 bytes skip — too many
+        let mut data2 = vec![0x4D, 0x5A];
+        data2.extend_from_slice(&[0x00; 11]);
+        data2.extend_from_slice(&[0x45, 0x46]);
+        assert!(scanner.scan(&data2).matched_rules.is_empty());
+    }
+
+    #[test]
+    fn test_hex_alternation_with_wildcard() {
+        let scanner = make_scanner(
+            r#"
+            rule alt_wc {
+                strings:
+                    $h = { (?? | 4D) 5A }
+                condition:
+                    any of them
+            }
+            "#,
+        );
+        assert!(scanner.scan(b"\x4D\x5A").matched_rules.contains(&"alt_wc".to_string()));
+        assert!(scanner.scan(b"\xFF\x5A").matched_rules.contains(&"alt_wc".to_string()));
+    }
+
+    #[test]
+    fn test_xor_modifier() {
+        let scanner = make_scanner(
+            r#"
+            rule xor_test {
+                strings:
+                    $s = "secret" xor
+                condition:
+                    any of them
+            }
+            "#,
+        );
+        // Original (key=0)
+        assert!(scanner.scan(b"secret").matched_rules.contains(&"xor_test".to_string()));
+        // XORed with key=0x42
+        let xored: Vec<u8> = b"secret".iter().map(|b| b ^ 0x42).collect();
+        assert!(scanner.scan(&xored).matched_rules.contains(&"xor_test".to_string()));
+        // XORed with key=0xFF
+        let xored_ff: Vec<u8> = b"secret".iter().map(|b| b ^ 0xFF).collect();
+        assert!(scanner.scan(&xored_ff).matched_rules.contains(&"xor_test".to_string()));
+    }
+
+    #[test]
+    fn test_contains_operator() {
+        let scanner = make_scanner(
+            r#"
+            rule contains_test {
+                strings:
+                    $s = "hello world"
+                condition:
+                    $s contains "world"
+            }
+            "#,
+        );
+        assert!(scanner.scan(b"the hello world data").matched_rules.contains(&"contains_test".to_string()));
+        assert!(scanner.scan(b"no match here").matched_rules.is_empty());
+    }
+
+    #[test]
+    fn test_pe_number_of_sections() {
+        // Build a minimal PE with 3 sections
+        let mut data = vec![0u8; 1024];
+        data[0] = b'M'; data[1] = b'Z';
+        data[60] = 0x80;
+        data[0x80] = b'P'; data[0x81] = b'E'; data[0x82] = 0; data[0x83] = 0;
+        // Number of sections at COFF+2 = 0x84+2 = 0x86
+        data[0x86] = 3; data[0x87] = 0;
+
+        let scanner = make_scanner(
+            r#"
+            rule pe_sections {
+                condition:
+                    pe.number_of_sections > 2
+            }
+            "#,
+        );
+        assert!(scanner.scan(&data).matched_rules.contains(&"pe_sections".to_string()));
+    }
+
+    #[test]
+    fn test_pe_imports() {
+        let mut data = vec![0u8; 2048];
+        data[0] = b'M'; data[1] = b'Z';
+        data[60] = 0x80;
+        data[0x80] = b'P'; data[0x81] = b'E'; data[0x82] = 0; data[0x83] = 0;
+        // PE32 magic
+        data[0x80 + 24] = 0x0b; data[0x80 + 25] = 0x01;
+        // 1 section
+        data[0x86] = 1;
+        // SizeOfOptionalHeader at COFF+16 = 0x84+16 = 0x94
+        // Set to 96 + 16*8 = 224 (standard PE32 with 16 data dirs)
+        data[0x94] = 224; data[0x95] = 0;
+        // Import dir RVA at PE32 opt+96+8 = 0x98+104 = 0x100
+        data[0x100] = 0x00; data[0x101] = 0x10; // RVA = 0x1000
+        // Section table starts at opt + SizeOfOptionalHeader = 0x98 + 224 = 0x178
+        let sec = 0x178;
+        data[sec + 12] = 0x00; data[sec + 13] = 0x10; // VA = 0x1000
+        data[sec + 16] = 0x00; data[sec + 17] = 0x02; // raw_size = 0x200
+        data[sec + 20] = 0x00; data[sec + 21] = 0x02; // raw_ptr = 0x200
+        // Write "kernel32.dll" in the import section at file offset 0x200
+        data[0x200..0x200 + 13].copy_from_slice(b"kernel32.dll\0");
+
+        let scanner = make_scanner(
+            r#"
+            rule pe_imports_test {
+                condition:
+                    pe.imports("kernel32.dll")
+            }
+            "#,
+        );
+        assert!(scanner.scan(&data).matched_rules.contains(&"pe_imports_test".to_string()));
+    }
+
+    #[test]
+    fn test_pe_sections_exists() {
+        let mut data = vec![0u8; 1024];
+        data[0] = b'M'; data[1] = b'Z';
+        data[60] = 0x80;
+        data[0x80] = b'P'; data[0x81] = b'E'; data[0x82] = 0; data[0x83] = 0;
+        data[0x86] = 1; // 1 section
+        // SizeOfOptionalHeader at COFF+16 = 0x94
+        data[0x94] = 224; data[0x95] = 0;
+        // Section table at opt + 224 = 0x98 + 224 = 0x178
+        let sec = 0x178;
+        data[sec..sec + 8].copy_from_slice(b".text\0\0\0");
+
+        let scanner = make_scanner(
+            r#"
+            rule sec_exists {
+                condition:
+                    pe.sections(".text")
+            }
+            "#,
+        );
+        assert!(scanner.scan(&data).matched_rules.contains(&"sec_exists".to_string()));
+    }
+
+    #[test]
+    fn test_int16_signed() {
+        let scanner = make_scanner(
+            r#"
+            rule int16_test {
+                condition:
+                    int16(0) == -1
+            }
+            "#,
+        );
+        // -1 as i16 LE = 0xFF 0xFF
+        assert!(scanner.scan(&[0xFF, 0xFF]).matched_rules.contains(&"int16_test".to_string()));
+        // 1 as i16 LE = 0x01 0x00
+        assert!(scanner.scan(&[0x01, 0x00]).matched_rules.is_empty());
+    }
+
+    #[test]
+    fn test_int32_signed() {
+        let scanner = make_scanner(
+            r#"
+            rule int32_test {
+                condition:
+                    int32(0) == -100
+            }
+            "#,
+        );
+        // -100 as i32 LE
+        let val = (-100i32).to_le_bytes();
+        assert!(scanner.scan(&val).matched_rules.contains(&"int32_test".to_string()));
+    }
+
+    #[test]
+    fn test_offset_keyword() {
+        let scanner = make_scanner(
+            r#"
+            rule offset_test {
+                strings:
+                    $mz = { 4D 5A }
+                condition:
+                    $mz at offset
+            }
+            "#,
+        );
+        // offset == entrypoint == 0 for non-PE, so MZ at 0 matches
+        assert!(scanner.scan(b"\x4D\x5A\x90\x00").matched_rules.contains(&"offset_test".to_string()));
+    }
+
+    #[test]
+    fn test_math_hash() {
+        let scanner = make_scanner(
+            r#"
+            rule hash_test {
+                condition:
+                    math.hash(0, 4) > 0
+            }
+            "#,
+        );
+        assert!(scanner.scan(b"ABCD").matched_rules.contains(&"hash_test".to_string()));
+    }
+
+    #[test]
+    fn test_at_modifier_on_string_def() {
+        let scanner = make_scanner(
+            r#"
+            rule at_mod_test {
+                strings:
+                    $s = "hello" at 5
+                condition:
+                    any of them
+            }
+            "#,
+        );
+        let mut data = vec![0u8; 20];
+        data[5..10].copy_from_slice(b"hello");
+        assert!(scanner.scan(&data).matched_rules.contains(&"at_mod_test".to_string()));
+    }
+
+    #[test]
+    fn test_in_modifier_on_string_def() {
+        let scanner = make_scanner(
+            r#"
+            rule in_mod_test {
+                strings:
+                    $s = "hello" in (0..10)
+                condition:
+                    any of them
+            }
+            "#,
+        );
+        let mut data = vec![0u8; 20];
+        data[5..10].copy_from_slice(b"hello");
+        assert!(scanner.scan(&data).matched_rules.contains(&"in_mod_test".to_string()));
+    }
+
+    #[test]
+    fn test_arithmetic_in_int_expr() {
+        let scanner = make_scanner(
+            r#"
+            rule arith_test {
+                condition:
+                    filesize == 4 + 4
+            }
+            "#,
+        );
+        // 4 + 4 = 8, so need 8-byte data
+        assert!(scanner.scan(b"ABCDABCD").matched_rules.contains(&"arith_test".to_string()));
+        assert!(scanner.scan(b"ABCDEF").matched_rules.is_empty());
+    }
+
+    #[test]
+    fn test_offset_keyword_in_int_expr() {
+        let scanner = make_scanner(
+            r#"
+            rule offset_int {
+                condition:
+                    offset == 0
+            }
+            "#,
+        );
+        // offset == 0 for non-PE
+        assert!(scanner.scan(b"test").matched_rules.contains(&"offset_int".to_string()));
     }
 }

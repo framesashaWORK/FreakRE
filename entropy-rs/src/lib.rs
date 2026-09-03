@@ -283,6 +283,9 @@ pub fn sections_entropy<'a>(
 /// `window_size > 0 && step > 0 && data_len >= window_size`.
 #[inline]
 fn window_offsets(data_len: usize, window_size: usize, step: usize) -> Vec<usize> {
+    if window_size == 0 || step == 0 || data_len < window_size {
+        return Vec::new();
+    }
     let last_start = data_len - window_size;
 
     // Stride-aligned starts plus a single tail window when the stride skips
@@ -301,6 +304,11 @@ pub fn sliding_window_entropy_batched(
 ) -> Vec<(usize, EntropyResult)> {
     let valid = window_size > 0 && step > 0 && data.len() >= window_size;
     if !valid {
+        return Vec::new();
+    }
+
+    // Guard against usize overflow in index arithmetic.
+    if window_size.checked_add(data.len()).is_none() {
         return Vec::new();
     }
 
@@ -324,7 +332,7 @@ pub fn sliding_window_entropy_batched(
                 let out = &data[prev_start..offset];
                 let inp = &data[prev_start + window_size..offset + window_size];
                 for &byte in out {
-                    freq[byte as usize] -= 1;
+                    freq[byte as usize] = freq[byte as usize].saturating_sub(1);
                 }
                 for &byte in inp {
                     freq[byte as usize] += 1;
@@ -673,6 +681,11 @@ pub fn classify_windows(data: &[u8], window_size: usize, step: usize) -> Vec<(us
         return Vec::new();
     }
 
+    // Guard against usize overflow in index arithmetic.
+    if window_size.checked_add(data.len()).is_none() {
+        return Vec::new();
+    }
+
     let offsets = window_offsets(data.len(), window_size, step);
 
     // Initial histogram + printable count for the first window [0, window_size).
@@ -696,9 +709,9 @@ pub fn classify_windows(data: &[u8], window_size: usize, step: usize) -> Vec<(us
                 let out = &data[prev_start..offset];
                 let inp = &data[prev_start + window_size..offset + window_size];
                 for &byte in out {
-                    freq[byte as usize] -= 1;
+                    freq[byte as usize] = freq[byte as usize].saturating_sub(1);
                     if is_printable_byte(byte) {
-                        printable -= 1;
+                        printable = printable.saturating_sub(1);
                     }
                 }
                 for &byte in inp {
@@ -820,7 +833,7 @@ mod tests {
     #[test]
     fn sliding_window_covers_buffer_tail_when_step_does_not_divide() {
         let mut data = vec![0u8; 744]; // low-entropy head
-        data.extend(std::iter::repeat(0x5Au8).take(256)); // distinct constant tail
+        data.extend(std::iter::repeat_n(0x5Au8, 256)); // distinct constant tail
         let window = 256;
         let step = 300;
 

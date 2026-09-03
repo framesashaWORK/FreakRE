@@ -29,6 +29,7 @@ fn count_stmts(stmts: &[Stmt]) -> usize {
         .sum()
 }
 
+#[allow(dead_code)] // probe helper, kept for manual debugging sessions
 fn has_call(stmts: &[Stmt]) -> bool {
     let mut found = false;
     for s in stmts {

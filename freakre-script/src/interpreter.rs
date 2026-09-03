@@ -15,6 +15,10 @@ pub enum Value {
     Str(String),
     Table(Vec<(Value, Value)>),
     Func(FuncDef),
+    /// Reference to a host builtin by name (e.g. a bare `print` in `{f = print}`).
+    /// Calling it dispatches exactly like the named builtin, including the
+    /// capability check — storing it never smuggles a denied API past the sandbox.
+    Builtin(&'static str),
 }
 
 #[derive(Debug, Clone)]
@@ -52,7 +56,7 @@ impl Value {
             Value::Number(_) => "number",
             Value::Str(_) => "string",
             Value::Table(_) => "table",
-            Value::Func(_) => "function",
+            Value::Func(_) | Value::Builtin(_) => "function",
         }
     }
 }
@@ -66,7 +70,7 @@ impl core::fmt::Display for Value {
             Value::Number(n) => write!(f, "{}", n),
             Value::Str(s) => write!(f, "{}", s),
             Value::Table(_) => write!(f, "<table>"),
-            Value::Func(_) => write!(f, "<function>"),
+            Value::Func(_) | Value::Builtin(_) => write!(f, "<function>"),
         }
     }
 }
@@ -439,9 +443,23 @@ impl Interpreter {
                 }
                 Ok(Value::Str(s.clone()))
             }
-            Expr::Ident(name) => self
-                .lookup(name)
-                .ok_or_else(|| ScriptError::UndefinedVariable(name.clone())),
+            Expr::Ident(name) => match self.lookup(name) {
+                Some(v) => Ok(v),
+                // Bare builtin reference (`{f = print}`): a first-class
+                // function value, still gated by capabilities so a denied
+                // API cannot be smuggled into a table and called later.
+                None if HOST_BUILTINS.contains(&name.as_str()) => {
+                    if !self.caps.can_call(name) {
+                        return Err(ScriptError::CapabilityDenied(name.clone()));
+                    }
+                    let idx = HOST_BUILTINS
+                        .iter()
+                        .position(|b| *b == name.as_str())
+                        .expect("name verified against HOST_BUILTINS above");
+                    Ok(Value::Builtin(HOST_BUILTINS[idx]))
+                }
+                None => Err(ScriptError::UndefinedVariable(name.clone())),
+            },
             Expr::BinOp { left, op, right } => {
                 // Short-circuit for and/or
                 if *op == BinOp::And {
@@ -490,6 +508,12 @@ impl Interpreter {
                 let callee = match func.as_ref() {
                     Expr::Ident(name) => match self.lookup(name) {
                         Some(Value::Func(fdef)) => Callee::Func(fdef),
+                        Some(Value::Builtin(b)) => {
+                            if !self.caps.can_call(b) {
+                                return Err(ScriptError::CapabilityDenied(b.to_string()));
+                            }
+                            Callee::Builtin(b)
+                        }
                         Some(_) => {
                             return Err(ScriptError::TypeError("attempt to call non-function".into()));
                         }
@@ -509,6 +533,12 @@ impl Interpreter {
                     },
                     other => match self.eval_expr(other)? {
                         Value::Func(fdef) => Callee::Func(fdef),
+                        Value::Builtin(b) => {
+                            if !self.caps.can_call(b) {
+                                return Err(ScriptError::CapabilityDenied(b.to_string()));
+                            }
+                            Callee::Builtin(b)
+                        }
                         _ => {
                             return Err(ScriptError::TypeError("attempt to call non-function".into()));
                         }

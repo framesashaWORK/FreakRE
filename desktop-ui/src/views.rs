@@ -160,18 +160,19 @@ pub fn disassembly_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 
         for inst in &instructions {
             // Resolve a call/jump target so we can annotate it inline.
+            // Prefer the pre-resolved branch_target, fall back to Imm operand.
             let target_addr = if matches!(
                 inst.kind,
                 InstructionKind::Call
                     | InstructionKind::ConditionalBranch
                     | InstructionKind::UnconditionalJump
             ) {
-                inst.operand_list
-                    .iter()
-                    .find_map(|o| match o {
+                inst.branch_target.or_else(|| {
+                    inst.operand_list.iter().find_map(|o| match o {
                         Operand::Imm(v) => Some(*v as u64),
                         _ => None,
                     })
+                })
             } else {
                 None
             };
@@ -187,14 +188,16 @@ pub fn disassembly_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                         .monospace(),
                 );
 
-                // Bytes from original data (dimmed)
-                let inst_start = inst.address as usize;
-                let inst_end = (inst_start + inst.size).min(data.len());
-                let inst_bytes = &data[inst_start..inst_end];
-                let bytes_str: String = inst_bytes.iter()
-                    .take(8)
-                    .map(|b| format!("{:02X} ", b))
-                    .collect();
+                // Bytes: prefer embedded bytes, fall back to data slice.
+                let bytes_str: String = if !inst.bytes.is_empty() {
+                    inst.bytes.iter().take(8).map(|b| format!("{:02X} ", b)).collect()
+                } else {
+                    let inst_start = inst.address as usize;
+                    let inst_end = (inst_start + inst.size).min(data.len());
+                    data.get(inst_start..inst_end).map(|sb| {
+                        sb.iter().take(8).map(|b| format!("{:02X} ", b)).collect()
+                    }).unwrap_or_default()
+                };
                 ui.label(egui::RichText::new(format!("{:<24}", bytes_str))
                     .color(c.text_secondary).size(fs).monospace());
 

@@ -1,0 +1,8 @@
+[package]
+name = "firmware-analyzer"
+version = "0.1.0"
+edition = "2021"
+description = "UEFI / BIOS firmware analyzer for FreakRE (FVH, FFS, GPT, MBR, embedded PE32)"
+
+[dependencies]
+serde = { workspace = true }

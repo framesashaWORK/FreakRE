@@ -172,6 +172,23 @@ impl<'a> Parser<'a> {
         Ok(self.input[start..start + len].to_string())
     }
 
+    fn read_quoted_string(&mut self) -> Result<String> {
+        self.expect_char('"')?;
+        let start = self.pos;
+        loop {
+            if self.at_end() {
+                return Err(ParseError::UnexpectedEof);
+            }
+            let c = self.peek_char().unwrap();
+            if c == '"' {
+                let val = self.input[start..self.pos].to_string();
+                self.advance(1);
+                return Ok(val);
+            }
+            self.advance(c.len_utf8());
+        }
+    }
+
     fn read_string_identifier(&mut self) -> Result<String> {
         self.skip_ws();
         if !self.remaining().starts_with('$') {
@@ -369,6 +386,54 @@ impl<'a> Parser<'a> {
     fn parse_hex_token(&mut self) -> Result<HexToken> {
         self.skip_ws();
         let rest = self.remaining();
+
+        // Alternation: ( token | token | ... )
+        if rest.starts_with('(') {
+            self.advance(1);
+            let mut alternatives = Vec::new();
+            loop {
+                self.skip_ws();
+                if self.peek_char() == Some(')') {
+                    self.advance(1);
+                    break;
+                }
+                let token = self.parse_hex_token()?;
+                alternatives.push(token);
+                self.skip_ws();
+                if self.peek_char() == Some('|') {
+                    self.advance(1);
+                }
+            }
+            if alternatives.is_empty() {
+                return Err(ParseError::InvalidHex(self.pos, "empty alternation".into()));
+            }
+            return Ok(HexToken::Alternation(alternatives));
+        }
+
+        // Jump: [N-M] or [N] or [N-] (unbounded)
+        if rest.starts_with('[') {
+            self.advance(1);
+            self.skip_ws();
+            let min = self.read_usize()?;
+            self.skip_ws();
+            let max = if self.peek_char() == Some('-') {
+                self.advance(1);
+                self.skip_ws();
+                if self.peek_char() == Some(']') {
+                    // [N-] means N to unbounded (use usize::MAX as sentinel)
+                    usize::MAX
+                } else {
+                    self.read_usize()?
+                }
+            } else {
+                min // [N] means exactly N
+            };
+            self.skip_ws();
+            self.expect_char(']')?;
+            return Ok(HexToken::Jump { min, max });
+        }
+
+        // Regular hex tokens
         if rest.len() < 2 {
             return Err(ParseError::InvalidHex(self.pos, "incomplete hex byte".into()));
         }
@@ -433,6 +498,26 @@ impl<'a> Parser<'a> {
                 "wide" => mods.wide = true,
                 "ascii" => mods.ascii = true,
                 "fullword" => mods.fullword = true,
+                "xor" => mods.xor = true,
+                "at" => {
+                    self.advance(word_len);
+                    self.skip_ws();
+                    mods.at = Some(self.read_usize()?);
+                    continue;
+                }
+                "in" => {
+                    self.advance(word_len);
+                    self.skip_ws();
+                    self.expect_char('(')?;
+                    let start = self.read_usize()?;
+                    self.skip_ws();
+                    self.expect_char('.')?;
+                    self.expect_char('.')?;
+                    let end = self.read_usize()?;
+                    self.expect_char(')')?;
+                    mods.range = Some((start, end));
+                    continue;
+                }
                 // Section keywords legitimately follow a modifier list.
                 "condition" | "strings" => break,
                 unknown => {
@@ -608,28 +693,49 @@ impl<'a> Parser<'a> {
         if self.peek_char() == Some('$') {
             let id = self.read_string_identifier()?;
             self.skip_ws();
-            if self.remaining().starts_with("at") {
-                self.advance(2);
+            if self.try_keyword("at") {
+                self.skip_ws();
+                // Check if next token is a number literal or an int expression
+                if self.peek_char().map(|c| c.is_ascii_digit()).unwrap_or(false)
+                    || self.peek_char() == Some('#')
+                    || self.peek_char() == Some('$')
+                    || self.peek_char() == Some('@')
+                    || self.peek_char() == Some('u')
+                    || self.peek_char() == Some('i')
+                    || self.peek_char() == Some('o')
+                {
+                    // Variable offset: $s at @s[1] or $s at uint16(0x100)
+                    let offset_expr = self.parse_int_expr()?;
+                    return Ok(Condition::AtExpr(id, Box::new(offset_expr)));
+                }
                 let offset = self.read_usize()?;
                 return Ok(Condition::At(id, offset));
             }
-            if self.remaining().starts_with("in") {
-                self.advance(2);
+            if self.try_keyword("in") {
                 self.expect_char('(')?;
-                let start = self.read_usize()?;
+                let start = self.parse_int_expr()?;
                 self.skip_ws();
                 self.expect_char('.')?;
                 self.expect_char('.')?;
-                let end = self.read_usize()?;
+                let end = self.parse_int_expr()?;
                 self.expect_char(')')?;
-                return Ok(Condition::In(id, start, end));
+                return Ok(Condition::InExpr(id, Box::new(start), Box::new(end)));
+            }
+            if self.try_keyword("contains") {
+                self.skip_ws();
+                let substr = self.read_quoted_string()?;
+                return Ok(Condition::Contains(id, substr));
+            }
+            if self.try_keyword("istype") {
+                self.skip_ws();
+                let type_name = self.read_quoted_string()?;
+                return Ok(Condition::IsType(id, type_name));
             }
             return Ok(Condition::StringMatch(id));
         }
 
         // filesize comparison
-        if self.remaining().starts_with("filesize") {
-            self.advance(8);
+        if self.try_keyword("filesize") {
             self.skip_ws();
             if let Some(op) = self.try_parse_comp_op() {
                 let rhs = self.parse_int_expr()?;
@@ -648,6 +754,9 @@ impl<'a> Parser<'a> {
         if self.remaining().starts_with("uint8(")
             || self.remaining().starts_with("uint16(")
             || self.remaining().starts_with("uint32(")
+            || self.remaining().starts_with("int8(")
+            || self.remaining().starts_with("int16(")
+            || self.remaining().starts_with("int32(")
         {
             let lhs = self.parse_int_expr()?;
             self.skip_ws();
@@ -657,7 +766,71 @@ impl<'a> Parser<'a> {
             }
             return Err(ParseError::Syntax(
                 self.pos,
-                "uintN(...) must be used in comparison".into(),
+                "uintN/intN(...) must be used in comparison".into(),
+            ));
+        }
+
+        // pe.number_of_sections
+        if self.remaining().starts_with("pe.") {
+            self.advance(3);
+            if self.try_keyword("number_of_sections") {
+                self.skip_ws();
+                if let Some(op) = self.try_parse_comp_op() {
+                    let rhs = self.parse_int_expr()?;
+                    return Ok(Condition::PeNumberSections(op, Box::new(rhs)));
+                }
+                return Err(ParseError::Syntax(
+                    self.pos,
+                    "pe.number_of_sections must be used in comparison".into(),
+                ));
+            }
+            if self.try_keyword("imports") {
+                self.skip_ws();
+                self.expect_char('(')?;
+                let dll_name = self.read_quoted_string()?;
+                self.expect_char(')')?;
+                return Ok(Condition::PeImports(dll_name));
+            }
+            if self.try_keyword("sections") {
+                self.skip_ws();
+                self.expect_char('(')?;
+                let sec_name = self.read_quoted_string()?;
+                self.expect_char(')')?;
+                return Ok(Condition::PeSections(sec_name));
+            }
+            return Err(ParseError::Syntax(
+                self.pos,
+                format!("unknown pe. property: {}", self.peek_token_preview()),
+            ));
+        }
+
+        // math.hash(offset, length)
+        if self.remaining().starts_with("math.") {
+            self.advance(5);
+            if self.try_keyword("hash") {
+                self.skip_ws();
+                self.expect_char('(')?;
+                let offset_expr = self.parse_int_expr()?;
+                self.skip_ws();
+                self.expect_char(',')?;
+                let len_expr = self.parse_int_expr()?;
+                self.expect_char(')')?;
+                let lhs = IntExpr::MathHash(Box::new(offset_expr), Box::new(len_expr));
+                self.skip_ws();
+                if let Some(op) = self.try_parse_comp_op() {
+                    let rhs = self.parse_int_expr()?;
+                    return Ok(Condition::IntComp(op, Box::new(lhs), Box::new(rhs)));
+                }
+                // Standalone: math.hash(0, 4) means > 0 implicitly
+                return Ok(Condition::IntComp(
+                    IntCompOp::Gt,
+                    Box::new(lhs),
+                    Box::new(IntExpr::Literal(0)),
+                ));
+            }
+            return Err(ParseError::Syntax(
+                self.pos,
+                format!("unknown math. function: {}", self.peek_token_preview()),
             ));
         }
 
@@ -675,6 +848,23 @@ impl<'a> Parser<'a> {
             return Err(ParseError::Syntax(
                 self.pos,
                 "entrypoint must be used in comparison".into(),
+            ));
+        }
+
+        // `offset` keyword (alias for entrypoint)
+        if self.try_keyword("offset") {
+            self.skip_ws();
+            if let Some(op) = self.try_parse_comp_op() {
+                let rhs = self.parse_int_expr()?;
+                return Ok(Condition::IntComp(
+                    op,
+                    Box::new(IntExpr::Offset),
+                    Box::new(rhs),
+                ));
+            }
+            return Err(ParseError::Syntax(
+                self.pos,
+                "offset must be used in comparison".into(),
             ));
         }
 
@@ -760,47 +950,150 @@ impl<'a> Parser<'a> {
         }
         self.skip_ws();
 
-        // Parenthesized integer expression
+        // Parenthesized integer expression — early return
         if self.peek_char() == Some('(') {
             self.advance(1);
             let inner = self.parse_int_expr_inner(depth + 1)?;
             self.expect_char(')')?;
-            return Ok(inner);
+            let mut left = IntExpr::Paren(Box::new(inner));
+            self.maybe_parse_bin_ops(&mut left, depth)?;
+            return Ok(left);
         }
 
-        if self.peek_char() == Some('#') {
+        // String match offset: @s or @s[N] — early return
+        if self.peek_char() == Some('@') {
+            self.advance(1);
+            let id = self.read_string_identifier()?;
+            self.skip_ws();
+            if self.peek_char() == Some('[') {
+                self.advance(1);
+                let _index = self.read_usize()?;
+                self.expect_char(']')?;
+            }
+            return Ok(IntExpr::MatchOffset(id));
+        }
+
+        let mut left = if self.peek_char() == Some('#') {
             let id = self.read_count_identifier()?;
-            Ok(IntExpr::Count(id))
+            IntExpr::Count(id)
         } else if self.remaining().starts_with("filesize") {
             self.advance(8);
-            Ok(IntExpr::Filesize)
+            IntExpr::Filesize
         } else if self.remaining().starts_with("entrypoint") {
             self.advance(10);
-            Ok(IntExpr::Entrypoint)
+            IntExpr::Entrypoint
+        } else if self.try_keyword("offset") {
+            IntExpr::Offset
         } else if self.remaining().starts_with("uint8(") {
             self.advance(6);
             let offset = self.parse_int_expr_inner(depth + 1)?;
             self.expect_char(')')?;
-            Ok(IntExpr::Uint8(Box::new(offset)))
+            IntExpr::Uint8(Box::new(offset))
         } else if self.remaining().starts_with("uint16(") {
             self.advance(7);
             let offset = self.parse_int_expr_inner(depth + 1)?;
             self.expect_char(')')?;
-            Ok(IntExpr::Uint16(Box::new(offset)))
+            IntExpr::Uint16(Box::new(offset))
         } else if self.remaining().starts_with("uint32(") {
             self.advance(7);
             let offset = self.parse_int_expr_inner(depth + 1)?;
             self.expect_char(')')?;
-            Ok(IntExpr::Uint32(Box::new(offset)))
+            IntExpr::Uint32(Box::new(offset))
+        } else if self.remaining().starts_with("int8(") {
+            self.advance(5);
+            let offset = self.parse_int_expr_inner(depth + 1)?;
+            self.expect_char(')')?;
+            IntExpr::Int8(Box::new(offset))
+        } else if self.remaining().starts_with("int16(") {
+            self.advance(6);
+            let offset = self.parse_int_expr_inner(depth + 1)?;
+            self.expect_char(')')?;
+            IntExpr::Int16(Box::new(offset))
+        } else if self.remaining().starts_with("int32(") {
+            self.advance(6);
+            let offset = self.parse_int_expr_inner(depth + 1)?;
+            self.expect_char(')')?;
+            IntExpr::Int32(Box::new(offset))
+        } else if self.remaining().starts_with("math.hash(") {
+            self.advance(10);
+            let offset_expr = self.parse_int_expr_inner(depth + 1)?;
+            self.skip_ws();
+            self.expect_char(',')?;
+            let len_expr = self.parse_int_expr_inner(depth + 1)?;
+            self.expect_char(')')?;
+            IntExpr::MathHash(Box::new(offset_expr), Box::new(len_expr))
         } else if self.peek_char().map(|c| c.is_ascii_digit()).unwrap_or(false) {
             let n = self.read_usize()?;
-            Ok(IntExpr::Literal(n))
+            self.skip_ws();
+            let rest = self.remaining();
+            if rest.starts_with("KB") || rest.starts_with("kb") {
+                self.advance(2);
+                IntExpr::Literal(n * 1024)
+            } else if rest.starts_with("MB") || rest.starts_with("mb") {
+                self.advance(2);
+                IntExpr::Literal(n * 1024 * 1024)
+            } else if rest.starts_with("GB") || rest.starts_with("gb") {
+                self.advance(2);
+                IntExpr::Literal(n * 1024 * 1024 * 1024)
+            } else {
+                IntExpr::Literal(n)
+            }
+        } else if self.peek_char() == Some('-') {
+            self.advance(1);
+            let inner = self.parse_int_expr_inner(depth + 1)?;
+            IntExpr::Sub(Box::new(IntExpr::Literal(0)), Box::new(inner))
         } else {
-            Err(ParseError::Syntax(
+            return Err(ParseError::Syntax(
                 self.pos,
                 format!("expected integer expression, got '{}'", self.peek_token_preview()),
-            ))
+            ));
+        };
+
+        self.maybe_parse_bin_ops(&mut left, depth)?;
+        Ok(left)
+    }
+
+    fn maybe_parse_bin_ops(&mut self, left: &mut IntExpr, depth: usize) -> Result<()> {
+        loop {
+            self.skip_ws();
+            let rest = self.remaining();
+            if rest.starts_with('+') {
+                self.advance(1);
+                let rhs = self.parse_int_expr_inner(depth + 1)?;
+                *left = IntExpr::Add(Box::new(left.clone()), Box::new(rhs));
+            } else if let Some(after_minus) = rest.strip_prefix('-') {
+                let first_non_ws = after_minus.trim_start();
+                if first_non_ws.starts_with(|c: char| c.is_ascii_digit() || c == '(' || c == '$' || c == '#' || c == '@')
+                    || first_non_ws.starts_with("uint8")
+                    || first_non_ws.starts_with("uint16")
+                    || first_non_ws.starts_with("uint32")
+                    || first_non_ws.starts_with("int8")
+                    || first_non_ws.starts_with("int16")
+                    || first_non_ws.starts_with("int32")
+                    || first_non_ws.starts_with("filesize")
+                    || first_non_ws.starts_with("entrypoint")
+                    || first_non_ws.starts_with("offset")
+                    || first_non_ws.starts_with("math.")
+                {
+                    self.advance(1);
+                    let rhs = self.parse_int_expr_inner(depth + 1)?;
+                    *left = IntExpr::Sub(Box::new(left.clone()), Box::new(rhs));
+                } else {
+                    break;
+                }
+            } else if rest.starts_with('*') {
+                self.advance(1);
+                let rhs = self.parse_int_expr_inner(depth + 1)?;
+                *left = IntExpr::Mul(Box::new(left.clone()), Box::new(rhs));
+            } else if rest.starts_with('/') {
+                self.advance(1);
+                let rhs = self.parse_int_expr_inner(depth + 1)?;
+                *left = IntExpr::Div(Box::new(left.clone()), Box::new(rhs));
+            } else {
+                break;
+            }
         }
+        Ok(())
     }
 
     fn read_usize(&mut self) -> Result<usize> {
@@ -854,7 +1147,7 @@ impl<'a> Parser<'a> {
                 .ok_or_else(|| ParseError::Syntax(start, "size suffix overflow (MB)".into()))?;
         } else if rest_after.starts_with("GB") || rest_after.starts_with("gb") {
             self.advance(2);
-            val = val.checked_mul(1024usize.checked_mul(1024).unwrap().checked_mul(1024).unwrap())
+            val = val.checked_mul(1024 * 1024 * 1024)
                 .ok_or_else(|| ParseError::Syntax(start, "size suffix overflow (GB)".into()))?;
         }
 

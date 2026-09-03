@@ -526,21 +526,15 @@ fn expr_var_name(expr: &Expr) -> Option<String> {
 }
 
 fn infer_int_type(val: i64) -> Ty {
-    // Zero is by far the most common constant (NULL pointers, counters,
-    // zero-init). Sizing it as u8 pollutes declarations; use the machine word.
-    if val == 0 {
-        return Ty::u32();
-    }
-    if val >= 0 {
-        if val <= u8::MAX as i64 { Ty::u8() }
-        else if val <= u16::MAX as i64 { Ty::u16() }
-        else if val <= u32::MAX as i64 { Ty::u32() }
-        else { Ty::u64() }
+    // Default to the signed machine word so an integer literal never forces a
+    // narrow `uint8_t`/`uint16_t` type that would later demand casts whenever
+    // the same variable is used in a 32/64-bit context. Width is narrowed only
+    // when usage demands it (pointer derefs, struct fields, `PointerTo`
+    // constraints) — all of which are resolved after this seed.
+    if val >= i32::MIN as i64 && val <= i32::MAX as i64 {
+        Ty::i32()
     } else {
-        if val >= i8::MIN as i64 { Ty::i8() }
-        else if val >= i16::MIN as i64 { Ty::i16() }
-        else if val >= i32::MIN as i64 { Ty::i32() }
-        else { Ty::i64() }
+        Ty::i64()
     }
 }
 
@@ -619,11 +613,14 @@ mod tests {
 
     #[test]
     fn test_infer_int_type() {
-        assert_eq!(infer_int_type(0), Ty::u32());
-        assert_eq!(infer_int_type(255), Ty::u8());
-        assert_eq!(infer_int_type(256), Ty::u16());
-        assert_eq!(infer_int_type(-1), Ty::i8());
-        assert_eq!(infer_int_type(-129), Ty::i16());
+        // Literals seed the signed machine word; narrowing happens via usage.
+        assert_eq!(infer_int_type(0), Ty::i32());
+        assert_eq!(infer_int_type(255), Ty::i32());
+        assert_eq!(infer_int_type(256), Ty::i32());
+        assert_eq!(infer_int_type(-1), Ty::i32());
+        assert_eq!(infer_int_type(-129), Ty::i32());
+        assert_eq!(infer_int_type(0x1_0000_0000), Ty::i64());
+        assert_eq!(infer_int_type(-0x1_0000_0000), Ty::i64());
     }
 
     #[test]

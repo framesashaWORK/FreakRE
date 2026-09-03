@@ -77,18 +77,22 @@ struct ControlFlowStructurer<'a> {
     loops: Vec<LoopInfo>,
     switches: Vec<SwitchInfo>,
     try_catches: Vec<TryCatchRegion>,
-    /// Map from block в†’ loop whose header is that block.
+    /// Map from block → loop whose header is that block.
     loop_by_header: HashMap<BlockId, usize>,
-    /// Dominance frontiers (simplified).
-    dom_tree: HashMap<BlockId, Vec<BlockId>>,
+    /// Immediate dominator map: block → its idom (Cooper-Harvey-Kennedy).
+    idom: HashMap<BlockId, BlockId>,
     /// Every block id in the function (used to build out-of-loop boundary sets).
     all_blocks: HashSet<BlockId>,
+    /// Blocks targeted by a `goto` (discovered during the first structuring
+    /// pass). The second pass prepends a `Stmt::Label` at each such block's
+    /// emission site so the generated `goto bbN;` resolves to valid C.
+    goto_targets: std::cell::RefCell<HashSet<BlockId>>,
 }
 
 impl<'a> ControlFlowStructurer<'a> {
     fn new(func: &'a IrFunction) -> Self {
-        let dom_tree = compute_dominator_tree(func);
-        let loops = detect_and_classify_loops(func, &dom_tree);
+        let idom = freakre_ir::ssa::compute_dominators(func);
+        let loops = detect_and_classify_loops(func, &idom);
         let loop_by_header: HashMap<BlockId, usize> = loops
             .iter()
             .enumerate()
@@ -104,34 +108,66 @@ impl<'a> ControlFlowStructurer<'a> {
             switches,
             try_catches,
             loop_by_header,
-            dom_tree,
+            idom,
             all_blocks,
+            goto_targets: std::cell::RefCell::new(HashSet::new()),
         }
     }
 
     // в”Ђв”Ђ entry point в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
+    /// Emit a `goto` to `target` (an already-emitted block) and record the
+    /// target so the second structuring pass prepends a matching label at the
+    /// block's emission site.
+    fn emit_goto(&self, stmts: &mut Vec<Stmt>, target: BlockId) {
+        self.goto_targets.borrow_mut().insert(target);
+        stmts.push(Stmt::Goto {
+            label: format!("bb{}", target.0),
+        });
+    }
+
+    /// If `block_id` was discovered as a `goto` target during the first pass,
+    /// emit its `bbN:` label before its instructions so the jump resolves to a
+    /// valid, position-correct C label.
+    fn maybe_emit_label(&self, stmts: &mut Vec<Stmt>, block_id: BlockId) {
+        if self.goto_targets.borrow().contains(&block_id) {
+            stmts.push(Stmt::Label {
+                name: format!("bb{}", block_id.0),
+            });
+        }
+    }
+
     fn structure(&self, converter: &mut IrToAstConverter) -> Vec<Stmt> {
+        // Pass 1: discover every backward/visited jump target. A `goto` to a
+        // block is only recognised after that block has already been emitted,
+        // so we cannot prepend its label during a single forward pass. Running
+        // the structuring once (discarding output) records all targets; the
+        // second pass then emits the labels at the correct, earlier positions.
+        {
+            let mut ctx = StructContext::default();
+            let empty: HashSet<BlockId> = HashSet::new();
+            let mut probe = IrToAstConverter::new(self.func);
+            let _ = self.process_region(
+                self.func.entry_block,
+                None,
+                &mut probe,
+                &mut ctx,
+                0,
+                &empty,
+            );
+        }
+
+        // Pass 2: emit the structured AST, now with labels for goto targets.
         let mut ctx = StructContext::default();
         let empty: HashSet<BlockId> = HashSet::new();
-        let mut stmts = self.process_region(
+        self.process_region(
             self.func.entry_block,
             None, // no enclosing loop
             converter,
             &mut ctx,
             0,
             &empty,
-        );
-        // Goto targets that were already emitted before the goto appeared:
-        // a label cannot be inserted retroactively, so report explicitly
-        // instead of producing silently broken code.
-        for label in ctx.unresolved_gotos {
-            stmts.push(Stmt::Comment(format!(
-                "WARNING: unstructured backward jump to {}",
-                label
-            )));
-        }
-        stmts
+        )
     }
 
     // в”Ђв”Ђ region processor в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
@@ -179,11 +215,10 @@ impl<'a> ControlFlowStructurer<'a> {
                 if header_continue {
                     stmts.push(Stmt::Continue);
                 } else {
-                    // The target was already converted earlier in the output;
-                    // a backward goto cannot get a retroactive label.
-                    let label = format!("bb{}", block_id.0);
-                    ctx.unresolved_gotos.push(label.clone());
-                    stmts.push(Stmt::Goto { label });
+                    // Backward jump to an already-emitted block: emit a `goto`
+                    // whose target label is prepended when that block was
+                    // emitted (see `maybe_emit_label`), keeping the C valid.
+                    self.emit_goto(&mut stmts, block_id);
                 }
                 break;
             }
@@ -226,6 +261,10 @@ impl<'a> ControlFlowStructurer<'a> {
             // в”Ђв”Ђ Normal block в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
             ctx.visited.insert(block_id);
 
+            // A block that is the target of a backward `goto` needs a label so
+            // the generated jump resolves (otherwise the C would be dangling).
+            self.maybe_emit_label(&mut stmts, block_id);
+
             let block = match self.func.block(block_id) {
                 Some(b) => b,
                 None => break,
@@ -261,9 +300,7 @@ impl<'a> ControlFlowStructurer<'a> {
                         if is_loop_continue {
                             stmts.push(Stmt::Continue);
                         } else {
-                            let label = format!("bb{}", target.0);
-                            ctx.unresolved_gotos.push(label.clone());
-                            stmts.push(Stmt::Goto { label });
+                            self.emit_goto(&mut stmts, *target);
                         }
                         break;
                     }
@@ -974,7 +1011,7 @@ impl<'a> ControlFlowStructurer<'a> {
     // в”Ђв”Ђ Helpers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
     fn is_back_edge(&self, from: BlockId, to: BlockId) -> bool {
-        dominates(self.func, to, from) && from != to
+        dominates_with_idom(to, from, &self.idom) && from != to
     }
 
     /// Find the immediate post-dominator (merge point) of two branches.
@@ -1108,101 +1145,10 @@ impl<'a> ControlFlowStructurer<'a> {
 #[derive(Default)]
 struct StructContext {
     visited: HashSet<BlockId>,
-    /// Backward goto labels that could not get a retroactive insertion point.
-    unresolved_gotos: Vec<String>,
     /// Blocks whose non-terminator instructions were already emitted while
     /// structuring a break arm; the continuation must emit only the
     /// terminator (e.g. the shared loop-exit block's `return`).
     insts_emitted: HashSet<BlockId>,
-}
-
-// в”Ђв”Ђв”Ђ Dominance computation в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-fn compute_dominator_tree(func: &IrFunction) -> HashMap<BlockId, Vec<BlockId>> {
-    // Simple iterative dominator computation
-    let mut dom: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
-    let all_blocks: Vec<BlockId> = func.blocks.iter().map(|b| b.id).collect();
-    let all_set: HashSet<BlockId> = all_blocks.iter().copied().collect();
-
-    // Initialize: entry dominates only itself, others dominated by all
-    for &bid in &all_blocks {
-        if bid == func.entry_block {
-            let mut s = HashSet::new();
-            s.insert(bid);
-            dom.insert(bid, s);
-        } else {
-            dom.insert(bid, all_set.clone());
-        }
-    }
-
-    // Iterate until fixed point
-    let mut changed = true;
-    let mut iterations = 0;
-    while changed && iterations < 100 {
-        changed = false;
-        iterations += 1;
-        for &bid in &all_blocks {
-            if bid == func.entry_block {
-                continue;
-            }
-            let block = match func.block(bid) {
-                Some(b) => b,
-                None => continue,
-            };
-            let mut new_dom = all_set.clone();
-            for pred in &block.predecessors {
-                if let Some(pred_dom) = dom.get(pred) {
-                    new_dom = new_dom.intersection(pred_dom).copied().collect();
-                }
-            }
-            new_dom.insert(bid);
-            if let Some(old) = dom.get(&bid) {
-                if *old != new_dom {
-                    changed = true;
-                }
-            }
-            dom.insert(bid, new_dom);
-        }
-    }
-
-    // Build dominator tree: for each block, find its immediate dominator
-    let mut tree: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for &bid in &all_blocks {
-        tree.entry(bid).or_default();
-    }
-
-    for &bid in &all_blocks {
-        if bid == func.entry_block {
-            continue;
-        }
-        // Immediate dominator = the dominator closest to bid (other than bid itself)
-        let doms = match dom.get(&bid) {
-            Some(d) => d,
-            None => continue,
-        };
-        // Find the idom: the dominator that is dominated by all other dominators
-        let mut idom = None;
-        for &d in doms {
-            if d == bid {
-                continue;
-            }
-            let is_immediate = doms.iter().all(|&other| {
-                other == bid || other == d || {
-                    // d dominates other?
-                    dom.get(&other).is_some_and(|od| od.contains(&d))
-                }
-            });
-            if is_immediate {
-                idom = Some(d);
-                break;
-            }
-        }
-        if let Some(idom) = idom {
-            tree.entry(idom).or_default().push(bid);
-        }
-    }
-
-    tree
 }
 
 /// Whether `block` may be expanded during a scoped search (`None` = unscoped).
@@ -1261,28 +1207,28 @@ fn is_reachable_in(
 }
 
 /// Check if block `a` dominates block `b`.
-pub(crate) fn dominates(func: &IrFunction, a: BlockId, b: BlockId) -> bool {    if a == b {
+///
+/// Uses the immediate dominator map for O(depth) lookup when available,
+/// falls back to BFS from entry otherwise.
+pub(crate) fn dominates(func: &IrFunction, a: BlockId, b: BlockId) -> bool {
+    dominates_with_idom(a, b, &freakre_ir::ssa::compute_dominators(func))
+}
+
+/// Check if block `a` dominates block `b` using a precomputed idom map.
+pub(crate) fn dominates_with_idom(
+    a: BlockId,
+    b: BlockId,
+    idom: &HashMap<BlockId, BlockId>,
+) -> bool {
+    if a == b {
         return true;
     }
-    // BFS from entry avoiding `a`; if we reach `b`, then `a` does NOT dominate `b`
-    let mut visited = HashSet::new();
-    let mut queue = VecDeque::new();
-    queue.push_back(func.entry_block);
-    visited.insert(func.entry_block);
-
-    while let Some(current) = queue.pop_front() {
-        if current == b {
-            return false;
-        }
-        if current == a {
-            continue;
-        }
-        if let Some(block) = func.block(current) {
-            for succ in &block.successors {
-                if visited.insert(*succ) {
-                    queue.push_back(*succ);
-                }
-            }
+    // Walk b's dominator chain up to the entry
+    let mut cur = b;
+    while cur != a {
+        match idom.get(&cur) {
+            Some(&parent) if parent != cur => cur = parent,
+            _ => return false,
         }
     }
     true
@@ -1290,13 +1236,13 @@ pub(crate) fn dominates(func: &IrFunction, a: BlockId, b: BlockId) -> bool {    
 
 // в”Ђв”Ђв”Ђ Loop detection and classification в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
-fn detect_and_classify_loops(func: &IrFunction, _dom_tree: &HashMap<BlockId, Vec<BlockId>>) -> Vec<LoopInfo> {
+fn detect_and_classify_loops(func: &IrFunction, idom: &HashMap<BlockId, BlockId>) -> Vec<LoopInfo> {
     let mut loops: Vec<LoopInfo> = Vec::new();
 
     // Find all back edges
     for block in &func.blocks {
         for succ in &block.successors {
-            if dominates(func, *succ, block.id) {
+            if dominates_with_idom(*succ, block.id, idom) {
                 // Back edge: block в†’ succ (succ is loop header)
                 let header = *succ;
                 let latch = block.id;
@@ -1713,8 +1659,8 @@ fn detect_try_catch_regions(func: &IrFunction) -> Vec<TryCatchRegion> {
 
 /// Detect loops in the CFG (public API for external consumers).
 pub fn detect_loops(func: &IrFunction) -> Vec<super::LoopInfo> {
-    let dom_tree = compute_dominator_tree(func);
-    let loops = detect_and_classify_loops(func, &dom_tree);
+    let idom = freakre_ir::ssa::compute_dominators(func);
+    let loops = detect_and_classify_loops(func, &idom);
     loops
         .into_iter()
         .map(|l| super::LoopInfo {
@@ -1806,8 +1752,8 @@ mod tests {
 
         func.build_cfg();
 
-        let dom_tree = compute_dominator_tree(&func);
-        let loops = detect_and_classify_loops(&func, &dom_tree);
+        let idom = freakre_ir::ssa::compute_dominators(&func);
+        let loops = detect_and_classify_loops(&func, &idom);
 
         assert_eq!(loops.len(), 1);
         assert_eq!(loops[0].kind, LoopKind::While);
@@ -1835,8 +1781,8 @@ mod tests {
 
         func.build_cfg();
 
-        let dom_tree = compute_dominator_tree(&func);
-        let loops = detect_and_classify_loops(&func, &dom_tree);
+        let idom = freakre_ir::ssa::compute_dominators(&func);
+        let loops = detect_and_classify_loops(&func, &idom);
 
         assert_eq!(loops.len(), 1);
         assert_eq!(loops[0].kind, LoopKind::DoWhile);
@@ -2066,8 +2012,8 @@ mod tests {
         let _ = exit_block;
         func.build_cfg();
 
-        let dom_tree = compute_dominator_tree(&func);
-        let loops = detect_and_classify_loops(&func, &dom_tree);
+        let idom = freakre_ir::ssa::compute_dominators(&func);
+        let loops = detect_and_classify_loops(&func, &idom);
         assert_eq!(loops.len(), 1, "two latches to one header merge into one loop");
         assert!(loops[0].body_blocks.contains(&b1));
         assert!(loops[0].body_blocks.contains(&b2));
@@ -2238,9 +2184,9 @@ mod tests {
         func.push_inst(ret_block, IrInst::Return { value: None });
         func.build_cfg();
 
-        let dom_tree = compute_dominator_tree(&func);
+        let idom = freakre_ir::ssa::compute_dominators(&func);
         assert!(
-            detect_and_classify_loops(&func, &dom_tree).is_empty(),
+            detect_and_classify_loops(&func, &idom).is_empty(),
             "mutually reachable blocks without a dominating header must not be classified as a natural loop"
         );
 

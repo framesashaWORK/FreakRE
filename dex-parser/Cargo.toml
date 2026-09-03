@@ -6,3 +6,5 @@ description = "Lightweight DEX (Dalvik Executable) parser for FreakRE"
 
 [dependencies]
 serde = { workspace = true }
+adler = "1"
+sha1 = "0.10"

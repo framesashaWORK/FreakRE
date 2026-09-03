@@ -874,7 +874,7 @@ mod tests {
 
     // ── Common malware pack ──────────────────────────────────────────
 
-    fn finding<'a>(report: &'a BackdoorReport, rule: BackdoorRuleId) -> &'a BackdoorFinding {
+    fn finding(report: &BackdoorReport, rule: BackdoorRuleId) -> &BackdoorFinding {
         report
             .findings
             .iter()

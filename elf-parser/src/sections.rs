@@ -33,6 +33,8 @@ pub struct SectionHeader<'a> {
     pub offset: u64,
     /// Size in bytes.
     pub size: u64,
+    /// Link to associated section (e.g. string table for symbol tables).
+    pub sh_link: u32,
     /// Alignment requirement.
     pub addralign: u64,
     /// Zero-copy slice of section data from the file.
@@ -171,8 +173,15 @@ pub fn parse_section_headers_64<'a, const BE: bool>(
     let mut sections = Vec::with_capacity(sh_num as usize);
 
     for i in 0..sh_num as usize {
-        let base = sh_offset as usize + i * entry_size;
-        if base + entry_size > data.len() {
+        let Some(base) = i.checked_mul(entry_size)
+            .and_then(|o| (sh_offset as usize).checked_add(o))
+        else {
+            break;
+        };
+        let Some(end) = base.checked_add(entry_size) else {
+            break;
+        };
+        if end > data.len() {
             break;
         }
 
@@ -182,6 +191,7 @@ pub fn parse_section_headers_64<'a, const BE: bool>(
         let sh_addr = read_u64::<BE>(data, base + 16).unwrap_or(0);
         let sh_offset_val = read_u64::<BE>(data, base + 24).unwrap_or(0);
         let sh_size = read_u64::<BE>(data, base + 32).unwrap_or(0);
+        let sh_link = read_u32::<BE>(data, base + 40).unwrap_or(0);
         let sh_addralign = read_u64::<BE>(data, base + 48).unwrap_or(0);
 
         let flags = SectionFlags::from_bits_truncate(sh_flags_raw);
@@ -222,6 +232,7 @@ pub fn parse_section_headers_64<'a, const BE: bool>(
             addr: sh_addr,
             offset: sh_offset_val,
             size: sh_size,
+            sh_link,
             addralign: sh_addralign,
             data: sec_data,
         });
@@ -315,8 +326,15 @@ pub fn parse_section_headers_32<'a, const BE: bool>(
     let mut sections = Vec::with_capacity(sh_num as usize);
 
     for i in 0..sh_num as usize {
-        let base = sh_offset as usize + i * entry_size;
-        if base + entry_size > data.len() {
+        let Some(base) = i.checked_mul(entry_size)
+            .and_then(|o| (sh_offset as usize).checked_add(o))
+        else {
+            break;
+        };
+        let Some(end) = base.checked_add(entry_size) else {
+            break;
+        };
+        if end > data.len() {
             break;
         }
 
@@ -326,6 +344,7 @@ pub fn parse_section_headers_32<'a, const BE: bool>(
         let sh_addr = read_u32::<BE>(data, base + 12).unwrap_or(0) as u64;
         let sh_offset_val = read_u32::<BE>(data, base + 16).unwrap_or(0) as u64;
         let sh_size = read_u32::<BE>(data, base + 20).unwrap_or(0) as u64;
+        let sh_link = read_u32::<BE>(data, base + 24).unwrap_or(0);
         let sh_addralign = read_u32::<BE>(data, base + 32).unwrap_or(0) as u64;
 
         let flags = SectionFlags::from_bits_truncate(sh_flags_raw);
@@ -352,6 +371,7 @@ pub fn parse_section_headers_32<'a, const BE: bool>(
             addr: sh_addr,
             offset: sh_offset_val,
             size: sh_size,
+            sh_link,
             addralign: sh_addralign,
             data: sec_data,
         });

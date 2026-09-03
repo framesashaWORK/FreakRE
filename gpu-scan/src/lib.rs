@@ -25,11 +25,11 @@
 //! ```
 //! use gpu_scan::GpuScanner;
 //!
-//! # fn main() -> Result<(), gpu_scan::GpuError> {
-//! let mut scanner = GpuScanner::try_new()?;
+//! # fn main() {
+//! let mut scanner = GpuScanner::try_new().expect("scanner init");
 //! println!("gpu active: {}", scanner.is_gpu_active());
 //!
-//! let blob = std::fs::read("sample_shellcode.bin")?;
+//! let blob = std::fs::read("sample_shellcode.bin").unwrap_or_default();
 //!
 //! // Stage 1: flag packed/encrypted regions with windowed entropy.
 //! for (offset, entropy) in scanner.scan_entropy(&blob, 256, 128) {
@@ -46,7 +46,6 @@
 //! if let Some(first) = hits.offsets.first() {
 //!     println!("prologue at {first:#x}");
 //! }
-//! # Ok(())
 //! # }
 //! ```
 

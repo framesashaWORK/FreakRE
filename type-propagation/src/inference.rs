@@ -35,6 +35,87 @@ pub struct TypeInference {
     pub converged: bool,
 }
 
+/// Maximum nesting depth of pointer types we will emit. Pointer chains deeper
+/// than this only arise from self-referential pointer cycles in the constraint
+/// graph (e.g. a stack register used both as a memory address and as a loaded
+/// value). Collapsing them keeps the decompiled C readable and guarantees the
+/// fixed-point solver converges instead of growing the type by one layer every
+/// iteration.
+const MAX_PTR_DEPTH: usize = 12;
+
+/// Nesting depth of a type (0 for non-pointers).
+fn ptr_depth(ty: &Ty) -> usize {
+    match ty {
+        Ty::Ptr(inner) => 1 + ptr_depth(inner),
+        _ => 0,
+    }
+}
+
+/// Bound the nesting depth of pointer types to [`MAX_PTR_DEPTH`]. When the
+/// depth is exceeded the deepest pointee is replaced with `Unknown`, which is
+/// sound (an opaque pointer) and always terminates.
+fn cap_ptr_depth(ty: Ty) -> Ty {
+    if ptr_depth(&ty) <= MAX_PTR_DEPTH {
+        return ty;
+    }
+    fn rebuild(ty: Ty, depth: usize) -> Ty {
+        match ty {
+            Ty::Ptr(inner) if depth < MAX_PTR_DEPTH => {
+                Ty::Ptr(Box::new(rebuild(*inner, depth + 1)))
+            }
+            Ty::Ptr(_) => Ty::Ptr(Box::new(Ty::Unknown)),
+            other => other,
+        }
+    }
+    rebuild(ty, 1)
+}
+
+/// Whether binding `ptr := Ptr(..)` with `inner` as the pointee would create a
+/// cyclic (self-referential) pointer type.
+///
+/// The fixed-point solver re-applies every `PtrTo(ptr, inner)` constraint each
+/// iteration. If `inner` transitively points back to `ptr` — directly through
+/// another `PtrTo` constraint, or indirectly through an `Equal` chain (e.g.
+/// `A = ptr<B>`, `B = ptr<C>`, `C = A`, or `A = ptr<B>` with `B == A` via an
+/// equality) — then every iteration deepens the type by one layer
+/// (`A = ptr<ptr<..<A>>>`), reaching the iteration cap and yielding
+/// declarations such as `int64_t*********************************` in the
+/// decompiled C.
+///
+/// This detects the situation with a DFS over both the *target* edge of each
+/// `PtrTo` constraint (`src -> dst`) and the edges of each `Equal` constraint
+/// (`a <-> b`): starting from `inner`, follow every reachable variable and
+/// report a cycle if `ptr` is reachable.
+fn ptr_cycles(cs: &ConstraintSystem, ptr: TypeVar, inner: TypeVar) -> bool {
+    use std::collections::HashSet;
+    let mut stack = vec![inner];
+    let mut seen = HashSet::new();
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        if n == ptr {
+            return true;
+        }
+        for c in &cs.constraints {
+            match c {
+                Constraint::PtrTo(src, dst) if *src == n => {
+                    stack.push(*dst);
+                }
+                Constraint::Equal(a, b) => {
+                    if *a == n {
+                        stack.push(*b);
+                    } else if *b == n {
+                        stack.push(*a);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
 impl TypeInference {
     /// Solve a constraint system using iterative Robinson's unification.
     ///
@@ -52,6 +133,16 @@ impl TypeInference {
             iteration += 1;
 
             for constraint in &cs.constraints {
+                // Break self-referential pointer cycles: bind the pointer end
+                // to a pointer with an unknown pointee so the type can no
+                // longer grow and the solve converges. The pointee (`inner`)
+                // is left intact so legitimate width/pointee info survives.
+                if let Constraint::PtrTo(ptr, inner) = constraint {
+                    if ptr_cycles(cs, *ptr, *inner) {
+                        inference.bind(*ptr, Ty::Ptr(Box::new(Ty::Unknown)))?;
+                        continue;
+                    }
+                }
                 inference.apply_constraint(constraint)?;
             }
 
@@ -107,7 +198,7 @@ impl TypeInference {
 
             Constraint::PtrTo(ptr, inner) => {
                 let inner_ty = self.resolve(*inner);
-                let ptr_ty = Ty::Ptr(Box::new(inner_ty));
+                let ptr_ty = cap_ptr_depth(Ty::Ptr(Box::new(inner_ty)));
                 self.bind(*ptr, ptr_ty)?;
             }
 
@@ -191,8 +282,12 @@ impl TypeInference {
 
     /// Bind a type variable to a concrete type.
     ///
-    /// No occurs check is needed: `Ty` contains no type variables, so a
-    /// binding can never create an infinite (recursive) type.
+    /// `Ty` contains no embedded type variables, so a single binding cannot
+    /// by itself create an infinite type. The iterative fixed-point solver
+    /// can still grow a *self-referential* pointer cycle one layer per
+    /// iteration (`A = ptr<B>`, `B = ptr<A>`); such cycles are detected and
+    /// broken up front in [`TypeInference::solve`], and pointer nesting depth
+    /// is additionally bounded by [`cap_ptr_depth`].
     fn bind(&mut self, var: TypeVar, ty: Ty) -> Result<(), InferenceError> {
         // If variable already has a binding, merge with the new type
         if let Some(existing) = self.substitutions.get(&var).cloned() {
@@ -222,8 +317,8 @@ impl TypeInference {
                 // e.g. a qword load followed by a byte-sized deref of the
                 // same variable yields Ptr(Int(64)) vs Ptr(Int(8)).
                 match self.merge_types(inner_a, inner_b) {
-                    Ok(m) => Ok(Ty::Ptr(Box::new(m))),
-                    Err(_) => Ok(Ty::Ptr(Box::new(inner_a.as_ref().clone()))),
+                    Ok(m) => Ok(cap_ptr_depth(Ty::Ptr(Box::new(m)))),
+                    Err(_) => Ok(cap_ptr_depth(Ty::Ptr(Box::new(inner_a.as_ref().clone())))),
                 }
             }
             (Ty::Array(n1, inner1), Ty::Array(n2, inner2)) => {
@@ -311,9 +406,14 @@ impl TypeInference {
                 }
 
                 Constraint::PtrTo(ptr, inner) => {
+                    // Cycles are already broken during solving; skip them here
+                    // so the pointer depth cannot grow again.
+                    if ptr_cycles(cs, *ptr, *inner) {
+                        continue;
+                    }
                     let inner_ty = self.resolve(*inner);
                     if inner_ty != Ty::Unknown {
-                        let ptr_ty = Ty::Ptr(Box::new(inner_ty));
+                        let ptr_ty = cap_ptr_depth(Ty::Ptr(Box::new(inner_ty)));
                         refined += self.refine_binding(*ptr, &ptr_ty);
                     }
                 }
@@ -627,5 +727,34 @@ mod tests {
 
         inf.substitutions.insert(b, Ty::f32());
         assert!(inf.is_consistent(&cs));
+    }
+
+    #[test]
+    fn test_cyclic_pointer_constraints_stay_bounded() {
+        // `A = ptr<B>` and `B = ptr<A>` form a self-referential pointer
+        // cycle. Before the occurs-check was added this grew by one layer
+        // every fixed-point iteration, yielding declarations such as
+        // `int64_t*********************************` in the decompiled C.
+        let mut cs = ConstraintSystem::new();
+        let a = cs.fresh_var();
+        let b = cs.fresh_var();
+        cs.add_ptr_to(a, b);
+        cs.add_ptr_to(b, a);
+        cs.add_must_be(b, Ty::Int(64));
+
+        let inf = TypeInference::solve(&cs).unwrap();
+
+        // Must converge (not bail out at the iteration cap) and stay shallow.
+        assert!(inf.converged, "cyclic pointer constraints must converge");
+        let ta = inf.resolve(a);
+        let depth = ptr_depth(&ta);
+        assert!(
+            depth <= MAX_PTR_DEPTH,
+            "pointer depth {} exceeded cap {}",
+            depth,
+            MAX_PTR_DEPTH
+        );
+        // The variable must still be a (bounded) pointer.
+        assert!(matches!(ta, Ty::Ptr(_)), "a must remain a pointer, got {}", ta);
     }
 }

@@ -381,6 +381,10 @@ pub fn call(name: &str, args: &[Value]) -> Result<Value, ScriptError> {
                 rest
             } else {
                 match rest.find(end) {
+                    // An end marker glued to the start carries no information
+                    // (empty segment); take the whole rest instead of
+                    // returning a useless empty string.
+                    Some(0) => rest,
                     Some(p) => &rest[..p],
                     None => return Ok(Value::Nil),
                 }
@@ -649,6 +653,16 @@ fn write_pretty(out: &mut String, v: &Value, depth: usize) {
     match v {
         Value::Table(entries) => {
             if depth > PRETTY_MAX_DEPTH {
+                out.push_str("{...}");
+                return;
+            }
+            // A table at the last full level that itself contains tables
+            // would push real content past the cap — collapse it instead.
+            // (Keeps `{a = {b = {c = 1}}}` fully rendered while
+            // `{a = {b = {c = {}}}}` becomes `{a = {b = {...}}}`.)
+            if depth == PRETTY_MAX_DEPTH
+                && entries.iter().any(|(_, val)| matches!(val, Value::Table(_)))
+            {
                 out.push_str("{...}");
                 return;
             }

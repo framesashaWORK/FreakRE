@@ -31,6 +31,7 @@ pub mod interproc;
 pub mod patterns;
 pub mod stack_vars;
 pub mod call_naming;
+pub mod common_api;
 
 use freakre_ir::BlockId;
 

@@ -1,0 +1,8 @@
+[package]
+name = "pdf-analyzer"
+version = "0.1.0"
+edition = "2021"
+description = "PDF document analyzer for FreakRE (malicious JavaScript, embedded files, suspicious actions)"
+
+[dependencies]
+serde = { workspace = true }

@@ -1357,7 +1357,7 @@ fn evict_cache_by_distance<V>(cache: &mut HashMap<u64, V>, reference_addr: u64, 
         .map(|&k| (k, k.abs_diff(reference_addr)))
         .collect();
     // Sort by distance descending so we remove the FURTHEST entries first.
-    entries.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+    entries.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
     let to_remove = cache.len() - target_len;
     for (key, _) in entries.into_iter().take(to_remove) {
         cache.remove(&key);
@@ -1440,7 +1440,7 @@ fn fallback_pseudocode(addr: u64, data: &[u8], func_name: &str, is_64bit: bool) 
                 let mnemonic = inst.mnemonic.as_str();
                 let operands = freakre_x86::format_instruction(&inst);
 
-                match mnemonic {
+                match mnemonic.as_str() {
                     "push" => pseudocode.push_str(&format!("    // save {}\n", operands)),
                     "pop" => pseudocode.push_str(&format!("    // restore {}\n", operands)),
                     "mov" => {
@@ -1656,7 +1656,6 @@ impl FreakREApp {
                                 format!("Symbols: {} functions from DWARF", count),
                                 ToastKind::Success,
                             );
-                            return;
                         }
                         Err(freakre_symbols::SymbolError::NoDebugInfo) => {
                             // Not an error — just no debug info in this binary.

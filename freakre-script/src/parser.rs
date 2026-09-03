@@ -461,10 +461,25 @@ impl<'a> Parser<'a> {
             let val = self.parse_expr()?;
             return Ok((Some(Expr::StringLit(name)), val));
         }
+        // General key form: `[expr] = value` (e.g. `{['my-key'] = 1}`).
+        // The key is evaluated like any other expression.
+        if matches!(self.peek(), Token::LBracket) {
+            self.advance(); // consume '['
+            let key = self.parse_expr()?;
+            match self.peek() {
+                Token::RBracket => { self.advance(); }
+                other => return Err(ParseError { message: format!("expected ']' in table key, got {:?}", other) }),
+            }
+            match self.peek() {
+                Token::Assign => { self.advance(); }
+                other => return Err(ParseError { message: format!("expected '=' after table key, got {:?}", other) }),
+            }
+            let val = self.parse_expr()?;
+            return Ok((Some(key), val));
+        }
         let expr = self.parse_expr()?;
         if matches!(self.peek(), Token::Assign) {
-            // `[k] = v` general form is not part of this grammar.
-            return Err(ParseError { message: "invalid table key: only 'name = value' names keys".into() });
+            return Err(ParseError { message: "invalid table key: only 'name = value' or '[expr] = value' name keys".into() });
         }
         Ok((None, expr))
     }

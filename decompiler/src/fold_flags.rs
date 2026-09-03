@@ -129,11 +129,11 @@ fn rpo_ranks(func: &IrFunction) -> HashMap<freakre_ir::BlockId, usize> {
 /// meaningless in pseudocode anyway, and substituting keeps the condition
 /// readable instead of leaking `flag_*`.
 fn resolve_flag_def(
-    func: &IrFunction,
     defs: &[FlagDefSite],
     use_block: freakre_ir::BlockId,
     use_idx: usize,
     ranks: &HashMap<freakre_ir::BlockId, usize>,
+    idom: &HashMap<freakre_ir::BlockId, freakre_ir::BlockId>,
 ) -> Option<FlagDefSite> {
     ranks.get(&use_block)?;
     let mut best: Option<&FlagDefSite> = None;
@@ -141,7 +141,7 @@ fn resolve_flag_def(
         let dominates_use = if d.block == use_block {
             d.idx < use_idx
         } else {
-            crate::structuring::dominates(func, d.block, use_block)
+            crate::structuring::dominates_with_idom(d.block, use_block, idom)
         };
         if !dominates_use {
             continue;
@@ -219,6 +219,7 @@ fn match_combined_cond(inst: &IrInst) -> Option<(u32, OpCode, u32, u32)> {
 pub fn fold_adc_carries(func: &mut IrFunction) -> usize {
     let flag_defs = collect_flag_defs(func);
     let ranks = rpo_ranks(func);
+    let idom = freakre_ir::ssa::compute_dominators(func);
     let cf_defs = match flag_defs.get("flag_cf") {
         Some(d) if !d.is_empty() => d,
         _ => return 0,
@@ -247,7 +248,7 @@ pub fn fold_adc_carries(func: &mut IrFunction) -> usize {
                 new_insts.push(inst.clone());
                 continue;
             }
-            let Some(def) = resolve_flag_def(func, cf_defs, bid, ii, &ranks) else {
+            let Some(def) = resolve_flag_def(cf_defs, bid, ii, &ranks, &idom) else {
                 new_insts.push(inst.clone());
                 continue;
             };
@@ -283,6 +284,7 @@ pub fn fold_adc_carries(func: &mut IrFunction) -> usize {
 pub fn fold_flag_comparisons(func: &mut IrFunction) -> usize {
     let flag_defs = collect_flag_defs(func);
     let ranks = rpo_ranks(func);
+    let idom = freakre_ir::ssa::compute_dominators(func);
 
     // Definition site + count per SSA-ish temp; cond vars must be
     // single-definition to be rewritten in place safely.
@@ -312,7 +314,7 @@ pub fn fold_flag_comparisons(func: &mut IrFunction) -> usize {
                 }
                 let def = match flag_defs
                     .get(&flag_reg)
-                    .and_then(|d| resolve_flag_def(func, d, bid, ii, &ranks))
+                    .and_then(|d| resolve_flag_def(d, bid, ii, &ranks, &idom))
                 {
                     Some(d) => d,
                     None => {
@@ -392,14 +394,14 @@ pub fn fold_flag_comparisons(func: &mut IrFunction) -> usize {
             };
             let da = match flag_defs
                 .get(&flag_a)
-                .and_then(|d| resolve_flag_def(func, d, bid, ii, &ranks))
+                .and_then(|d| resolve_flag_def(d, bid, ii, &ranks, &idom))
             {
                 Some(d) => d,
                 None => continue,
             };
             let db = match flag_defs
                 .get(&flag_b)
-                .and_then(|d| resolve_flag_def(func, d, bid, ii, &ranks))
+                .and_then(|d| resolve_flag_def(d, bid, ii, &ranks, &idom))
             {
                 Some(d) => d,
                 None => continue,

@@ -1,6 +1,12 @@
-# Phase 5: Integration & Dependency Removal — Complete
+# Phase 5: Integration & Dependency Removal — SUPERSEDED
 
-## Summary
+> **Status note (2026-09):** this plan was NOT carried out — the workspace
+> still contains `capstone-ffi` (used by `desktop-ui` with an LDE fallback),
+> `scripting`, and the `freakre` CLI binary. The tables below describe the
+> *proposed* end state, not the current tree. Kept for history; do not treat
+> as documentation of the current code.
+
+## Summary (proposed, not applied)
 
 All external analysis dependencies have been replaced with own `freakre-*` crates.
 The project now uses **zero external dependencies** in its core analysis stack.

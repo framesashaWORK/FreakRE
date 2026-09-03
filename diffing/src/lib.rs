@@ -612,16 +612,17 @@ impl BinaryDiffer {
 
                 // Only pair streams decoded in the SAME width mode; mixing
                 // modes would compare unrelated instruction histograms.
-                let comparable = matches!(
-                    (stream_a, stream_b),
+                let pair = match (stream_a, stream_b) {
                     (Some((ma, a)), Some((mb, b)))
-                        if ma == mb && !a.is_empty() && !b.is_empty()
-                );
+                        if ma == mb && !a.is_empty() && !b.is_empty() =>
+                    {
+                        Some((a, b))
+                    }
+                    _ => None,
+                };
 
                 let (combined, mnemonic_score, matched_i, total_a, total_b) =
-                    if comparable {
-                        let (_, a) = stream_a.unwrap();
-                        let (_, b) = stream_b.unwrap();
+                    if let Some((a, b)) = pair {
                         let (matched_i, mnemonic_score) =
                             Self::mnemonic_overlap(a, b);
                         let combined =
@@ -900,8 +901,8 @@ impl BinaryDiffer {
         seq_a: &[freakre_x86::Mnemonic],
         seq_b: &[freakre_x86::Mnemonic],
     ) -> (usize, f64) {
-        let hist = |seq: &[freakre_x86::Mnemonic]| -> HashMap<&'static str, usize> {
-            let mut h: HashMap<&'static str, usize> = HashMap::new();
+        let hist = |seq: &[freakre_x86::Mnemonic]| -> HashMap<String, usize> {
+            let mut h: HashMap<String, usize> = HashMap::new();
             for m in seq {
                 *h.entry(m.as_str()).or_insert(0) += 1;
             }

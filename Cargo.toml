@@ -40,6 +40,13 @@ members = [
     "emulator-x86",
     "gpu-scan",
     "behavior-detect",
+    "script-analyzer",
+    "pdf-analyzer",
+    "dotnet-analyzer",
+    "pyc-parser",
+    "firmware-analyzer",
+    "memdump-analyzer",
+    "freakre-server", "dll-analyzer",
 ]
 exclude = ["fuzz"]
 resolver = "2"

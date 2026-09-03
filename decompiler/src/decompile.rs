@@ -71,8 +71,7 @@ pub fn decompile_function(func: &IrFunction) -> Result<String, DecompileError> {
 /// `Register("rsp")` to fresh `Var`s) are detected and SSA is skipped for
 /// that function so `recover_stack_vars` keeps working.
 pub fn decompile_function_ssa(func: &IrFunction) -> Result<String, DecompileError> {
-    let mut cfg = DecompilerConfig::default();
-    cfg.use_ssa = true;
+    let cfg = DecompilerConfig { use_ssa: true, ..Default::default() };
     decompile_function_with_config(func, &cfg)
 }
 
@@ -112,7 +111,7 @@ fn decompile_function_inner(
         let has_stack_access = ir.blocks.iter().any(|b| {
             b.insts.iter().any(|i| {
                 i.sources().iter().any(|v| matches!(v, freakre_ir::Value::Register { name, .. } if name == "rsp"))
-                    || i.dst().map_or(false, |d| matches!(d, freakre_ir::Value::Register { name, .. } if name == "rsp"))
+                    || i.dst().is_some_and(|d| matches!(d, freakre_ir::Value::Register { name, .. } if name == "rsp"))
             })
         });
         let mut ssa_candidate = ir.clone();
@@ -122,7 +121,7 @@ fn decompile_function_inner(
             let lowered_has_rsp = lowered.blocks.iter().any(|b| {
                 b.insts.iter().any(|i| {
                     i.sources().iter().any(|v| matches!(v, freakre_ir::Value::Register { name, .. } if name == "rsp"))
-                        || i.dst().map_or(false, |d| matches!(d, freakre_ir::Value::Register { name, .. } if name == "rsp"))
+                        || i.dst().is_some_and(|d| matches!(d, freakre_ir::Value::Register { name, .. } if name == "rsp"))
                 })
             });
             if !(has_stack_access && !lowered_has_rsp) {
@@ -191,7 +190,7 @@ pub fn decompile_program_with_config(
     } else {
         crate::call_naming::AddrNameMap::default()
     };
-    let signatures = crate::call_naming::SignatureMap::default();
+        let signatures = crate::call_naming::SignatureMap::from_common_runtime();
 
     let mut results = Vec::new();
     for func in &program.functions {

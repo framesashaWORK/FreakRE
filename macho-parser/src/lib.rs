@@ -391,8 +391,18 @@ impl<'a> MachoFile<'a> {
         let cpu_subtype = read_u32(8);
         let file_type_raw = read_u32(12);
         let ncmds = read_u32(16);
-        let _sizeofcmds = read_u32(20);
+        let sizeofcmds = read_u32(20) as usize;
         let flags = read_u32(24);
+
+        // Validate sizeofcmds fits within the remaining data
+        if header_size + sizeofcmds > data.len() {
+            return Err(MachoError::LoadCommandOutOfBounds(
+                header_size,
+                sizeofcmds,
+                data.len(),
+                data.len(),
+            ));
+        }
 
         let cpu_type = CpuType::from_raw(cpu_type_raw);
         let file_type = FileType::from_raw(file_type_raw);
@@ -414,11 +424,12 @@ impl<'a> MachoFile<'a> {
                 warnings.push(MachoWarning {
                     kind: WarningKind::Other,
                     message: format!(
-                        "Load command #{} at offset 0x{:X} has invalid size {}",
+                        "Load command #{} at offset 0x{:X} has invalid size {}, skipping",
                         i, offset, cmdsize
                     ),
                 });
-                break;
+                offset += 8;
+                continue;
             }
 
             let lc = parse_load_command(data, offset, cmd, cmdsize, is_64bit, is_swapped);
@@ -649,7 +660,10 @@ fn parse_load_command(
                 } else {
                     0
                 };
-                let name = read_cstring(data, offset + name_offset, cmdsize.saturating_sub(name_offset));
+                let name = match offset.checked_add(name_offset) {
+                    Some(abs) => read_cstring(data, abs, cmdsize.saturating_sub(name_offset)),
+                    None => String::new(),
+                };
                 let dylib = DylibRef {
                     name,
                     timestamp,
@@ -670,7 +684,10 @@ fn parse_load_command(
         LC_LOAD_DYLINKER => {
             if offset + 12 <= data.len() {
                 let name_offset = read_u32(offset + 8) as usize;
-                let name = read_cstring(data, offset + name_offset, cmdsize.saturating_sub(name_offset));
+                let name = match offset.checked_add(name_offset) {
+                    Some(abs) => read_cstring(data, abs, cmdsize.saturating_sub(name_offset)),
+                    None => String::new(),
+                };
                 LoadCommand::LoadDylinker(name)
             } else {
                 LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
@@ -679,7 +696,10 @@ fn parse_load_command(
         LC_ID_DYLINKER => {
             if offset + 12 <= data.len() {
                 let name_offset = read_u32(offset + 8) as usize;
-                let name = read_cstring(data, offset + name_offset, cmdsize.saturating_sub(name_offset));
+                let name = match offset.checked_add(name_offset) {
+                    Some(abs) => read_cstring(data, abs, cmdsize.saturating_sub(name_offset)),
+                    None => String::new(),
+                };
                 LoadCommand::IdDylinker(name)
             } else {
                 LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
@@ -740,7 +760,10 @@ fn parse_load_command(
         LC_RPATH => {
             if offset + 12 <= data.len() {
                 let name_offset = read_u32(offset + 8) as usize;
-                let name = read_cstring(data, offset + name_offset, cmdsize.saturating_sub(name_offset));
+                let name = match offset.checked_add(name_offset) {
+                    Some(abs) => read_cstring(data, abs, cmdsize.saturating_sub(name_offset)),
+                    None => String::new(),
+                };
                 LoadCommand::Rpath(name)
             } else {
                 LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
@@ -808,8 +831,13 @@ fn parse_segment(
     let seg64 = cmd == LC_SEGMENT_64;
 
     // Segment name is 16 bytes at offset+8
-    let name_end = (offset + 8 + 16).min(data.len());
-    let name_bytes = &data[offset + 8..name_end];
+    let name_start = offset.saturating_add(8);
+    let name_end = name_start.saturating_add(16).min(data.len());
+    let name_bytes = if name_start < data.len() {
+        &data[name_start..name_end]
+    } else {
+        return LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 };
+    };
     let name = read_fixed_cstring(name_bytes);
 
     if seg64 {
@@ -829,7 +857,10 @@ fn parse_segment(
         // Each section_64 is 80 bytes, starting at offset + 72
         let sect_base = offset + 72;
         for i in 0..nsects.min(256) {
-            let sect_off = sect_base + i * 80;
+            let sect_off = match sect_base.checked_add(i * 80) {
+                Some(v) => v,
+                None => break,
+            };
             if sect_off + 80 > data.len() { break; }
             let sect_name = read_fixed_cstring(&data[sect_off..sect_off + 16]);
             let seg_name = read_fixed_cstring(&data[sect_off + 16..sect_off + 32]);
@@ -876,7 +907,10 @@ fn parse_segment(
         // Each section is 68 bytes, starting at offset + 56
         let sect_base = offset + 56;
         for i in 0..nsects.min(256) {
-            let sect_off = sect_base + i * 68;
+            let sect_off = match sect_base.checked_add(i * 68) {
+                Some(v) => v,
+                None => break,
+            };
             if sect_off + 68 > data.len() { break; }
             let sect_name = read_fixed_cstring(&data[sect_off..sect_off + 16]);
             let seg_name = read_fixed_cstring(&data[sect_off + 16..sect_off + 32]);

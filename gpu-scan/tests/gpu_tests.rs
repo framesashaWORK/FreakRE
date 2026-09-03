@@ -22,7 +22,7 @@ fn deterministic_buffer(len: usize) -> Vec<u8> {
 /// Returns a GPU-backed scanner or `None`, logging a clear reason on skip.
 fn try_gpu() -> Option<GpuScanner> {
     match GpuScanner::try_new() {
-        Ok(mut s) => {
+        Ok(s) => {
             if s.is_gpu_active() {
                 Some(s)
             } else {
@@ -43,6 +43,16 @@ fn try_gpu() -> Option<GpuScanner> {
 fn cpu_only_scanner() -> GpuScanner {
     GpuScanner::try_new_with_backends(gpu_scan::Backends::empty())
         .expect("CPU-only construction cannot fail")
+}
+
+/// Serialize GPU-body tests: parallel `wgpu` device init + dispatch from one
+/// process contends badly (multi-minute stalls observed with default test
+/// threads on real hardware). CPU-only tests stay parallel; every `gpu_*`
+/// test holds this guard for its whole body.
+static GPU_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_gpu() -> std::sync::MutexGuard<'static, ()> {
+    GPU_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 // ── Fallback / API behavior (headless-safe) ─────────────────────────
@@ -161,6 +171,7 @@ fn cpu_find_literal_respects_cap_and_reports_exact_total() {
 /// count/length cross workgroup boundaries, including the tail window.
 #[test]
 fn gpu_windowed_entropy_matches_cpu_within_1e4() {
+    let _gpu = lock_gpu();
     let Some(mut scanner) = try_gpu() else { return };
 
     // ~100 KiB: 99_744 % 128 != 0 → tail window exercised; window starts cross
@@ -188,6 +199,7 @@ fn gpu_windowed_entropy_matches_cpu_within_1e4() {
 
 #[test]
 fn gpu_entropy_handles_unaligned_lengths_and_extremes() {
+    let _gpu = lock_gpu();
     let Some(mut scanner) = try_gpu() else { return };
 
     // Lengths not multiples of 4 exercise the padding path.
@@ -215,6 +227,7 @@ fn gpu_entropy_handles_unaligned_lengths_and_extremes() {
 /// locations; results must equal the CPU reference exactly.
 #[test]
 fn gpu_find_literal_planted_matches_at_stride_edges() {
+    let _gpu = lock_gpu();
     let Some(mut scanner) = try_gpu() else { return };
 
     let needle: &[u8] = b"\x90\xFC\x48\x83\xE4";
@@ -225,7 +238,7 @@ fn gpu_find_literal_planted_matches_at_stride_edges() {
     // earlier matches and muddy the bookkeeping; kernel correctness is anyway
     // asserted via equality with the CPU reference on the final bytes).
     let mut reserved = vec![false; data.len()];
-    let mut plant_at = |data: &mut Vec<u8>, reserved: &mut [bool], pos: usize| -> Option<usize> {
+    let plant_at = |data: &mut Vec<u8>, reserved: &mut [bool], pos: usize| -> Option<usize> {
         if pos + needle.len() > data.len() || reserved[pos..pos + needle.len()].iter().any(|&r| r) {
             return None;
         }
@@ -248,7 +261,8 @@ fn gpu_find_literal_planted_matches_at_stride_edges() {
             }
         }
     }
-    planted.push(plant_at(&mut data, &mut reserved, 0).expect("pos 0 plants cleanly"));
+    // Position 0 was already planted by the stride loop above (k=0, delta=0);
+    // only the tail edge still needs an explicit plant.
     planted.push(
         plant_at(&mut data, &mut reserved, 10_000 - needle.len())
             .expect("last position plants cleanly"),
@@ -283,6 +297,7 @@ fn gpu_find_literal_planted_matches_at_stride_edges() {
 
 #[test]
 fn gpu_find_literal_cap_behavior_matches_cpu() {
+    let _gpu = lock_gpu();
     let Some(mut scanner) = try_gpu() else { return };
     let pattern = [0xCAu8, 0xFE];
     let data = vec![pattern.as_slice(); MAX_MATCHES + 10].concat();
@@ -308,6 +323,7 @@ fn gpu_find_literal_cap_behavior_matches_cpu() {
 
 #[test]
 fn gpu_scanner_reports_active_and_reason_is_none() {
+    let _gpu = lock_gpu();
     let Some(mut scanner) = try_gpu() else { return };
     assert_eq!(scanner.fallback_reason(), None);
 

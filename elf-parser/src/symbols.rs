@@ -100,10 +100,7 @@ pub fn parse_all_symbols_64<'a, const BE: bool>(
         }
 
         // Find associated string table (sh_link points to it)
-        // For simplicity, we look for the linked section
-        // In practice sh_link is at offset 40 in ELF64 section header
-        // We'll search by common naming convention as fallback
-        let strtab = find_strtab_for_symtab(sections, i, sec.sh_type);
+        let strtab = find_strtab_for_symtab(sections, i, sec.sh_type, sec.sh_link);
 
         let entry_size = 24usize; // sizeof(Elf64_Sym)
         if sec.size == 0 || sec.data.is_empty() {
@@ -231,7 +228,7 @@ pub fn parse_all_symbols_32<'a, const BE: bool>(
             continue;
         }
 
-        let strtab = find_strtab_for_symtab(sections, i, sec.sh_type);
+        let strtab = find_strtab_for_symtab(sections, i, sec.sh_type, sec.sh_link);
 
         let entry_size = 16usize; // sizeof(Elf32_Sym)
         if sec.size == 0 || sec.data.is_empty() {
@@ -331,13 +328,23 @@ pub fn parse_all_symbols_32<'a, const BE: bool>(
 }
 
 /// Find the string table associated with a symbol table section.
-/// Uses sh_link if available, falls back to name-based lookup.
+/// Uses sh_link to index into the section table; falls back to name-based lookup.
 fn find_strtab_for_symtab<'a, 'b>(
     sections: &'b [SectionHeader<'a>],
     _symtab_index: usize,
     symtab_type: u32,
+    sh_link: u32,
 ) -> Option<&'b SectionHeader<'a>> {
-    // Try name-based lookup first (more reliable than sh_link without re-parsing)
+    // Primary: use sh_link to directly index the linked section
+    if sh_link > 0 && (sh_link as usize) < sections.len() {
+        let linked = &sections[sh_link as usize];
+        // Verify it looks like a string table (SHT_STRTAB = 3)
+        if linked.sh_type == 3 {
+            return Some(linked);
+        }
+    }
+
+    // Fallback: name-based lookup
     let strtab_name = if symtab_type == 11 {
         ".dynstr"
     } else {

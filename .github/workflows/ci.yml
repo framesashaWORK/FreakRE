@@ -13,22 +13,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # capstone-ffi is a workspace member with a hermetic build: without a
+        # system Capstone SDK its build.rs emits no cfg and only the LDE
+        # fallback compiles (no bindgen/libclang needed since it was removed).
+        # Linux additionally installs libcapstone-dev so the real FFI backend
+        # (reached via freakre-desktop) is compiled and linked there too.
         os: [ubuntu-latest, windows-latest]
-        include:
-          # capstone-ffi needs a native Capstone SDK. Linux runners get it via
-          # apt (below); Windows runners do not ship one, so capstone-ffi's
-          # build.rs would silently fall back to its limited built-in LDE and
-          # never compile/link the real FFI or run bindgen codegen. To make
-          # that explicit rather than silent, Windows excludes desktop-ui —
-          # the only workspace crate that pulls in capstone-ffi. (capstone-ffi
-          # itself is not a workspace member, so `--exclude capstone-ffi`
-          # would fail; excluding its sole reverse-dependency achieves the
-          # same result.) Linux builds everything, including the FFI crate,
-          # and additionally checks it explicitly below.
-          - os: ubuntu-latest
-            pkg_selector: "--workspace"
-          - os: windows-latest
-            pkg_selector: "--workspace --exclude desktop-ui"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -47,15 +37,8 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo check
-        run: cargo check ${{ matrix.pkg_selector }} --all-targets --locked
+        run: cargo check --workspace --all-targets --locked
       - name: cargo test
-        run: cargo test ${{ matrix.pkg_selector }} --locked
+        run: cargo test --workspace --locked
       - name: clippy
-        run: cargo clippy ${{ matrix.pkg_selector }} --all-targets --locked -- -D warnings
-
-      - name: cargo check capstone-ffi (linux)
-        if: runner.os == 'Linux'
-        # Not a workspace member — only reached transitively via desktop-ui.
-        # Check it explicitly (with Capstone installed above) so FFI
-        # compilation, bindgen codegen and linking always have CI coverage.
-        run: cargo check -p capstone-ffi --locked
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
