@@ -431,7 +431,10 @@ fn scan_signatures_with(
         offset += step;
     }
 
-    // Deduplicate matches at same offset (keep highest confidence)
+    // Deduplicate matches at same offset. Winner: highest confidence, then
+    // longest pattern (more specific bytes beat generic frames), then library
+    // and name ascending for determinism (overlapping harvested patterns from
+    // several DLLs otherwise resolve by scan order).
     matches.sort_by(|a, b| {
         a.offset
             .cmp(&b.offset)
@@ -440,6 +443,9 @@ fn scan_signatures_with(
                     .partial_cmp(&a.confidence)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
+            .then_with(|| b.signature.pattern_len.cmp(&a.signature.pattern_len))
+            .then_with(|| a.signature.library.cmp(b.signature.library))
+            .then_with(|| a.signature.function_name.cmp(b.signature.function_name))
     });
     matches.dedup_by_key(|m| m.offset);
 

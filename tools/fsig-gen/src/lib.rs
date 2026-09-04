@@ -32,7 +32,7 @@
 //!    `(lib, name)`.
 
 use freakre_x86::types::Register;
-use freakre_x86::{decode_mode, Instruction, Mode, Mnemonic, Operand};
+use freakre_x86::{decode_len, decode_mode, Instruction, Mode, Mnemonic, Operand};
 use pe_parser::PeFile;
 
 // ─── Configuration ────────────────────────────────────────────────
@@ -155,11 +155,14 @@ pub fn harvest_pe(data: &[u8], lib: &str, cfg: &HarvestConfig) -> Result<DllHarv
     let mode = if pe.is_64bit { Mode::X64 } else { Mode::X86 };
     let (dll_name, exports) = pe.exports();
     let lib = if lib.is_empty() {
-        dll_name
-            .as_deref()
-            .unwrap_or("unknown")
-            .trim_end_matches(['.', 'd', 'l'])
-            .to_ascii_lowercase()
+        let raw = dll_name.as_deref().unwrap_or("unknown");
+        // Strip a file extension properly ("a.dll" -> "a", but "old" stays).
+        let stem = raw
+            .rsplit_once('.')
+            .map(|(s, _)| s)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(raw);
+        stem.to_ascii_lowercase()
     } else {
         lib.to_ascii_lowercase()
     };
@@ -177,7 +180,7 @@ pub fn harvest_pe(data: &[u8], lib: &str, cfg: &HarvestConfig) -> Result<DllHarv
     out.exports_total = exports.len();
 
     let mut budget = if cfg.max_exports_per_dll == 0 { usize::MAX } else { cfg.max_exports_per_dll };
-    for (ordinal, name, rva) in &exports {
+    for (_, name, rva) in &exports {
         if budget == 0 {
             break;
         }
@@ -231,7 +234,6 @@ pub fn harvest_pe(data: &[u8], lib: &str, cfg: &HarvestConfig) -> Result<DllHarv
             Err(DropReason::Loose) => out.skipped_loose += 1,
             Err(DropReason::Decode) => out.skipped_decode += 1,
         }
-        let _ = ordinal;
     }
     Ok(out)
 }
@@ -263,33 +265,58 @@ fn harvest_function(
     let mut cur = off;
     let mut va = rva as u64;
     let mut first = true;
+    // Consecutive length-only steps (SIMD/packed opcodes the full decoder
+    // does not model). Past a few in a row this is data, not code.
+    let mut lde_streak: u32 = 0;
 
     while bytes.len() < cfg.max_prefix_len {
         let slice = data.get(cur..).ok_or(DropReason::Decode)?;
         if slice.first() == Some(&0xCC) {
             break; // int3 padding: function (or alignment) ends here.
         }
-        let insn =
-            decode_mode(slice, img_lo.wrapping_add(va), mode).map_err(|_| DropReason::Decode)?;
-        if insn.length == 0 || insn.length > 15 {
-            return Err(DropReason::Decode);
+        let decoded = decode_mode(slice, img_lo.wrapping_add(va), mode);
+        // Thunk: the function IS a single unconditional jump. Only the
+        // first instruction can disqualify the whole export.
+        if first {
+            first = false;
+            let is_thunk = match &decoded {
+                Ok(insn) => insn.mnemonic.is_unconditional_jump(),
+                Err(_) => matches!(slice.first(), Some(0xE9 | 0xEB)),
+            };
+            if is_thunk {
+                return Ok(None);
+            }
         }
-        if matches!(insn.mnemonic, Mnemonic::Unknown) {
-            break;
-        }
-        // Thunk: the function IS a single unconditional jump.
-        if first && insn.mnemonic.is_unconditional_jump() {
-            return Ok(None);
-        }
-        first = false;
-        let raw = &slice[..insn.length];
-        let mut m = vec![true; insn.length];
-        mask_instruction(&insn, raw, mode, img_lo, img_hi, cfg, &mut m);
+        let (raw, masked): (&[u8], Vec<bool>) = match decoded {
+            Ok(insn)
+                if (1..=15).contains(&insn.length)
+                    && !matches!(insn.mnemonic, Mnemonic::Unknown) =>
+            {
+                lde_streak = 0;
+                let raw = &slice[..insn.length];
+                let mut m = vec![true; insn.length];
+                mask_instruction(&insn, raw, mode, img_lo, img_hi, cfg, &mut m);
+                (raw, m)
+            }
+            _ => {
+                // Length-only fallback: keep bytes exact (an address kept
+                // fixed risks a false *negative* later, never a positive).
+                lde_streak += 1;
+                if lde_streak > 4 {
+                    break;
+                }
+                match decode_len(slice, mode) {
+                    Ok(len) if (1..=15).contains(&len) && len <= slice.len() => {
+                        (&slice[..len], vec![true; len])
+                    }
+                    _ => return Err(DropReason::Decode),
+                }
+            }
+        };
         bytes.extend_from_slice(raw);
-        mask.extend_from_slice(&m);
-        cur += insn.length;
-        va = va.wrapping_add(insn.length as u64);
-        let _ = va;
+        mask.extend_from_slice(&masked);
+        cur += raw.len();
+        va = va.wrapping_add(raw.len() as u64);
     }
 
     if bytes.len() < cfg.min_pattern_len {

@@ -54,15 +54,17 @@
 //! - No segment registers, no interrupts/exceptions, no precise EFLAGS
 //!   beyond zf/cf/sf/of/pf as computed by the lifter.
 
+pub mod decrypt;
 pub mod env;
 pub mod exec;
 pub mod memory;
 pub mod state;
 
+pub use decrypt::{recover_written_strings, RecoveredString, MAX_REGION_SCAN};
 pub use env::{DefaultEnv, EmuEnv, SyscallRecord};
 pub use exec::{
-    block_address, BudgetKind, CallRecord, EmuResult, Emulator, ExitReason, StepError, TraceEntry,
-    DEFAULT_MAX_MEMORY_BYTES, DEFAULT_TRACE_CAPACITY,
+    block_address, block_coverage, BudgetKind, CallRecord, EmuResult, Emulator, ExitReason,
+    StepError, TraceEntry, DEFAULT_MAX_MEMORY_BYTES, DEFAULT_TRACE_CAPACITY,
 };
 pub use memory::{MemRegion, MemStatus, Memory};
 pub use state::{Machine, RegRef};

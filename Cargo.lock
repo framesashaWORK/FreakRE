@@ -1908,6 +1908,7 @@ dependencies = [
 name = "func-sigs"
 version = "0.1.0"
 dependencies = [
+ "fxhash",
  "pe-parser",
  "serde",
 ]

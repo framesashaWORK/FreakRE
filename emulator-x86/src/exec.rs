@@ -4,7 +4,7 @@
 //! as [`ExitReason::Unsupported`] and the machine stops cleanly instead of
 //! guessing. See `lib.rs` for the exact supported-instruction matrix.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 use freakre_ir::ir::{BlockId, IrFunction, IrInst, OpCode, Value};
 
@@ -45,6 +45,10 @@ pub enum ExitReason {
     FellOffEnd,
     /// Hard budget guard tripped.
     BudgetExhausted(BudgetKind),
+    /// Hit a user breakpoint: execution stopped *before* the block at `addr`.
+    /// Machine and memory state reflect everything up to (not including)
+    /// that block, so the caller can inspect and resume.
+    Breakpoint { addr: u64 },
     /// Construct the interpreter refuses to model. Always a safe stop.
     Unsupported { addr: u64, what: String },
 }
@@ -144,6 +148,20 @@ pub struct Emulator<E: EmuEnv> {
     trace_cap: usize,
     calls: Vec<CallRecord>,
     last_addr: u64,
+    breakpoints: BTreeSet<u64>,
+}
+
+/// Distinct block addresses visited by a trace, ascending.
+///
+/// Cheap dynamic-coverage signal: run a stub, collect [`Emulator::trace`],
+/// and every covered address maps back to decoded bytes for highlighting
+/// (or reveals dead branches for deobfuscation triage).
+pub fn block_coverage(trace: &[TraceEntry]) -> Vec<u64> {
+    let mut set = BTreeSet::new();
+    for t in trace {
+        set.insert(t.addr);
+    }
+    set.into_iter().collect()
 }
 
 /// Address encoded in a lifter block label (`entry`, `bb_<off>`,
@@ -326,6 +344,7 @@ impl<E: EmuEnv> Emulator<E> {
             trace_cap: trace_capacity,
             calls: Vec::new(),
             last_addr: 0,
+            breakpoints: BTreeSet::new(),
         }
     }
 
@@ -369,6 +388,49 @@ impl<E: EmuEnv> Emulator<E> {
     /// Calls recorded during interpretation.
     pub fn calls(&self) -> &[CallRecord] {
         &self.calls
+    }
+
+    // ─── Breakpoints ───────────────────────────────────────────────────
+
+    /// Stop before the block at `addr` on the next run. Addresses are guest
+    /// VAs, compared against per-block addresses from lifter labels.
+    pub fn add_breakpoint(&mut self, addr: u64) {
+        self.breakpoints.insert(addr);
+    }
+
+    /// Remove a breakpoint. Returns `true` when one existed.
+    pub fn remove_breakpoint(&mut self, addr: u64) -> bool {
+        self.breakpoints.remove(&addr)
+    }
+
+    /// Drop all breakpoints.
+    pub fn clear_breakpoints(&mut self) {
+        self.breakpoints.clear();
+    }
+
+    /// Currently armed breakpoint addresses, ascending.
+    pub fn breakpoints(&self) -> Vec<u64> {
+        self.breakpoints.iter().copied().collect()
+    }
+
+    /// Run until the block at `target` (one-shot breakpoint), `Return`, or
+    /// any other stop. The temporary breakpoint is always removed, even when
+    /// the run stops elsewhere.
+    pub fn run_to(
+        &mut self,
+        func: &IrFunction,
+        base: u64,
+        entry_offset: u64,
+        target: u64,
+        max_steps: u64,
+    ) -> EmuResult {
+        let had = self.breakpoints.contains(&target);
+        self.breakpoints.insert(target);
+        let res = self.run(func, base, entry_offset, max_steps);
+        if !had {
+            self.breakpoints.remove(&target);
+        }
+        res
     }
 
     // ─── Run loop ────────────────────────────────────────────────────
@@ -437,6 +499,12 @@ impl<E: EmuEnv> Emulator<E> {
             };
             let baddr = block_address(&block.label, base).unwrap_or(self.last_addr);
             self.last_addr = baddr;
+
+            // Breakpoints fire before the block executes, so state reflects
+            // everything strictly prior to `baddr`.
+            if self.breakpoints.contains(&baddr) {
+                return (steps, ExitReason::Breakpoint { addr: baddr });
+            }
 
             let mut jump: Option<BlockId> = None;
             for inst in &block.insts {

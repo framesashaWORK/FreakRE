@@ -20,7 +20,7 @@
 //! scan over executable code (ideally per function body, see `func-finder`);
 //! every fixed byte of every entry is verified, wildcards match anything.
 
-use std::collections::HashMap;
+use fxhash::FxHashMap;
 use std::sync::OnceLock;
 
 /// Minimum pattern length in bytes (FP guard).
@@ -215,14 +215,42 @@ const DB_FILES: &[(&str, &str)] = db_files!(
     // runtime via `load_overlay_file` / `auto_load_overlay`.
 );
 
+/// Maximum gap between indexed fixed bytes. Wider gaps fall back down the
+/// index ladder (triple -> pair -> single -> positional). Neither the
+/// harvester nor the curated files emit leading wildcards, so every shipped
+/// pattern opens with fixed opcodes and lands in the triple index.
+const MAX_PAIR_GAP: usize = 8;
+
 struct Db {
     entries: Vec<DbEntry>,
-    /// First-fixed-byte index: (byte value, position in pattern) -> entries.
-    /// Entries whose every byte is a wildcard cannot be indexed and are
-    /// rejected by the parser (`MIN_CONCRETE_BYTES`), so this is total.
-    index: HashMap<(u8, usize), Vec<usize>>,
-    /// Largest first-fixed-byte position (bounds the probe loop).
-    max_pos: usize,
+    /// First 8 fixed bytes -> entries. Frames stay identical 15+ bytes
+    /// across functions (`48 89 5C 24 08 48 89 74 24 ...`), so even quint
+    /// buckets hold hundreds; eight bytes split them an order of magnitude
+    /// further. Hot path: one lookup per code offset.
+    oct_index: FxHashMap<[u8; 8], Vec<usize>>,
+    /// (5 leading fixed bytes) -> entries without an 8-fixed opening.
+    quint_index: FxHashMap<(u8, u8, u8, u8, u8), Vec<usize>>,
+    /// (byte0, byte1, byte2) -> entries with three fixed bytes at pattern
+    /// offsets 0,1,2 but no five-fixed opening (wildcard at 3 or 4).
+    triple_index: FxHashMap<(u8, u8, u8), Vec<usize>>,
+    /// (first fixed byte, second fixed byte, gap) -> entries that miss the
+    /// triple (wildcard at offset 1 or 2, e.g. call-first `E8 ??...`).
+    /// One probe per gap value per offset; buckets stay small because the
+    /// second fixed byte disambiguates.
+    pair_index: FxHashMap<(u8, u8, usize), Vec<usize>>,
+    /// First byte -> entries with fewer than two fixed bytes in the first
+    /// `MAX_PAIR_GAP + 1` positions (e.g. `movabs` with an 8-byte wildcard
+    /// immediate). Rare; slightly wider buckets, still bounded.
+    single_index: FxHashMap<u8, Vec<usize>>,
+    /// (byte, pos) -> entries whose FIRST fixed byte sits past pattern
+    /// offset 0 (leading wildcards). Empty for every shipped database; the
+    /// probe loop below skips entirely when there is nothing to look for.
+    slow_index: FxHashMap<(u8, usize), Vec<usize>>,
+    max_slow_pos: usize,
+    /// Per-entry fixed runs `(start, end)` aligned with `entries`: verifying
+    /// a candidate compares whole fixed slices (memcmp-grade) instead of
+    /// branching per byte. Runs cover every fixed byte exactly once.
+    runs: Vec<Vec<(usize, usize)>>,
     errors: Vec<DbParseError>,
 }
 
@@ -234,16 +262,71 @@ fn build_db(files: &[(&'static str, &str)]) -> Db {
         entries.append(&mut es);
         errors.append(&mut errs);
     }
-    let mut index: HashMap<(u8, usize), Vec<usize>> = HashMap::new();
-    let mut max_pos = 0usize;
-    // Index by the FIRST fixed byte only: one probe per code offset.
-    for (idx, e) in entries.iter().enumerate() {
-        if let Some(pos) = e.mask.iter().position(|&m| m) {
-            max_pos = max_pos.max(pos);
-            index.entry((e.bytes[pos], pos)).or_default().push(idx);
+    let mut db = Db {
+        entries,
+        oct_index: FxHashMap::default(),
+        quint_index: FxHashMap::default(),
+        triple_index: FxHashMap::default(),
+        pair_index: FxHashMap::default(),
+        single_index: FxHashMap::default(),
+        slow_index: FxHashMap::default(),
+        max_slow_pos: 0,
+        runs: Vec::new(),
+        errors,
+    };
+    rebuild_index(&mut db);
+    db
+}
+
+fn index_one(db: &mut Db, idx: usize, e: &DbEntry) {
+    // Eight fixed bytes opening the pattern?
+    if e.mask.len() > 7 && e.mask[..8].iter().all(|&m| m) {
+        db.oct_index
+            .entry([
+                e.bytes[0],
+                e.bytes[1],
+                e.bytes[2],
+                e.bytes[3],
+                e.bytes[4],
+                e.bytes[5],
+                e.bytes[6],
+                e.bytes[7],
+            ])
+            .or_default()
+            .push(idx);
+        return;
+    }
+    // Five fixed bytes opening the pattern?
+    if e.mask.len() > 4 && e.mask[0] && e.mask[1] && e.mask[2] && e.mask[3] && e.mask[4] {
+        db.quint_index
+            .entry((e.bytes[0], e.bytes[1], e.bytes[2], e.bytes[3], e.bytes[4]))
+            .or_default()
+            .push(idx);
+        return;
+    }
+    let mut fixed = e.mask.iter().enumerate().filter(|(_, &m)| m).map(|(p, _)| p);
+    match (fixed.next(), fixed.next()) {
+        (Some(0), Some(1)) if e.mask.len() > 2 && e.mask[2] => {
+            db.triple_index
+                .entry((e.bytes[0], e.bytes[1], e.bytes[2]))
+                .or_default()
+                .push(idx);
+        }
+        (Some(p0), Some(p1)) if p0 == 0 && p1 - p0 <= MAX_PAIR_GAP => {
+            db.pair_index.entry((e.bytes[p0], e.bytes[p1], p1 - p0)).or_default().push(idx);
+        }
+        (Some(p0), _) if p0 == 0 => {
+            db.single_index.entry(e.bytes[p0]).or_default().push(idx);
+        }
+        (Some(p0), _) => {
+            // Leading wildcards: keep the old positional probe.
+            db.max_slow_pos = db.max_slow_pos.max(p0);
+            db.slow_index.entry((e.bytes[p0], p0)).or_default().push(idx);
+        }
+        (None, _) => {
+            // Unreachable: the parser enforces MIN_CONCRETE_BYTES.
         }
     }
-    Db { entries, index, max_pos, errors }
 }
 
 fn loaded_db() -> &'static Db {
@@ -261,16 +344,64 @@ fn loaded_db() -> &'static Db {
 
 static OVERLAY: std::sync::RwLock<Option<Db>> = std::sync::RwLock::new(None);
 
+/// Minimum pattern length accepted into the overlay. Measured on real
+/// system-DLL code: sub-16 sliding patterns are prologue-grade — 96% of
+/// their hits land in foreign libraries — while 16+ byte patterns keep 96%
+/// of self-library hits and shed the cross-library noise almost entirely.
+/// (Curated embedded entries keep their hand-tuned lengths; this gate is
+/// for machine-harvested data only.)
+pub const OVERLAY_MIN_PATTERN_LEN: usize = 16;
+
 /// Load (or replace) the overlay database from `.fsig` text.
 /// Strict: any malformed line aborts the whole load with the errors.
+/// Entries shorter than [`OVERLAY_MIN_PATTERN_LEN`] are dropped (see it).
 pub fn load_overlay_text(text: &str, file: &'static str) -> Result<usize, Vec<DbParseError>> {
-    let db = build_db(&[(file, text)]);
-    if !db.errors.is_empty() {
-        return Err(db.errors);
+    let (mut entries, errors) = parse_fsig(text, file);
+    if !errors.is_empty() {
+        return Err(errors);
     }
+    entries.retain(|e| e.bytes.len() >= OVERLAY_MIN_PATTERN_LEN);
+    let mut db = build_db(&[]);
+    db.entries = entries;
+    rebuild_index(&mut db);
     let n = db.entries.len();
     *OVERLAY.write().unwrap_or_else(|e| e.into_inner()) = Some(db);
     Ok(n)
+}
+
+/// (Re)build all indexes of `db` from its current entries.
+fn rebuild_index(db: &mut Db) {
+    db.oct_index.clear();
+    db.quint_index.clear();
+    db.triple_index.clear();
+    db.pair_index.clear();
+    db.single_index.clear();
+    db.slow_index.clear();
+    db.max_slow_pos = 0;
+    // Move entries out so indexes (`&mut db`) and entries (`&e`) borrow
+    // disjoint locals; move back afterwards.
+    let entries = std::mem::take(&mut db.entries);
+    let mut runs: Vec<Vec<(usize, usize)>> = Vec::with_capacity(entries.len());
+    for (idx, e) in entries.iter().enumerate() {
+        index_one(db, idx, e);
+        // Fixed runs for bulk verification.
+        let mut entry_runs = Vec::new();
+        let mut i = 0;
+        while i < e.mask.len() {
+            if e.mask[i] {
+                let s = i;
+                while i < e.mask.len() && e.mask[i] {
+                    i += 1;
+                }
+                entry_runs.push((s, i));
+            } else {
+                i += 1;
+            }
+        }
+        runs.push(entry_runs);
+    }
+    db.entries = entries;
+    db.runs = runs;
 }
 
 /// Load (or replace) the overlay database from a `.fsig` file.
@@ -363,6 +494,20 @@ pub fn db_libraries() -> Vec<&'static str> {
     libs
 }
 
+/// Fixed-byte count of a [`DbHit`]'s pattern (specificity measure).
+pub fn hit_fixed_count(hit: &DbHit) -> usize {
+    if hit.overlay {
+        let guard = OVERLAY.read().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().expect("overlay hit without overlay").entries[hit.entry]
+            .mask
+            .iter()
+            .filter(|&&m| m)
+            .count()
+    } else {
+        loaded_db().entries[hit.entry].mask.iter().filter(|&&m| m).count()
+    }
+}
+
 /// Resolve a [`DbHit`] to match data. Returns only `'static` / `Copy` data
 /// so overlay hits are safe without holding the lock.
 pub fn resolve_hit(hit: &DbHit) -> (&'static str, &'static str, usize, usize, f64) {
@@ -379,21 +524,83 @@ pub fn resolve_hit(hit: &DbHit) -> (&'static str, &'static str, usize, usize, f6
 /// Scan `code` for database entries. `base_offset` is added to match offsets
 /// (same convention as [`crate::scan_signatures`]).
 ///
-/// Only offsets `o` with `o % step == 0` are tested. At most `max_matches`
-/// matches are returned; callers needing per-function anchoring should slice
-/// function bodies first (see `func-finder`).
+/// Unlike the CRC phase, this scan is always exhaustive: `step` is accepted
+/// for signature compatibility but ignored. The first-fixed-byte index makes
+/// per-offset probing cheap (one hash lookup when every pattern opens with
+/// a fixed opcode, which the parser rules enforce in practice), so stride
+/// sampling would only lose unaligned functions for no measurable gain.
+/// At most `max_matches` matches are returned; callers needing per-function
+/// anchoring should slice function bodies first (see `func-finder`).
+/// Chunk overlap for parallel scanning: must exceed the longest shipped
+/// pattern (generated cap 32, curated cap 24) so boundary-crossing matches
+/// are found whole. Duplicates from the overlap are removed after merging.
+const SCAN_OVERLAP: usize = 64;
+
+/// Small inputs scan inline; larger ones split across threads.
+const SCAN_INLINE_LIMIT: usize = 65536;
+
 pub fn scan_db(code: &[u8], base_offset: usize, step: usize, max_matches: usize) -> Vec<DbHit> {
     let mut out = Vec::new();
-    if code.is_empty() {
+    if code.is_empty() || max_matches == 0 {
         return out;
     }
-    scan_one(loaded_db(), false, code, base_offset, step, max_matches, &mut out);
+    let _ = step;
+    scan_db_into(loaded_db(), false, code, base_offset, max_matches, &mut out);
     if out.len() < max_matches {
         if let Some(ov) = OVERLAY.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            scan_one(ov, true, code, base_offset, step, max_matches, &mut out);
+            scan_db_into(ov, true, code, base_offset, max_matches, &mut out);
         }
     }
+    // De-duplicate overlap artefacts (identical hits only).
+    out.sort_by_key(|h| (h.offset, h.entry, h.overlay));
+    out.dedup();
+    out.truncate(max_matches);
     out
+}
+
+fn scan_db_into(
+    db: &Db,
+    overlay: bool,
+    code: &[u8],
+    base_offset: usize,
+    max_matches: usize,
+    out: &mut Vec<DbHit>,
+) {
+    let par = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
+    if par < 2 || code.len() < SCAN_INLINE_LIMIT {
+        scan_one(db, overlay, code, base_offset, max_matches, out);
+        return;
+    }
+    // Split into `par` chunks with SCAN_OVERLAP bytes of right overlap so
+    // no pattern (<= SCAN_OVERLAP) is cut. Chunks stay in order; per-chunk
+    // budgets are generous and the caller truncates to `max_matches`.
+    let n = par.min(code.len().div_ceil(32768).max(1));
+    let chunk = code.len().div_ceil(n);
+    let mut partials: Vec<Vec<DbHit>> = Vec::with_capacity(n);
+    std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(n);
+        for i in 0..n {
+            let start = i * chunk;
+            let end = ((i + 1) * chunk + SCAN_OVERLAP).min(code.len());
+            if start >= code.len() {
+                break;
+            }
+            handles.push(s.spawn(move || {
+                let mut v = Vec::new();
+                scan_one(db, overlay, &code[start..end], base_offset + start, max_matches, &mut v);
+                v
+            }));
+        }
+        for h in handles {
+            partials.push(h.join().unwrap_or_default());
+        }
+    });
+    for mut v in partials {
+        if out.len() >= max_matches {
+            break;
+        }
+        out.append(&mut v);
+    }
 }
 
 fn scan_one(
@@ -401,27 +608,87 @@ fn scan_one(
     overlay: bool,
     code: &[u8],
     base_offset: usize,
-    step: usize,
     max_matches: usize,
     out: &mut Vec<DbHit>,
 ) {
-    let step = step.max(1);
     if db.entries.is_empty() {
         return;
     }
+    // Verify one candidate list against `code` at `start`.
+    macro_rules! verify {
+        ($list:expr, $start:expr) => {
+            for &idx in $list {
+                let e = &db.entries[idx];
+                let start: usize = $start;
+                if start + e.bytes.len() > code.len() {
+                    continue;
+                }
+                if code.len() - start < e.min_func_len {
+                    continue;
+                }
+                if match_runs(code, start, e, &db.runs[idx]) {
+                    out.push(DbHit { offset: base_offset + start, entry: idx, overlay });
+                    if out.len() >= max_matches {
+                        return;
+                    }
+                }
+            }
+        };
+    }
+
     let mut offset = 0usize;
     while offset < code.len() && out.len() < max_matches {
         let b = code[offset];
-        // Probe: every entry whose first fixed byte sits at this offset.
-        // `pos` ranges over pattern positions, so candidate starts vary.
-        for pos in 0..=offset.min(db.max_pos) {
-            let Some(list) = db.index.get(&(b, pos)) else {
+        // Hot path: eight fixed bytes opening the pattern.
+        if offset + 7 < code.len() {
+            if let Some(list) = db.oct_index.get(&[
+                b,
+                code[offset + 1],
+                code[offset + 2],
+                code[offset + 3],
+                code[offset + 4],
+                code[offset + 5],
+                code[offset + 6],
+                code[offset + 7],
+            ]) {
+                verify!(list, offset);
+            }
+        }
+        // Hot path: five fixed bytes opening the pattern.
+        if offset + 4 < code.len() {
+            if let Some(list) = db.quint_index.get(&(
+                b,
+                code[offset + 1],
+                code[offset + 2],
+                code[offset + 3],
+                code[offset + 4],
+            )) {
+                verify!(list, offset);
+            }
+        }
+        // Three fixed bytes at pattern offsets 0,1,2.
+        if offset + 2 < code.len() {
+            if let Some(list) = db.triple_index.get(&(b, code[offset + 1], code[offset + 2])) {
+                verify!(list, offset);
+            }
+        }
+        // Entries missing a fixed byte at offset 1 or 2 (call-first etc.).
+        let max_gap = MAX_PAIR_GAP.min(code.len().saturating_sub(offset + 1));
+        for gap in 1..=max_gap {
+            if let Some(list) = db.pair_index.get(&(b, code[offset + gap], gap)) {
+                verify!(list, offset);
+            }
+        }
+        // Fewer than two fixed bytes in the indexed window (rare).
+        if let Some(list) = db.single_index.get(&b) {
+            verify!(list, offset);
+        }
+        // Leading-wildcard entries (none shipped; loop skipped when empty).
+        for pos in 1..=offset.min(db.max_slow_pos) {
+            let Some(list) = db.slow_index.get(&(b, pos)) else {
                 continue;
             };
             let start = offset - pos;
-            if !start.is_multiple_of(step) {
-                continue;
-            }
             for &idx in list {
                 let e = &db.entries[idx];
                 if start + e.bytes.len() > code.len() {
@@ -430,7 +697,7 @@ fn scan_one(
                 if code.len() - start < e.min_func_len {
                     continue;
                 }
-                if e.matches_at(code, start) {
+                if match_runs(code, start, e, &db.runs[idx]) {
                     out.push(DbHit { offset: base_offset + start, entry: idx, overlay });
                     if out.len() >= max_matches {
                         return;
@@ -440,6 +707,20 @@ fn scan_one(
         }
         offset += 1;
     }
+}
+
+/// Bulk verifier: compare whole fixed runs (slice equality compiles to
+/// memcmp) instead of branching per byte. `runs` comes from [`Db.runs`].
+fn match_runs(code: &[u8], start: usize, e: &DbEntry, runs: &[(usize, usize)]) -> bool {
+    if start + e.bytes.len() > code.len() {
+        return false;
+    }
+    for &(s, en) in runs {
+        if code[start + s..start + en] != e.bytes[s..en] {
+            return false;
+        }
+    }
+    true
 }
 
 /// Degenerate fills used by the shipped-DB false-positive tests (zeros,

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 serde = { workspace = true }
+fxhash = "=0.2.1"
 
 [dev-dependencies]
 pe-parser = { path = "../pe-parser" }
