@@ -79,7 +79,7 @@ fn main() {
             .ok();
     }
 
-    // Build scanner
+    // Build scanner (Scanner::new best-effort loads the harvested overlay).
     let scanner = match build_scanner(&cli.rules) {
         Ok(s) => Arc::new(s),
         Err(e) => {
@@ -87,6 +87,13 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if !cli.quiet {
+        eprintln!(
+            "FLIRT signatures: {} embedded + {} harvested overlay",
+            func_sigs::db_signature_count() - func_sigs::overlay_signature_count(),
+            func_sigs::overlay_signature_count()
+        );
+    }
 
     // Collect files
     let files: Vec<PathBuf> = collect_files(&cli.target, cli.depth);

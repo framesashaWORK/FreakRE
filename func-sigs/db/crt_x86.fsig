@@ -71,7 +71,7 @@ msvcrt|x86|setjmp_regsave|32|0.65|8B 44 24 04 89 68 ?? 89 70 ?? 89 78 ?? 33 C0 C
 msvcrt|x86|longjmp_valfix|24|0.75|8B 4C 24 08 85 C9 75 ?? B8 01 00 00 00 8B 54 24 04
 
 # ─── rand / div / itoa / byteswap / rol ───────────────────────────
-msvcrt|x86|rand_lcg|24|0.85|69 C0 FD 43 34 00 05 C3 9E 26 00 89 05
+msvcrt|x86|rand_lcg|24|0.85|69 C0 FD 43 03 00 05 C3 9E 26 00 89 05
 msvcrt|x86|srand_store|16|0.65|8B 44 24 04 A3 ?? ?? ?? ?? C3
 msvcrt|x86|div_idiv|16|0.65|8B 44 24 04 99 F7 7C 24 08 C3
 msvcrt|x86|abs_or_labs|16|0.60|8B 44 24 04 85 C0 79 ?? F7 D8 C3

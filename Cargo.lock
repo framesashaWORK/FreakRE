@@ -1470,6 +1470,7 @@ name = "emulator-x86"
 version = "0.1.0"
 dependencies = [
  "freakre-ir",
+ "str-extract",
 ]
 
 [[package]]
@@ -1824,6 +1825,7 @@ dependencies = [
  "clap",
  "entropy-rs",
  "freakre-scanner",
+ "func-sigs",
  "serde",
  "serde_json",
  "str-extract",
@@ -1886,6 +1888,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fsig-gen"
+version = "0.1.0"
+dependencies = [
+ "freakre-x86",
+ "pe-parser",
+]
+
+[[package]]
 name = "func-finder"
 version = "0.1.0"
 dependencies = [
@@ -1898,6 +1908,7 @@ dependencies = [
 name = "func-sigs"
 version = "0.1.0"
 dependencies = [
+ "pe-parser",
  "serde",
 ]
 

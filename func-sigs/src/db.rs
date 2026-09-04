@@ -5,7 +5,7 @@
 //! dependencies. Each line is one function entry:
 //!
 //! ```text
-//! lib|arch|name|min_len|confidence|hex bytes, `??` = wildcard
+//! lib|arch|name|min_len|confidence|hex bytes, `??` = wildcard [|aka=a,b]
 //! msvcrt|x86|memcpy|24|0.80|55 8B EC 57 8B 7D ?? 8B 75 ?? 8B 4D ?? F3 A5
 //! ```
 //!
@@ -40,6 +40,9 @@ pub struct DbEntry {
     pub arch: &'static str,
     pub min_func_len: usize,
     pub confidence: f64,
+    /// Alias names (`aka=a,b` 7th field): forwarder chains and merged
+    /// cross-DLL duplicates. Informational; matching uses `function_name`.
+    pub aka: Vec<&'static str>,
 }
 
 impl DbEntry {
@@ -102,15 +105,33 @@ pub fn parse_fsig(text: &str, file: &'static str) -> (Vec<DbEntry>, Vec<DbParseE
 
 fn parse_line(line: &str) -> Result<DbEntry, String> {
     let parts: Vec<&str> = line.split('|').collect();
-    if parts.len() != 6 {
-        return Err(format!("expected 6 '|' fields, got {}", parts.len()));
+    if parts.len() != 6 && parts.len() != 7 {
+        return Err(format!("expected 6 '|' fields (+optional aka=), got {}", parts.len()));
     }
     let (lib, arch, name, min_len_s, conf_s, hex) =
         (parts[0].trim(), parts[1].trim(), parts[2].trim(), parts[3].trim(), parts[4].trim(), parts[5]);
+    let mut aka: Vec<&'static str> = Vec::new();
+    if parts.len() == 7 {
+        let a = parts[6].trim();
+        let list = a.strip_prefix("aka=").ok_or_else(|| format!("bad 7th field {a:?}, want aka=a,b"))?;
+        if list.is_empty() {
+            return Err("empty aka list".to_string());
+        }
+        for n in list.split(',') {
+            let n = n.trim();
+            if n.is_empty() || n.contains('|') {
+                return Err(format!("bad aka name {n:?}"));
+            }
+            aka.push(intern(n));
+        }
+    }
     if lib.is_empty() || arch.is_empty() || name.is_empty() {
         return Err("lib/arch/name must be non-empty".to_string());
     }
-    if lib.contains(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '+')) {
+    // Real DLL stems contain dots and occasionally spaces
+    // (`analog.shell.broker`, `Microsoft.UI.Xaml`); only the `|` separator
+    // and control characters are forbidden.
+    if lib.contains(|c: char| c == '|' || c.is_control()) {
         return Err(format!("bad lib id {lib:?}"));
     }
     let min_func_len: usize =
@@ -166,6 +187,7 @@ fn parse_line(line: &str) -> Result<DbEntry, String> {
         arch: intern(arch),
         min_func_len,
         confidence,
+        aka,
     })
 }
 
@@ -188,6 +210,9 @@ const DB_FILES: &[(&str, &str)] = db_files!(
     "delphi_vb_mfc.fsig",
     "go.fsig",
     "packers.fsig",
+    // NOTE: the machine-harvested `generated.fsig` (~180k entries) is NOT
+    // embedded (AV heuristics flag 27 MB blobs inside binaries). It loads at
+    // runtime via `load_overlay_file` / `auto_load_overlay`.
 );
 
 struct Db {
@@ -201,27 +226,113 @@ struct Db {
     errors: Vec<DbParseError>,
 }
 
+fn build_db(files: &[(&'static str, &str)]) -> Db {
+    let mut entries = Vec::new();
+    let mut errors = Vec::new();
+    for (file, text) in files {
+        let (mut es, mut errs) = parse_fsig(text, file);
+        entries.append(&mut es);
+        errors.append(&mut errs);
+    }
+    let mut index: HashMap<(u8, usize), Vec<usize>> = HashMap::new();
+    let mut max_pos = 0usize;
+    // Index by the FIRST fixed byte only: one probe per code offset.
+    for (idx, e) in entries.iter().enumerate() {
+        if let Some(pos) = e.mask.iter().position(|&m| m) {
+            max_pos = max_pos.max(pos);
+            index.entry((e.bytes[pos], pos)).or_default().push(idx);
+        }
+    }
+    Db { entries, index, max_pos, errors }
+}
+
 fn loaded_db() -> &'static Db {
     static DB: OnceLock<Db> = OnceLock::new();
-    DB.get_or_init(|| {
-        let mut entries = Vec::new();
-        let mut errors = Vec::new();
-        for (file, text) in DB_FILES {
-            let (mut es, mut errs) = parse_fsig(text, file);
-            entries.append(&mut es);
-            errors.append(&mut errs);
+    DB.get_or_init(|| build_db(DB_FILES))
+}
+
+// ─── Runtime overlay (machine-harvested database) ─────────────────
+//
+// The `fsig-gen` harvest (`db/generated.fsig`, ~180k entries) is NOT
+// embedded: a 27 MB string blob inside every binary trips antivirus
+// heuristics on user machines (observed: `Exploit:Win64/Torkehem!dha` on a
+// test binary) and bloats every consumer. Instead it loads from disk once,
+// on demand, and is consulted alongside the embedded curated database.
+
+static OVERLAY: std::sync::RwLock<Option<Db>> = std::sync::RwLock::new(None);
+
+/// Load (or replace) the overlay database from `.fsig` text.
+/// Strict: any malformed line aborts the whole load with the errors.
+pub fn load_overlay_text(text: &str, file: &'static str) -> Result<usize, Vec<DbParseError>> {
+    let db = build_db(&[(file, text)]);
+    if !db.errors.is_empty() {
+        return Err(db.errors);
+    }
+    let n = db.entries.len();
+    *OVERLAY.write().unwrap_or_else(|e| e.into_inner()) = Some(db);
+    Ok(n)
+}
+
+/// Load (or replace) the overlay database from a `.fsig` file.
+pub fn load_overlay_file(path: &std::path::Path) -> Result<usize, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    // The file content must outlive the process: leak once per load.
+    let owned: &'static str = Box::leak(text.into_boxed_str());
+    load_overlay_text(owned, "generated.fsig").map_err(|errs| {
+        let mut s = format!("{} malformed line(s): ", errs.len());
+        for e in errs.iter().take(5) {
+            s.push_str(&format!("{e}; "));
         }
-        let mut index: HashMap<(u8, usize), Vec<usize>> = HashMap::new();
-        let mut max_pos = 0usize;
-        // Index by the FIRST fixed byte only: one probe per code offset.
-        for (idx, e) in entries.iter().enumerate() {
-            if let Some(pos) = e.mask.iter().position(|&m| m) {
-                max_pos = max_pos.max(pos);
-                index.entry((e.bytes[pos], pos)).or_default().push(idx);
-            }
-        }
-        Db { entries, index, max_pos, errors }
+        s
     })
+}
+
+/// Drop the overlay (tests only).
+#[cfg(test)]
+pub(crate) fn clear_overlay() {
+    *OVERLAY.write().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Overlay entry count (0 when not loaded).
+pub fn overlay_signature_count() -> usize {
+    OVERLAY.read().unwrap_or_else(|e| e.into_inner()).as_ref().map(|d| d.entries.len()).unwrap_or(0)
+}
+
+/// Candidate overlay path, for applications: `$FREAKRE_GENERATED_SIGS`, else
+/// `generated.fsig` next to the current executable, else the in-tree
+/// development layouts (`target/debug/../func-sigs/db`, `./func-sigs/db`),
+/// else `./generated.fsig`. Returns the first path that exists.
+///
+/// Deployments should copy `func-sigs/db/generated.fsig` next to the
+/// application binary (or point `$FREAKRE_GENERATED_SIGS` at it).
+pub fn find_overlay_file() -> Option<std::path::PathBuf> {
+    if let Some(p) = std::env::var_os("FREAKRE_GENERATED_SIGS") {
+        let p = std::path::PathBuf::from(p);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("generated.fsig"));
+            // Cargo dev layout: <root>/target/debug/<exe> -> <root>/func-sigs/db/.
+            candidates.push(dir.join("../func-sigs/db/generated.fsig"));
+            candidates.push(dir.join("../../func-sigs/db/generated.fsig"));
+        }
+    }
+    candidates.push(std::path::PathBuf::from("generated.fsig"));
+    candidates.push(std::path::PathBuf::from("func-sigs/db/generated.fsig"));
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+static AUTO_LOADED: OnceLock<Option<usize>> = OnceLock::new();
+
+/// Load the overlay once via [`find_overlay_file`] (no-op when absent).
+/// Safe to call from every consumer at startup; returns the entry count.
+pub fn auto_load_overlay() -> Option<usize> {
+    *AUTO_LOADED.get_or_init(|| find_overlay_file().and_then(|p| load_overlay_file(&p).ok()))
 }
 
 /// All parsed entries (empty when every `.fsig` file is missing — the files
@@ -236,17 +347,33 @@ pub fn db_load_errors() -> &'static [DbParseError] {
     &loaded_db().errors
 }
 
-/// Number of loaded signatures.
+/// Number of loaded signatures (embedded + overlay).
 pub fn db_signature_count() -> usize {
-    loaded_db().entries.len()
+    loaded_db().entries.len() + overlay_signature_count()
 }
 
-/// Library ids present in the database, sorted.
+/// Library ids present in the database (embedded + overlay), sorted.
 pub fn db_libraries() -> Vec<&'static str> {
     let mut libs: Vec<&'static str> = loaded_db().entries.iter().map(|e| e.library).collect();
+    if let Some(ov) = OVERLAY.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        libs.extend(ov.entries.iter().map(|e| e.library));
+    }
     libs.sort_unstable();
     libs.dedup();
     libs
+}
+
+/// Resolve a [`DbHit`] to match data. Returns only `'static` / `Copy` data
+/// so overlay hits are safe without holding the lock.
+pub fn resolve_hit(hit: &DbHit) -> (&'static str, &'static str, usize, usize, f64) {
+    if hit.overlay {
+        let guard = OVERLAY.read().unwrap_or_else(|e| e.into_inner());
+        let e = &guard.as_ref().expect("overlay hit without overlay").entries[hit.entry];
+        (e.library, e.function_name, e.bytes.len(), e.min_func_len, e.confidence)
+    } else {
+        let e = &loaded_db().entries[hit.entry];
+        (e.library, e.function_name, e.bytes.len(), e.min_func_len, e.confidence)
+    }
 }
 
 /// Scan `code` for database entries. `base_offset` is added to match offsets
@@ -256,13 +383,32 @@ pub fn db_libraries() -> Vec<&'static str> {
 /// matches are returned; callers needing per-function anchoring should slice
 /// function bodies first (see `func-finder`).
 pub fn scan_db(code: &[u8], base_offset: usize, step: usize, max_matches: usize) -> Vec<DbHit> {
-    let db = loaded_db();
-    let step = step.max(1);
     let mut out = Vec::new();
-    if code.is_empty() || db.entries.is_empty() {
+    if code.is_empty() {
         return out;
     }
+    scan_one(loaded_db(), false, code, base_offset, step, max_matches, &mut out);
+    if out.len() < max_matches {
+        if let Some(ov) = OVERLAY.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            scan_one(ov, true, code, base_offset, step, max_matches, &mut out);
+        }
+    }
+    out
+}
 
+fn scan_one(
+    db: &Db,
+    overlay: bool,
+    code: &[u8],
+    base_offset: usize,
+    step: usize,
+    max_matches: usize,
+    out: &mut Vec<DbHit>,
+) {
+    let step = step.max(1);
+    if db.entries.is_empty() {
+        return;
+    }
     let mut offset = 0usize;
     while offset < code.len() && out.len() < max_matches {
         let b = code[offset];
@@ -285,23 +431,48 @@ pub fn scan_db(code: &[u8], base_offset: usize, step: usize, max_matches: usize)
                     continue;
                 }
                 if e.matches_at(code, start) {
-                    out.push(DbHit { offset: base_offset + start, entry: idx });
+                    out.push(DbHit { offset: base_offset + start, entry: idx, overlay });
                     if out.len() >= max_matches {
-                        return out;
+                        return;
                     }
                 }
             }
         }
         offset += 1;
     }
-    out
 }
 
-/// A database hit: match offset plus the entry index (see [`db_entries`]).
+/// Degenerate fills used by the shipped-DB false-positive tests (zeros,
+/// NOPs, `int3`, `0xFF`, deterministic xorshift64 stream with the same seed
+/// the `fsig-gen` harvester validates against). Every shipped pattern must
+/// avoid all of them.
+pub fn validation_fills() -> Vec<Vec<u8>> {
+    let mut fills = vec![
+        vec![0x00u8; 4096],
+        vec![0x90u8; 4096],
+        vec![0xCCu8; 4096],
+        vec![0xFFu8; 4096],
+    ];
+    let mut rnd = vec![0u8; 8192];
+    let mut x: u64 = 0x1234_5678_9ABC_DEF0;
+    for b in rnd.iter_mut() {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *b = (x & 0xFF) as u8;
+    }
+    fills.push(rnd);
+    fills
+}
+
+/// A database hit: match offset plus the entry index. `overlay` selects the
+/// runtime overlay database; use [`resolve_hit`] to read the entry (or
+/// [`db_entries`] for embedded hits with `overlay == false`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DbHit {
     pub offset: usize,
     pub entry: usize,
+    pub overlay: bool,
 }
 
 #[cfg(test)]
@@ -325,6 +496,18 @@ toolow|x86|t|8|0.0|55 8B EC 83 EC 10 90 90
         assert_eq!(entries[0].bytes.len(), 15);
         assert_eq!(entries[0].concrete_len(), 12);
         assert_eq!(errors.len(), 4, "all four bad lines must be reported: {errors:?}");
+    }
+
+    #[test]
+    fn parse_aka_field() {
+        let (entries, errors) = parse_fsig(
+            "kernel32|x64|CreateFileW|9|0.80|48 83 EC 28 E8 ?? ?? ?? ??|aka=KBCreate,BaseCreate\n\
+             kernel32|x64|Bad|9|0.80|48 83 EC 28 E8 ?? ?? ?? ??|alias=X\n",
+            "a.fsig",
+        );
+        assert!(errors.iter().any(|e| e.line == 2), "bad 7th field must error: {errors:?}");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].aka, vec!["KBCreate", "BaseCreate"]);
     }
 
     #[test]
@@ -363,29 +546,13 @@ toolow|x86|t|8|0.0|55 8B EC 83 EC 10 90 90
 
     #[test]
     fn shipped_db_no_match_on_zeros_nops_random() {
-        // 4 KiB of each degenerate fill must produce zero hits: every entry
-        // carries >= 4 fixed bytes, so any hit here is a bad pattern.
-        let fills: Vec<Vec<u8>> = vec![
-            vec![0x00; 4096],
-            vec![0x90; 4096],
-            vec![0xCC; 4096],
-            vec![0xFF; 4096],
-        ];
-        for (i, fill) in fills.iter().enumerate() {
+        // Every entry carries >= 4 fixed bytes, so any hit here is a bad
+        // pattern. (Also covers the overlay once another test loads it:
+        // the harvester pre-validates these exact fills.)
+        for (i, fill) in super::validation_fills().iter().enumerate() {
             let hits = super::scan_db(fill, 0, 1, 10_000);
             assert!(hits.is_empty(), "fill {i} matched {:?}", &hits[..hits.len().min(3)]);
         }
-        // Deterministic PRNG stream (xorshift, fixed seed): no hits either.
-        let mut rnd = vec![0u8; 8192];
-        let mut x: u64 = 0x1234_5678_9ABC_DEF0;
-        for b in rnd.iter_mut() {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            *b = (x & 0xFF) as u8;
-        }
-        let hits = super::scan_db(&rnd, 0, 1, 10_000);
-        assert!(hits.is_empty(), "random stream matched {:?}", &hits[..hits.len().min(3)]);
     }
 
     #[test]
@@ -413,11 +580,33 @@ toolow|x86|t|8|0.0|55 8B EC 83 EC 10 90 90
         for (off, name) in want {
             assert!(
                 hits.iter().any(|h| {
-                    h.offset == 0x1000 + off
-                        && super::db_entries()[h.entry].function_name == name
+                    h.offset == 0x1000 + off && super::resolve_hit(h).1 == name
                 }),
                 "missing {name} @ {off:#x} in {hits:?}"
             );
+        }
+    }
+
+    #[test]
+    fn overlay_generated_loads_and_holds_target() {
+        // The fsig-gen harvest ships as data (db/generated.fsig), loaded at
+        // runtime so no binary embeds the 27 MB blob (AV heuristics flag it).
+        let path = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/db/generated.fsig"
+        ));
+        let n = super::load_overlay_file(&path).expect("generated.fsig must load");
+        assert!(n >= 18_000, "harvest shrunk to {n} entries, want >= 18000");
+        assert_eq!(n, super::overlay_signature_count());
+        let libs = super::db_libraries();
+        for want in ["kernel32", "ntdll", "ucrtbase"] {
+            assert!(libs.contains(&want), "overlay library {want} missing");
+        }
+        // The full database (embedded + overlay) stays clean on degenerate
+        // fills: the harvester self-validates, this pins it in-tree.
+        for fill in super::validation_fills() {
+            let hits = super::scan_db(&fill, 0, 1, 1000);
+            assert!(hits.is_empty(), "overlay hit degenerate fill: {hits:?}");
         }
     }
 }

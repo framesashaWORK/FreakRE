@@ -58,7 +58,7 @@ msvcrt|x64|setjmp_xmm_save|32|0.60|0F 29 71 ?? 0F 29 79 ?? 0F 29 81 ?? ?? ?? ?? 
 msvcrt|x64|longjmp_valfix|24|0.65|48 8B C1 48 85 C9 75 ?? B8 01 00 00 00 FF E0
 
 # ─── rand / math ──────────────────────────────────────────────────
-msvcrt|x64|rand_lcg|24|0.85|69 C9 FD 43 34 00 05 C3 9E 26 00 89 0D ?? ?? ?? ??
+msvcrt|x64|rand_lcg|24|0.85|69 C9 FD 43 03 00 05 C3 9E 26 00 89 0D ?? ?? ?? ??
 msvcrt|x64|srand_store|16|0.60|48 8B C1 89 0D ?? ?? ?? ?? C3
 msvcrt|x64|fabs_andps_mask|16|0.55|F3 0F 6F 05 ?? ?? ?? ?? 0F 54 C1 C3
 msvcrt|x64|div_idiv64|16|0.60|48 8B C1 48 99 F7 F9 C3

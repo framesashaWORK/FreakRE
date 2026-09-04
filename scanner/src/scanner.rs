@@ -42,6 +42,9 @@ impl Default for Scanner {
 
 impl Scanner {
     pub fn new() -> Self {
+        // Best-effort: harvested FLIRT overlay (Once-cached; silent when the
+        // data file is not deployed — the embedded curated DB still applies).
+        let _ = func_sigs::auto_load_overlay();
         Self { yara_scanner: None }
     }
 

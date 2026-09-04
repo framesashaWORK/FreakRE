@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 freakre-scanner = { path = "../scanner" }
+func-sigs = { path = "../func-sigs" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4", features = ["derive"] }

@@ -6,6 +6,14 @@ mod theme;
 mod views;
 
 fn main() -> eframe::Result {
+    // Best-effort harvested FLIRT overlay (Once-cached). Deploy
+    // `func-sigs/db/generated.fsig` next to the binary or set
+    // $FREAKRE_GENERATED_SIGS; without it only the curated DB applies.
+    match func_sigs::auto_load_overlay() {
+        Some(n) => eprintln!("FLIRT overlay: {n} harvested signatures"),
+        None => eprintln!("FLIRT overlay: not found (curated DB only)"),
+    };
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])

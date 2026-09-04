@@ -47,6 +47,7 @@ members = [
     "firmware-analyzer",
     "memdump-analyzer",
     "freakre-server", "dll-analyzer",
+    "tools/fsig-gen",
 ]
 exclude = ["fuzz"]
 resolver = "2"

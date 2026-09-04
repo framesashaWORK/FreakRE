@@ -1,0 +1,17 @@
+[package]
+name = "fsig-gen"
+version = "0.1.0"
+edition = "2021"
+description = "Harvest FLIRT-style .fsig signatures from PE export tables"
+
+[lib]
+name = "fsig_gen"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fsig-gen"
+path = "src/main.rs"
+
+[dependencies]
+pe-parser = { path = "../../pe-parser" }
+freakre-x86 = { path = "../../freakre-x86" }

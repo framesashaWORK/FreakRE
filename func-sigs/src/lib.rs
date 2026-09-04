@@ -23,13 +23,24 @@
 //! relocation-dependent bytes (call targets, absolute addresses); every
 //! entry carries at least 8 bytes / 4 fixed bytes to keep false positives
 //! near zero on real code.
+//!
+//! The machine-harvested `db/generated.fsig` (~180k Windows-API patterns
+//! from `tools/fsig-gen`) is deliberately NOT embedded — a 27 MB blob
+//! inside binaries trips antivirus heuristics — and loads at runtime via
+//! [`db::load_overlay_file`] / [`db::auto_load_overlay`]. Applications
+//! should call `auto_load_overlay()` once at startup; matching transparently
+//! covers both databases afterwards.
 
 pub mod db;
 
 use serde::Serialize;
 use std::collections::HashMap;
 
-pub use db::{db_entries, db_libraries, db_load_errors, db_signature_count};
+pub use db::{
+    auto_load_overlay, db_entries, db_libraries, db_load_errors, db_signature_count,
+    find_overlay_file, load_overlay_file, load_overlay_text, overlay_signature_count, resolve_hit,
+    validation_fills,
+};
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -362,22 +373,22 @@ fn scan_signatures_with(
     // entry's own confidence.
     if !code.is_empty() {
         for hit in db::scan_db(code, base_offset, step, config.max_matches.saturating_sub(matches.len())) {
-            let e = &db::db_entries()[hit.entry];
+            let (library, name, pattern_len, min_len, confidence) = db::resolve_hit(&hit);
             let remaining = code.len() - (hit.offset - base_offset);
-            if remaining >= e.min_func_len {
+            if remaining >= min_len {
                 matches.push(SignatureMatch {
                     offset: hit.offset,
                     signature: FunctionSignature {
                         crc32: 0,
-                        pattern_len: e.bytes.len(),
-                        library: e.library,
-                        function_name: e.function_name,
-                        min_func_len: e.min_func_len,
+                        pattern_len,
+                        library,
+                        function_name: name,
+                        min_func_len: min_len,
                     },
-                    confidence: e.confidence,
+                    confidence,
                 });
-                if !libraries_found.contains(&e.library.to_string()) {
-                    libraries_found.push(e.library.to_string());
+                if !libraries_found.contains(&library.to_string()) {
+                    libraries_found.push(library.to_string());
                 }
             }
             if matches.len() >= config.max_matches {

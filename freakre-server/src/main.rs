@@ -447,6 +447,13 @@ async fn main() {
 
     let cli = Cli::parse();
 
+    // Best-effort harvested FLIRT overlay (Once-cached; Scanner::new would
+    // also trigger it — this logs the outcome at startup).
+    match func_sigs::auto_load_overlay() {
+        Some(n) => info!("FLIRT overlay: {n} harvested signatures"),
+        None => info!("FLIRT overlay: not found (curated DB only)"),
+    }
+
     let state = Arc::new(AppState {
         yara_rules_path: cli.rules.clone(),
     });
