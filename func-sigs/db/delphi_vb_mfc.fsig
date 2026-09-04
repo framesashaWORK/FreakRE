@@ -1,0 +1,30 @@
+# Delphi RTL / VB6 / MFC — framework startup and string helpers.
+# Delphi register convention (eax, edx, ecx) shapes many entries.
+
+# ─── Delphi System ────────────────────────────────────────────────
+delphi|x86|frame_seh_push|24|0.65|55 8B EC 83 C4 ?? 53 56 57 89 45 ?? 64 FF 30 64 89 20
+delphi|x86|LStrAddRef_inc|16|0.70|85 C0 74 ?? FF 40 F8 C3
+delphi|x86|LStrClr_call|24|0.60|85 C0 74 ?? 50 E8 ?? ?? ?? ?? 33 C0 C3
+delphi|x86|LStrFromString_len|24|0.55|8B 4A FC 85 C9 74 ?? 51 52 E8 ?? ?? ?? ?? 59 5A C3
+delphi|x86|LStrEqual_cmp|24|0.55|39 D0 74 ?? 85 C0 74 ?? 85 D2 74 ?? 8B 48 FC
+delphi|x86|LStrCmp_call|24|0.55|52 50 E8 ?? ?? ?? ?? 83 C4 08 C3
+delphi|x86|UStrAddRef_inc|16|0.65|85 C0 74 ?? FF 40 F8 8B C0 C3
+delphi|x86|DynArrayClear_call|24|0.55|85 C0 74 ?? 50 51 52 E8 ?? ?? ?? ?? 83 C4 0C C3
+delphi|x86|HandleFinally_restore|16|0.55|58 5A 59 64 89 10 5F 5E 5B C9 C2 04 00
+delphi|x86|InitContext_zero|24|0.50|33 C0 89 02 89 42 04 89 42 08 89 42 0C C2 04 00
+delphi|x86|AfterConstruction_call|24|0.50|50 E8 ?? ?? ?? ?? 8B C0 C3
+delphi|x86|BeforeDestruction_call|24|0.50|50 E8 ?? ?? ?? ?? 33 C0 C3
+delphi|x86|TObject_Free_nullcheck|24|0.55|85 C0 74 ?? 50 E8 ?? ?? ?? ?? 83 C4 04 C3
+delphi|x86|ClassCreate_alloc|32|0.50|6A ?? FF 75 08 E8 ?? ?? ?? ?? 85 C0 74 ?? 8B 10 89 02
+delphi|x86|ValLong_digits|32|0.50|8A 01 2C 30 3C 0A 73 ?? 41 8A 01 84 C0 75 ?? 33 C0 C3
+
+# ─── VB6 ──────────────────────────────────────────────────────────
+vb6|x86|startup_thunk_ThunRTMain|32|0.60|68 ?? ?? ?? ?? 68 ?? ?? ?? ?? 6A 00 FF 15 ?? ?? ?? ??
+vb6|x86|rtcMsgBox_forward|24|0.50|FF 75 14 FF 75 10 FF 75 0C FF 75 08 E8 ?? ?? ?? ??
+vb6|x86|rtcBeep_call|16|0.50|6A 00 6A 00 E8 ?? ?? ?? ?? 83 C4 08 C3
+
+# ─── MFC ──────────────────────────────────────────────────────────
+mfc|x86|AfxWinMain_seh_call|48|0.55|55 8B EC 6A FF 68 ?? ?? ?? ?? 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 FF 75 08 E8
+mfc|x86|AfxGetThread_forward|16|0.55|E8 ?? ?? ?? ?? 85 C0 75 ?? 33 C0 C3
+mfc|x86|AfxMessageBox_push|24|0.50|6A 00 6A 00 FF 75 ?? E8 ?? ?? ?? ?? 83 C4 0C C3
+mfc|x86|CWnd_CreateEx_prolog|48|0.50|55 8B EC 83 EC ?? 53 56 57 FF 75 30 FF 75 2C FF 75 28

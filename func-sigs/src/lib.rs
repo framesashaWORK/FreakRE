@@ -14,9 +14,22 @@
 //!
 //! ## Analogue
 //! IDA Pro FLIRT signatures; Ghidra Function ID / FID
+//!
+//! ## Database
+//! Beyond the 12 legacy CRC signatures below, the crate ships a curated
+//! masked-pattern database in `db/*.fsig` (see [`db`): hundreds of entries
+//! across MSVC/CRT (x86 + x64), MinGW/GCC/glibc, zlib, OpenSSL, libcurl,
+//! libpng/libjpeg/SQLite, Delphi/VB6/MFC, Go and packer stubs. `??` marks
+//! relocation-dependent bytes (call targets, absolute addresses); every
+//! entry carries at least 8 bytes / 4 fixed bytes to keep false positives
+//! near zero on real code.
+
+pub mod db;
 
 use serde::Serialize;
 use std::collections::HashMap;
+
+pub use db::{db_entries, db_libraries, db_load_errors, db_signature_count};
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -273,6 +286,34 @@ const COMPILER_PATTERNS: &[CompilerPattern] = &[
         pattern: &[0x55, 0x89, 0xE5, 0x83, 0xEC],
         description: "MinGW x86 prologue",
     },
+    // Delphi: pushes the SEH frame (push fs:[eax]; mov fs:[eax], esp)
+    CompilerPattern {
+        compiler: "Delphi",
+        version: None,
+        pattern: &[0x64, 0xFF, 0x30, 0x64, 0x89, 0x20],
+        description: "Delphi SEH frame setup (push fs:[eax]; mov fs:[eax],esp)",
+    },
+    // Go (amd64, module-aware TLS): stack-guard check against SI
+    CompilerPattern {
+        compiler: "Go",
+        version: None,
+        pattern: &[0x48, 0x3B, 0x6E, 0x10],
+        description: "Go stack-guard check (cmp rsp,[rsi+0x10])",
+    },
+    // Go (amd64, 1.18+): stack-guard check against R14
+    CompilerPattern {
+        compiler: "Go",
+        version: Some("1.18+"),
+        pattern: &[0x49, 0x3B, 0x66, 0x10],
+        description: "Go stack-guard check (cmp rsp,[r14+0x10])",
+    },
+    // Watcom C: register convention pushes every GPR in order
+    CompilerPattern {
+        compiler: "Watcom",
+        version: None,
+        pattern: &[0x50, 0x53, 0x51, 0x52, 0x56, 0x57, 0x55],
+        description: "Watcom register prologue (push eax,ebx,ecx,edx,esi,edi,ebp)",
+    },
 ];
 
 // ─── Scanner ──────────────────────────────────────────────────────────
@@ -315,6 +356,35 @@ fn scan_signatures_with(
     // Clamp step to >= 1 so the sliding loop always makes progress
     let step = config.step.max(1);
     debug_assert!(step >= 1, "SigScanConfig.step must be at least 1");
+
+    // Masked-pattern database phase. Runs over the same sliding offsets so
+    // `step` keeps its meaning; hits convert to SignatureMatch with the
+    // entry's own confidence.
+    if !code.is_empty() {
+        for hit in db::scan_db(code, base_offset, step, config.max_matches.saturating_sub(matches.len())) {
+            let e = &db::db_entries()[hit.entry];
+            let remaining = code.len() - (hit.offset - base_offset);
+            if remaining >= e.min_func_len {
+                matches.push(SignatureMatch {
+                    offset: hit.offset,
+                    signature: FunctionSignature {
+                        crc32: 0,
+                        pattern_len: e.bytes.len(),
+                        library: e.library,
+                        function_name: e.function_name,
+                        min_func_len: e.min_func_len,
+                    },
+                    confidence: e.confidence,
+                });
+                if !libraries_found.contains(&e.library.to_string()) {
+                    libraries_found.push(e.library.to_string());
+                }
+            }
+            if matches.len() >= config.max_matches {
+                break;
+            }
+        }
+    }
 
     // Slide over code and compute CRC32 at each position.
     // Bound by code.len() (not the global max pattern length) so shorter

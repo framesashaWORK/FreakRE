@@ -1,0 +1,23 @@
+# Packer stubs (x86) — loader prologues, not library functions.
+# Confidence is deliberately moderate: stubs are short and versioned.
+# `packer` lib id keeps them out of library attribution.
+
+# ─── Delta tricks (call/pop image-base recovery) ──────────────────
+packer|x86|stub_callpop_eax|16|0.60|E8 00 00 00 00 58 05 ?? ?? ?? ?? 50
+packer|x86|stub_callpop_ebp|16|0.60|E8 00 00 00 00 5D 81 ED ?? ?? ?? ?? 61
+packer|x86|stub_pusha_delta|16|0.60|60 E8 00 00 00 00 58 05 ?? ?? ?? ?? 89 45
+packer|x86|stub_pushf_pusha|16|0.55|9C 60 E8 00 00 00 00 5E 83 C6
+packer|x86|stub_popad_jmp|16|0.55|61 E9 ?? ?? ?? ?? 55 8B EC
+packer|x86|stub_seh_delta|24|0.55|68 ?? ?? ?? ?? 64 FF 35 00 00 00 00 E8 00 00 00 00 5B
+
+# ─── UPX ──────────────────────────────────────────────────────────
+upx|x86|stub_pusha_movesi|24|0.65|60 BE ?? ?? ?? ?? 8D BE ?? ?? ?? ?? 57 83 CD FF
+upx|x86|stub_nrv_lea|24|0.60|8D BE ?? ?? ?? ?? 57 83 CD FF EB ?? 90 8D A4
+upx|x86|stub_popad_tail|16|0.60|61 8D BE ?? ?? ?? ?? 57 E9 ?? ?? ?? ??
+upx|x86|stub_cmp_magic|16|0.55|81 3E 55 50 58 30 75 ?? E8 ?? ?? ?? ?? 61
+
+# ─── ASPack / FSG shapes ──────────────────────────────────────────
+aspack|x86|stub_pusha_call|24|0.55|60 E8 03 00 00 00 E9 EB ?? ?? ?? 61
+fsg|x86|stub_movesi_movdi|24|0.50|BE ?? ?? ?? ?? BF ?? ?? ?? ?? 57 60 AD 09 C0 75
+mew|x86|stub_jump_table|24|0.50|FF 24 85 ?? ?? ?? ?? 60 E8 00 00 00 00 5D
+generic|x86|stub_pusha_only|16|0.50|60 33 C0 8D BD ?? ?? ?? ?? F3 AB

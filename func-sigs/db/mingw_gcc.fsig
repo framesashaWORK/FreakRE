@@ -1,0 +1,38 @@
+# MinGW / GCC / glibc — startup, ctors, stack guard, libgcc helpers.
+# glibc _start preludes are among the most stable bytes in the wild.
+
+# ─── Linux glibc _start (the classic preludes) ────────────────────
+glibc|x86|_start32_prelude|32|0.90|31 ED 5E 89 E1 83 E4 F0 50 54 52 68 ?? ?? ?? ??
+glibc|x64|_start64_prelude|32|0.90|31 ED 49 89 D1 5E 48 89 E2 48 83 E4 F0 50 54
+glibc|x64|_start64_fini_init|32|0.70|48 8D 3D ?? ?? ?? ?? 48 8D 35 ?? ?? ?? ?? 48 29 FE
+glibc|x86|libc_start_main_call|32|0.65|68 ?? ?? ?? ?? 68 ?? ?? ?? ?? 51 56 6A ?? E8 ?? ?? ?? ?? F4
+
+# ─── MinGW startup ────────────────────────────────────────────────
+mingw|x86|tmainCRTStartup_init|32|0.60|55 89 E5 83 EC ?? E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 EC 0C
+mingw|x86|mingw_init_ehandler|24|0.55|64 A1 00 00 00 00 50 64 89 25 00 00 00 00 E8
+mingw|x64|tmainCRTStartup_init|24|0.55|48 83 EC 28 E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 83 C4 28
+mingw|x86|do_global_ctors_loop|32|0.60|8B 35 ?? ?? ?? ?? 85 F6 74 ?? FF 16 83 C6 04 EB
+mingw|x86|__main_guard_call|32|0.60|A1 ?? ?? ?? ?? 85 C0 75 ?? C7 05 ?? ?? ?? ?? 01 00 00 00 E8
+mingw|x86|register_frame_call|24|0.55|68 ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 C4 04 E8 ?? ?? ?? ?? C3
+
+# ─── Stack guard ──────────────────────────────────────────────────
+gcc|x86|stack_guard_load_fs|16|0.80|64 A1 14 00 00 00 89 45 ?? 31 C0 C3
+gcc|x64|stack_guard_load_fs28|16|0.80|64 48 8B 04 25 28 00 00 00 48 89 45 ?? 31 C0
+gcc|x64|stack_chk_fail_ud2|24|0.60|48 8B 3D ?? ?? ?? ?? E8 ?? ?? ?? ?? 0F 0B 66 90
+gcc|x86|stack_chk_fail_ud2|24|0.55|A1 ?? ?? ?? ?? 50 E8 ?? ?? ?? ?? 0F 0B 90 90
+gcc|x64|stack_chk_prolog|24|0.70|64 48 8B 04 25 28 00 00 00 48 89 45 F8 31 C0 48 89
+
+# ─── libgcc / compiler-rt ─────────────────────────────────────────
+libgcc|x86|udivdi3_bsr|32|0.55|83 EC ?? 0F BD ?? 83 F8 1F 77 ?? 0F B6 ?? D1 E2
+libgcc|x86|divdi3_sign_adjust|24|0.55|55 89 E5 57 56 53 83 EC ?? 8B 75 08 8B 7D 0C
+libgcc|x86|memcpy_rep_glibc|24|0.70|55 89 E5 57 56 8B 7D 08 8B 75 0C 8B 4D 10 F3 A5 5E 5F
+libgcc|x86|memcpy_chk_abort|24|0.60|3B ?? 77 ?? E8 ?? ?? ?? ?? 8B 75 ?? 8B 7D ?? F3 A4
+libgcc|x86|memset_rep_glibc|24|0.70|55 89 E5 57 56 8B 7D 08 8B 45 0C 8B 4D 10 F3 AB 5E 5F
+libgcc|x86|strlen_repscas_glibc|24|0.70|55 89 E5 57 56 8B 4D 08 8B F9 33 C0 F2 AE F7 D1 49
+libgcc|x86|strcmp_loop_glibc|24|0.60|55 89 E5 53 8B 5D 08 8B 43 0C 8A 13 84 D2 74
+libgcc|x64|memmove_ssse3_tail|32|0.55|66 0F 6F 06 66 0F 6F 4E 10 66 0F 7F 07 66 0F 7F 4F 10
+gcc|x86|errno_tls_gs|16|0.55|55 89 E5 65 A1 ?? ?? ?? ?? 5D C3
+gcc|x86|cxa_atexit_call|24|0.55|52 50 FF 75 08 E8 ?? ?? ?? ?? 83 C4 0C C3
+gcc|x86|deregister_tm_clones|32|0.50|B8 ?? ?? ?? ?? 2D ?? ?? ?? ?? 83 F8 01 76 ?? B8 00 00 00 00 C3
+gcc|x86|register_tm_clones|32|0.50|53 8B 1D ?? ?? ?? ?? 8B 35 ?? ?? ?? ?? 85 DB 74 ?? 55 89 E5
+gcc|x64|frame_dummy_cet|24|0.50|F3 0F 1E FA 80 3D ?? ?? ?? ?? 00 75 ?? 55 48 89 E5

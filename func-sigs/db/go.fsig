@@ -1,0 +1,21 @@
+# Go runtime (amd64) — stack-guard checks, memmove, fastrand, panic.
+# Go regenerates these per version; confidence stays moderate and shapes
+# use only the stable opcode cores.
+
+# ─── morestack / stack guard ──────────────────────────────────────
+go|x64|morestack_guard_r14|32|0.60|49 3B 66 10 76 ?? 48 83 EC ?? 48 89 74 24 ?? E8
+go|x64|morestack_guard_rsi|32|0.60|48 3B 6E 10 76 ?? 48 83 EC ?? 48 89 74 24 ?? E8
+go|x64|morestack_call_newstack|24|0.55|E8 ?? ?? ?? ?? 48 8B 74 24 ?? 48 83 C4 ?? C3
+go|x64|stack_guard_call|16|0.55|49 3B 66 10 76 ?? E8 ?? ?? ?? ?? C3
+
+# ─── Memory ───────────────────────────────────────────────────────
+go|x64|memmove_regs|32|0.55|48 8B 74 24 ?? 48 8B 7C 24 ?? 48 8B 6C 24 ?? F3 A4 C3
+go|x64|memequal_cmp|24|0.55|48 39 ?? 75 ?? 48 83 ?? 00 74 ?? 48 8B ?? F3 A6 75
+go|x64|memclr_rep_stos|24|0.55|48 8B F9 48 8B D1 48 C1 E9 03 F3 AB C3
+go|x64|fastrand_rdrand|24|0.60|48 8B 04 25 ?? ?? ?? ?? 48 0F C7 F0 73 ?? 48 89 04 25
+go|x64|nanotime_rdtsc|16|0.70|0F 31 48 C1 E2 20 48 09 D0 C3
+
+# ─── Panic / throw ────────────────────────────────────────────────
+go|x64|throw_call_ud2|24|0.55|48 8D ?? ?? ?? ?? ?? ?? E8 ?? ?? ?? ?? 0F 0B CC
+go|x64|panic_call_recover|32|0.50|48 83 EC ?? E8 ?? ?? ?? ?? 48 85 C0 74 ?? E8 ?? ?? ?? ?? 0F 0B
+go|x64|printstring_write|32|0.50|48 8B 44 24 ?? 48 8B 4C 24 ?? E8 ?? ?? ?? ?? 48 83 C4

@@ -1,0 +1,40 @@
+# OpenSSL (1.1.x C codegen, x86) — digest init constants are version-proof:
+# the H words are fixed by the algorithm, only the store registers vary.
+# Bignum/RSA/SSL entries use malloc-forward and vtable skeletons.
+
+# ─── Digest init: algorithm constants as immediates ───────────────
+openssl|x86|MD5_Init_consts|32|0.75|C7 ?? 01 23 45 67 C7 ?? ?? 89 AB CD EF C7 ?? ?? FE DC BA 98
+openssl|x86|MD5_Init_tail|16|0.70|C7 ?? ?? 76 54 32 10 C3
+openssl|x86|SHA1_Init_consts|32|0.75|C7 ?? 01 23 45 67 C7 ?? ?? 89 AB CD EF C7 ?? ?? 98 BA DC FE
+openssl|x86|SHA1_Init_tail|16|0.70|C7 ?? ?? 76 54 32 10 C7 ?? ?? C3 D2 E1 F0
+openssl|x86|SHA256_Init_consts|48|0.75|C7 ?? 67 E6 09 6A C7 ?? ?? 85 AE 67 BB C7 ?? ?? 72 F3 6E 3C
+openssl|x86|SHA256_Init_tail|24|0.70|C7 ?? ?? 1F 83 D9 AB C7 ?? ?? 5B E0 CD 19 C3
+openssl|x86|SHA512_Init_consts|48|0.70|C7 ?? 6A 09 E6 67 C7 ?? ?? BB 67 AE 85 C7 ?? ?? 3C 6E F3 72
+openssl|x86|MD5_or_SHA256_Update|32|0.55|55 8B EC 83 7D 10 00 75 ?? 8B 45 08 8B 48 ?? 03 45 0C
+openssl|x86|SHA256_Block_loop|48|0.55|8B ?? 8B ?? 03 ?? C1 ?? 02 03 ?? 8B ?? 33 ?? 89
+
+# ─── Symmetric cores ──────────────────────────────────────────────
+openssl|x86|RC4_set_key_zero|24|0.70|C7 00 00 00 00 00 C7 40 04 00 00 00 00 8B 4D
+openssl|x86|RC4_loop_add|24|0.55|8A ?? 02 ?? 8A ?? 02 ?? 02 ?? 88 ?? 02 ?? 42
+openssl|x86|DES_set_key_parity|32|0.55|8B 4D 08 8B 55 0C 0F B6 01 0F B6 51 01 8A 04 85
+openssl|x86|AES_set_encrypt_key_rot|32|0.55|8B ?? C1 ?? 08 33 ?? C1 ?? 18 33 ?? 89 ?? 8B ?? 0F B6
+openssl|x86|AES_encrypt_prolog|32|0.55|55 8B EC 83 EC ?? 8B 45 08 8B 4D 0C 8B 55 10 89 45
+
+# ─── Bignum ───────────────────────────────────────────────────────
+openssl|x86|BN_new_malloc|24|0.55|6A ?? E8 ?? ?? ?? ?? 85 C0 74 ?? 33 C9 89 48
+openssl|x86|BN_free_nullcheck|24|0.55|55 8B EC 83 7D 08 00 74 ?? 8B 45 08 50 E8 ?? ?? ?? ??
+openssl|x86|BN_clear_free_zero|24|0.55|8B 45 08 8B 48 ?? 85 C9 74 ?? 6A 00 6A 00 51 E8
+openssl|x86|BN_num_bits_top|16|0.50|8B 41 ?? 85 C0 74 ?? 8B 50 ?? 0F BD C2 C1 E0 05
+openssl|x86|BN_add_prolog|32|0.50|55 8B EC 83 EC ?? 53 56 8B 75 08 8B 7D 0C 8B 5D 10 56 E8
+openssl|x86|BN_CTX_new_pool|24|0.50|6A ?? E8 ?? ?? ?? ?? 85 C0 74 ?? C7 40 ?? 00 00 00 00
+
+# ─── RSA / EVP / SSL ──────────────────────────────────────────────
+openssl|x86|RSA_new_method|24|0.55|6A ?? E8 ?? ?? ?? ?? 85 C0 74 ?? 8B 00 89 45 ?? 8B 45 08
+openssl|x86|RSA_free_engine|24|0.50|55 8B EC 83 7D 08 00 74 ?? 8B 45 08 8B 48 ?? 8B 11
+openssl|x86|SSL_CTX_new_prolog|48|0.60|55 8B EC 83 EC ?? 53 56 57 8B 7D 08 85 FF 75 ?? 33 C0 C9 C2 04 00
+openssl|x86|SSL_new_from_ctx|32|0.55|55 8B EC 83 7D 08 00 74 ?? 8B 45 08 50 E8 ?? ?? ?? ?? 85 C0 74
+openssl|x86|SSL_free_refcount|32|0.50|55 8B EC 8B 45 08 83 48 ?? FF 75 ?? 8B 00 85 C0 7E
+openssl|x86|EVP_DigestInit_dispatch|32|0.50|55 8B EC 8B 45 08 8B 4D 0C 85 C0 74 ?? 8B 11 8B 42 ?? FF 50
+openssl|x86|OPENSSL_malloc_forward|24|0.55|FF 75 08 E8 ?? ?? ?? ?? 85 C0 75 ?? C3
+openssl|x86|OPENSSL_free_nullcheck|24|0.55|83 7D 08 00 74 ?? FF 75 08 E8 ?? ?? ?? ?? C3
+openssl|x86|CRYPTO_memcmp_consttime|24|0.55|33 C0 8A ?? 3A ?? 75 ?? 42 3B ?? 72 ?? 0F B6 C0 C3

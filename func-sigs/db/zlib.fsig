@@ -1,0 +1,33 @@
+# zlib 1.2.x (MSVC x86 codegen) — public API prologues plus the two
+# checksum cores. Wildcards cover heap addresses and stream offsets.
+
+# ─── Public API ───────────────────────────────────────────────────
+zlib|x86|deflateInit_|32|0.65|55 8B EC 83 EC ?? 53 56 57 8B 7D 08 85 FF 75 ?? 33 C0
+zlib|x86|deflate|64|0.65|55 8B EC 83 EC ?? 53 56 57 8B 7D 08 8B 75 0C 85 F6 74
+zlib|x86|deflateEnd|32|0.60|55 8B EC 83 7D 08 00 74 ?? 8B 45 08 8B 48 ?? 85 C9 74
+zlib|x86|inflateInit_|32|0.65|55 8B EC 83 EC ?? 53 56 8B 75 08 85 F6 75 ?? 33 C0
+zlib|x86|inflate|64|0.65|55 8B EC 83 EC ?? 53 56 57 8B 7D 08 8B 48 ?? 85 C9 0F 84
+zlib|x86|inflateEnd|32|0.60|55 8B EC 83 7D 08 00 74 ?? 8B 45 08 8B 48 ?? 85 C9 74
+zlib|x86|compress_prolog|32|0.60|55 8B EC 83 EC ?? 53 56 8B 75 08 8B 4D 0C 85 C9 74
+zlib|x86|uncompress_prolog|32|0.60|55 8B EC 83 EC ?? 53 56 57 8B 7D 08 8B 75 0C 85 F6 74
+zlib|x86|gzopen_forward|24|0.55|FF 75 0C FF 75 08 E8 ?? ?? ?? ?? 85 C0 74 ?? 50 E8
+zlib|x86|gzread_prolog|32|0.55|55 8B EC 83 EC ?? 53 56 8B 75 08 85 F6 74 ?? 8B 46
+zlib|x86|gzwrite_prolog|32|0.55|55 8B EC 83 EC ?? 53 56 8B 75 08 85 F6 74 ?? 8B 46
+zlib|x86|gzclose_nullcheck|24|0.55|55 8B EC 83 7D 08 00 74 ?? 8B 45 08 50 E8 ?? ?? ?? ??
+
+# ─── Checksum cores ───────────────────────────────────────────────
+zlib|x86|adler32_prolog|32|0.60|55 8B EC 83 E4 F8 51 53 56 8B 75 08 8B 4D 0C 8B 5D 10
+zlib|x86|adler32_base_mask|24|0.65|81 E3 F1 FF 00 00 81 F9 00 00 01 00 72 ?? 29 CB
+zlib|x86|crc32_xor_init|24|0.60|8B 55 08 8B C1 83 F0 FF 8B 7D 0C 85 FF 74 ?? 53 56
+zlib|x86|crc32_table_index|24|0.60|8B ?? 33 ?? B1 08 D3 E8 33 ?? 8A ?? 32 ?? 88
+zlib|x86|zcalloc_forward|24|0.55|FF 75 0C FF 75 08 E8 ?? ?? ?? ?? 85 C0 74 ?? 33 C0 C3
+zlib|x86|zcfree_nullcheck|24|0.55|83 7D 0C 00 74 ?? FF 75 08 E8 ?? ?? ?? ?? 83 C4 08 C3
+
+# ─── inflate internals (stable C shapes) ──────────────────────────
+zlib|x86|inflate_table_prolog|48|0.55|55 8B EC 83 EC ?? 53 56 57 8B 7D 08 8B 75 0C 8B 4D 10 C7 45
+zlib|x86|inflate_fast_bits|32|0.55|8B ?? 03 ?? 8B ?? 0F B7 ?? 03 ?? 8B ?? 8B ?? 03
+zlib|x86|inflate_blocks_new|32|0.55|55 8B EC 6A ?? 6A ?? FF 75 ?? E8 ?? ?? ?? ?? 85 C0 74
+zlib|x86|inflate_blocks_free|24|0.55|55 8B EC 83 7D 08 00 74 ?? 8B 45 08 8B 48 ?? 50 E8
+zlib|x86|deflate_slow_probe|32|0.50|55 8B EC 83 EC ?? 53 8B 5D 08 53 FF 75 0C E8 ?? ?? ?? ??
+zlib|x86|longest_match_prolog|48|0.50|55 8B EC 83 EC ?? 53 56 57 8B 7D 08 8B 75 0C 8B 4D 10 8B 56
+zlib|x86|fill_window_prolog|32|0.50|55 8B EC 83 EC ?? 53 56 8B 75 08 8B 46 ?? 83 F8 00 76

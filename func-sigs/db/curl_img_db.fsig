@@ -1,0 +1,41 @@
+# libcurl / libpng / libjpeg / SQLite — public API prologues.
+# Small getters live behind the 8-byte rule; only substantial shapes ship.
+
+# ─── libcurl ──────────────────────────────────────────────────────
+curl|x86|curl_easy_setopt_prolog|48|0.60|55 8B EC 83 E4 F8 83 EC ?? 53 56 57 8B 7D 08 8B 75 0C 85 F6
+curl|x86|curl_easy_setopt_switch|32|0.55|8B 45 0C 83 F8 ?? 77 ?? FF 24 85 ?? ?? ?? ?? 8B 55 08
+curl|x86|curl_easy_cleanup_free|24|0.55|55 8B EC 83 7D 08 00 74 ?? 8B 45 08 8B 48 ?? 51 E8
+curl|x86|curl_easy_duphandle_alloc|32|0.55|55 8B EC 6A ?? FF 75 08 E8 ?? ?? ?? ?? 85 C0 74 ?? 8B 08
+curl|x86|curl_easy_strerror_table|24|0.55|8B 04 85 ?? ?? ?? ?? 85 C0 75 ?? B8 ?? ?? ?? ?? C3
+curl|x86|curl_easy_pause_buf|24|0.50|55 8B EC 83 7D 0C 00 75 ?? 33 C0 C9 C2 08 00 8B 45 08
+curl|x86|curl_global_init_lock|32|0.50|55 8B EC 83 7D 08 00 75 ?? E8 ?? ?? ?? ?? 85 C0 75 ?? 6A 00 E8
+curl|x86|curl_slist_append_alloc|32|0.50|55 8B EC 6A ?? FF 75 08 E8 ?? ?? ?? ?? 85 C0 74 ?? 8B 4D 0C
+curl|x86|curl_version_string|16|0.55|B8 ?? ?? ?? ?? 8B 4D ?? 85 C9 74 ?? 8B 01 C3
+
+# ─── libpng ───────────────────────────────────────────────────────
+libpng|x86|png_create_struct_ver|32|0.60|55 8B EC 6A ?? 68 ?? ?? ?? ?? 6A ?? E8 ?? ?? ?? ?? 85 C0 74
+libpng|x86|png_create_read_struct|32|0.60|55 8B EC 83 7D 10 00 75 ?? 33 C0 C9 C2 10 00 68 ?? ?? ?? ??
+libpng|x86|png_create_write_struct|32|0.60|55 8B EC 83 7D 10 00 75 ?? 33 C0 C9 C2 10 00 68 ?? ?? ?? ??
+libpng|x86|png_destroy_read_struct|32|0.55|55 8B EC 8B 45 08 85 C0 74 ?? 8B 48 ?? 85 C9 74 ?? 50 E8
+libpng|x86|png_error_longjmp|24|0.55|FF 75 0C FF 75 08 E8 ?? ?? ?? ?? CC
+libpng|x86|png_warning_forward|24|0.50|FF 75 0C FF 75 08 E8 ?? ?? ?? ?? 83 C4 08 C3
+libpng|x86|png_malloc_check|24|0.55|8B 45 08 8B 48 ?? 85 C9 74 ?? FF 75 0C E8 ?? ?? ?? ?? 85 C0
+libpng|x86|png_free_nullcheck|24|0.55|83 7D 0C 00 74 ?? 8B 45 08 8B 48 ?? 50 E8 ?? ?? ?? ??
+
+# ─── libjpeg ──────────────────────────────────────────────────────
+libjpeg|x86|jpeg_std_error_memset|24|0.65|6A 44 6A 00 50 E8 ?? ?? ?? ?? 83 C4 0C 8B 45 08
+libjpeg|x86|jpeg_CreateDecompress_ver|32|0.55|68 ?? ?? ?? ?? 6A ?? FF 75 ?? E8 ?? ?? ?? ?? 85 C0 74 ?? 33 C0
+libjpeg|x86|jpeg_CreateCompress_ver|32|0.55|68 ?? ?? ?? ?? 6A ?? FF 75 ?? E8 ?? ?? ?? ?? 85 C0 74 ?? 33 C0
+libjpeg|x86|jpeg_destroy_nullcheck|24|0.55|55 8B EC 83 7D 08 00 74 ?? 8B 45 08 8B 48 ?? 51 E8
+libjpeg|x86|jpeg_read_header_prolog|32|0.50|55 8B EC 83 7D 0C 01 75 ?? 33 C0 C9 C2 08 00 8B 45 08
+libjpeg|x86|jpeg_start_decompress_prolog|32|0.50|55 8B EC 83 7D 08 00 74 ?? 8B 45 08 8B 48 ?? 85 C9 74
+
+# ─── SQLite ───────────────────────────────────────────────────────
+sqlite|x86|sqlite3_malloc_forward|24|0.60|FF 75 08 E8 ?? ?? ?? ?? 85 C0 75 ?? C3
+sqlite|x86|sqlite3_errmsg_ptr|24|0.55|8B 41 ?? 85 C0 75 ?? B8 ?? ?? ?? ?? C3
+sqlite|x86|sqlite3_errcode_field|16|0.55|55 8B EC 8B 45 08 8B 40 ?? C3
+sqlite|x86|sqlite3_memory_used_load|16|0.55|A1 ?? ?? ?? ?? 8B 40 ?? C3
+sqlite|x86|sqlite3_status_load|24|0.50|A1 ?? ?? ?? ?? 8B 50 ?? 89 51 ?? 33 C0 C3
+sqlite|x86|sqlite3_mutex_held_field|16|0.50|8B 41 ?? 83 F8 00 77 ?? 33 C0 C3
+sqlite|x86|sqlite3_open_prolog|48|0.55|55 8B EC 83 EC ?? 53 56 8B 75 08 85 F6 74 ?? 8B 7D 0C 85 FF 74
+sqlite|x86|sqlite3_close_nullcheck|24|0.55|55 8B EC 83 7D 08 00 74 ?? B8 00 00 00 00 C9 C2 04 00

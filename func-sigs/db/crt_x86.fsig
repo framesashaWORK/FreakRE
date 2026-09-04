@@ -1,0 +1,194 @@
+# MSVC CRT, x86 — curated FLIRT entries.
+# Format: lib|arch|name|min_len|confidence|hex (?? = wildcard for rel32/absolute addresses).
+# Only stable opcode skeletons: immediates holding addresses are wildcarded,
+# well-known constants (LCG, x87, EH magic) are kept exact.
+
+# ─── Startup / exit ───────────────────────────────────────────────
+msvcrt|x86|security_cookie_default_check|24|0.75|A1 ?? ?? ?? ?? 3D 4E E6 40 BB 75 ?? E8
+msvcrt|x86|seh_frame_setup|48|0.65|6A FF 68 ?? ?? ?? ?? 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50
+msvcrt|x86|exit_process_call|32|0.60|6A 00 FF 15 ?? ?? ?? ?? C3
+msvcrt|x86|exit_cexit_chain|32|0.60|6A 00 E8 ?? ?? ?? ?? 6A 00 E8 ?? ?? ?? ?? C3
+msvcrt|x86|doexit_table_walk|48|0.55|8B 35 ?? ?? ?? ?? 85 F6 74 ?? FF 16 83 C6 04
+msvcrt|x86|tmain_vs2019_probe|32|0.50|E8 ?? ?? ?? ?? 83 65 FC 00 FF 35 ?? ?? ?? ??
+msvcrt|x86|abort_raise|24|0.55|6A 03 E8 ?? ?? ?? ?? 83 C4 04 E8
+msvcrt|x86|invalid_parameter_watson|24|0.55|6A 00 6A 00 6A 00 E8 ?? ?? ?? ?? 83 C4 0C C3
+
+# ─── Security cookie / alloca probe ───────────────────────────────
+msvcrt|x86|security_check_cookie_call|24|0.70|3B 0D ?? ?? ?? ?? 75 ?? E8 ?? ?? ?? ?? C3
+msvcrt|x86|chkstk_pageprobe|32|0.75|2D 00 10 00 00 85 00 3D 00 10 00 00 73 ??
+msvcrt|x86|cookie_xor_prolog|24|0.70|A1 ?? ?? ?? ?? 33 C5 89 45 FC 53 56 57
+
+# ─── C++ EH ───────────────────────────────────────────────────────
+msvcrt|x86|eh_magic_CxxFrameHandler|32|0.70|81 38 20 05 93 19 75 ?? E8
+msvcrt|x86|CxxThrow_setup|32|0.60|6A 00 6A 01 68 20 05 93 19 FF 15 ?? ?? ?? ??
+msvcrt|x86|RTDynamicCast_prolog|48|0.55|55 8B EC 83 E4 F8 83 EC 30 53 56 57
+msvcrt|x86|callnewh_retry|24|0.55|E8 ?? ?? ?? ?? 85 C0 75 ?? 33 C0 C3
+msvcrt|x86|operator_new_malloc|32|0.55|FF 75 08 E8 ?? ?? ?? ?? 85 C0 75 ?? C3
+msvcrt|x86|operator_delete|24|0.60|85 C0 74 ?? 50 E8 ?? ?? ?? ?? C3
+
+# ─── Heap ─────────────────────────────────────────────────────────
+msvcrt|x86|malloc_heap_prolog|32|0.55|55 8B EC 51 53 56 57 8B 7D 08
+msvcrt|x86|malloc_size_check|32|0.60|83 7D 08 00 76 ?? FF 75 08 E8 ?? ?? ?? ??
+msvcrt|x86|calloc_malloc_check|32|0.55|FF 75 0C FF 75 08 E8 ?? ?? ?? ?? 85 C0 74
+msvcrt|x86|free_null_check|24|0.60|55 8B EC 83 7D 08 00 74 ?? FF 75 08 E8
+msvcrt|x86|free_heapfree_call|24|0.60|FF 35 ?? ?? ?? ?? 6A 00 FF 75 08 E8 ?? ?? ?? ??
+msvcrt|x86|realloc_null_to_malloc|32|0.55|55 8B EC 53 56 8B 75 08 85 F6 74 ?? E8
+msvcrt|x86|msize_header|16|0.60|8B 44 24 04 8B 40 F8 C3
+
+# ─── memcpy / memset / memmove ────────────────────────────────────
+msvcrt|x86|memcpy|24|0.80|55 8B EC 57 8B 7D ?? 8B 75 ?? 8B 4D ?? F3 A5
+msvcrt|x86|memcpy_lea_variant|24|0.70|8D 7D ?? 8D 75 ?? 8B 4D ?? F3 A5 C3
+msvcrt|x86|memcpy_sse2|32|0.60|55 8B EC 57 8B 7D ?? 8B 75 ?? 8B 4D ?? 0F 6F 06
+msvcrt|x86|memset|24|0.80|55 8B EC 57 8B 7D ?? 8B 45 ?? 8B 4D ?? F3 AB
+msvcrt|x86|memset_sse_broadcast|24|0.65|66 0F 6E C0 66 0F 70 C0 00 0F 7F 07
+msvcrt|x86|memmove_overlap_check|48|0.70|55 8B EC 57 56 8B 7D ?? 8B 75 ?? 3B FE 77
+msvcrt|x86|memmove_backward_std|24|0.60|FD 8B 4D ?? F3 A4 FC C3
+
+# ─── strlen / strcpy / strcmp family ──────────────────────────────
+msvcrt|x86|strlen_repscas|24|0.85|55 8B EC 57 8B 7D 08 8B F9 33 C0 F2 AE F7 D1 49
+msvcrt|x86|strchr_scan|24|0.60|55 8B EC 57 8B 7D 08 8B 45 0C F2 AE F7 D1 75
+msvcrt|x86|memchr_scan|24|0.70|8B 7D ?? 8A 45 ?? 8B 4D ?? F2 AE F7 D1 75
+msvcrt|x86|memcmp_repcmps|24|0.80|57 56 8B 7D ?? 8B 75 ?? 8B 4D ?? 33 C0 F3 A6
+msvcrt|x86|strncmp_repcmps|24|0.65|55 8B EC 57 56 8B 7D ?? 8B 75 ?? 8B 4D ?? F3 A6 75
+msvcrt|x86|strcmp_byteloop|24|0.60|55 8B EC 53 56 8B 75 ?? 8B 7D ?? 8A 06 84 C0 74
+msvcrt|x86|strcpy_copyloop|24|0.75|55 8B EC 8B 45 08 8B 55 0C 8A 06 88 07 46 47 84 C0 75
+msvcrt|x86|strcat_find_end|24|0.60|8B FA F2 AE F7 D1 FF C7 8B F2 8A 06
+msvcrt|x86|strncat_find_end|24|0.55|8B FA F2 AE F7 D1 FF C7 8A 06 84 C0
+msvcrt|x86|strdup_alloc|32|0.60|FF 75 ?? E8 ?? ?? ?? ?? 85 C0 74 ?? 50 E8 ?? ?? ?? ?? 85 C0 74
+msvcrt|x86|strlwr_caseflip|24|0.70|8A 06 84 C0 74 ?? 34 20 88 06 46 EB
+msvcrt|x86|strupr_casesub|24|0.70|8A 06 84 C0 74 ?? 2C 20 88 06 46 EB
+msvcrt|x86|strtok_static_state|24|0.55|A1 ?? ?? ?? ?? 85 C0 75 ?? 8B 45 08 A3 ?? ?? ?? ??
+msvcrt|x86|atoi_or_atol_thunk|16|0.60|6A 0A 6A 00 FF 75 08 E8 ?? ?? ?? ?? C3
+msvcrt|x86|strstr_probe|32|0.55|E8 ?? ?? ?? ?? 85 C0 74 ?? 50 E8 ?? ?? ?? ?? 85 C0
+msvcrt|x86|wcslen_repscasw|24|0.80|55 8B EC 57 8B 7D 08 8B F9 33 C0 66 F2 AE F7 D1 49
+msvcrt|x86|wcscpy_copyloop|24|0.70|66 8B 06 66 89 07 83 C6 02 83 C7 02 66 85 C0 75
+msvcrt|x86|wcscmp_wordloop|24|0.60|66 8B 06 66 3B 07 75 ?? 66 85 C0 74
+msvcrt|x86|wmemcpy_repmovsw|24|0.70|55 8B EC 57 8B 7D ?? 8B 75 ?? 8B 4D ?? 66 F3 A5
+msvcrt|x86|wmemset_repstosw|24|0.70|55 8B EC 57 8B 7D ?? 66 8B 45 ?? 8B 4D ?? 66 F3 AB
+
+# ─── setjmp / longjmp ─────────────────────────────────────────────
+msvcrt|x86|setjmp_regsave|32|0.65|8B 44 24 04 89 68 ?? 89 70 ?? 89 78 ?? 33 C0 C3
+msvcrt|x86|longjmp_valfix|24|0.75|8B 4C 24 08 85 C9 75 ?? B8 01 00 00 00 8B 54 24 04
+
+# ─── rand / div / itoa / byteswap / rol ───────────────────────────
+msvcrt|x86|rand_lcg|24|0.85|69 C0 FD 43 34 00 05 C3 9E 26 00 89 05
+msvcrt|x86|srand_store|16|0.65|8B 44 24 04 A3 ?? ?? ?? ?? C3
+msvcrt|x86|div_idiv|16|0.65|8B 44 24 04 99 F7 7C 24 08 C3
+msvcrt|x86|abs_or_labs|16|0.60|8B 44 24 04 85 C0 79 ?? F7 D8 C3
+msvcrt|x86|bsearch_halve|24|0.55|8B 45 ?? D1 F8 8B 4D ?? 03 C8 3B
+msvcrt|x86|qsort_frame|32|0.55|55 8B EC 83 E4 F8 83 EC 3C 53 56 57
+msvcrt|x86|itoa_div10|16|0.65|B9 0A 00 00 00 F7 F9 89 54 24
+msvcrt|x86|itoa_ltoa_call|24|0.60|6A 0A 50 FF 75 08 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|byteswap_bswap|16|0.70|55 8B EC 8B 45 08 0F C8 5D C3
+msvcrt|x86|byteswap64_bswap|16|0.65|8B 44 24 04 8B 4C 24 08 0F C8 0F C9
+msvcrt|x86|byteswap_ushort_ror|16|0.65|0F B7 44 24 04 C1 C8 08 C3
+msvcrt|x86|lrotl_rolecx|16|0.65|8B 44 24 04 8B 4C 24 08 D3 C0 C3
+msvcrt|x86|lrotr_rorect|16|0.65|8B 44 24 04 8B 4C 24 08 D3 C8 C3
+
+# ─── x87 math helpers ─────────────────────────────────────────────
+msvcrt|x86|math_helper_leaf|16|0.60|DD 44 24 04 E8 ?? ?? ?? ?? C3
+msvcrt|x86|trig_helper_frame|16|0.60|55 8B EC D9 45 08 E8 ?? ?? ?? ?? 5D C3
+msvcrt|x86|pow_two_fld|16|0.55|DD 44 24 ?? DD 44 24 ?? E8 ?? ?? ?? ?? C3
+msvcrt|x86|ldexp_fscale|16|0.60|DD 44 24 04 D9 C0 DE C9 C3
+msvcrt|x86|difftime_fsub|16|0.65|DD 44 24 04 DC 6C 24 0C C3
+msvcrt|x86|frndint_roundmode_set|16|0.55|D9 7C 24 ?? 66 8B 04 24 66 0D 00 0C
+
+# ─── stdio ────────────────────────────────────────────────────────
+msvcrt|x86|sprintf_forward|24|0.60|8D 45 ?? 50 FF 75 ?? FF 75 ?? E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|fprintf_forward|24|0.55|8D 45 ?? 50 FF 75 ?? FF 75 ?? E8 ?? ?? ?? ?? 83 C4 10 C3
+msvcrt|x86|fread_or_fwrite|24|0.60|FF 75 ?? FF 75 ?? FF 75 ?? FF 75 ?? E8 ?? ?? ?? ??
+msvcrt|x86|fgets_nolock_call|24|0.55|FF 75 10 FF 75 0C FF 75 08 E8 ?? ?? ?? ?? C3
+msvcrt|x86|gets_fgets_call|24|0.55|68 ?? ?? ?? ?? 6A 00 6A 00 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|fopen_fsopen|24|0.55|6A 00 6A 00 FF 75 ?? FF 75 ?? E8 ?? ?? ?? ?? 83 C4 10 C3
+msvcrt|x86|fputc_cmp_m1|24|0.55|FF 75 0C FF 75 08 E8 ?? ?? ?? ?? 83 F8 FF C3
+msvcrt|x86|rewind_fseek|24|0.55|6A 00 6A 00 6A 00 FF 75 08 E8 ?? ?? ?? ?? C3
+msvcrt|x86|fseek_lseek|24|0.55|FF 75 10 FF 75 0C 6A 00 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|ftell_lseek|24|0.55|6A 01 6A 00 FF 75 08 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|feof_or_ferror|16|0.55|8B 44 24 04 8B 00 F6 40 ?? ?? C3
+msvcrt|x86|fileno_file_field|16|0.55|8B 44 24 04 8B 40 10 C3
+msvcrt|x86|stat_fstat_call|24|0.55|6A 40 50 FF 75 ?? E8 ?? ?? ?? ?? 83 C4 08 C3
+
+# ─── files / env / misc ───────────────────────────────────────────
+msvcrt|x86|file_lock_dispatch|16|0.55|FF 75 ?? FF 15 ?? ?? ?? ?? C3
+msvcrt|x86|read_or_write_file_call|32|0.55|6A 00 FF 75 ?? FF 75 ?? FF 75 ?? FF 75 ?? FF 15 ?? ?? ?? ??
+msvcrt|x86|getenv_environ_walk|24|0.55|A1 ?? ?? ?? ?? 8B 10 85 D2 74 ?? 8B 45 08
+msvcrt|x86|access_default_mode|24|0.50|6A 00 FF 75 ?? E8 ?? ?? ?? ?? 83 C4 08 C3
+msvcrt|x86|strtoul_thunk|16|0.50|6A 00 6A 00 FF 75 ?? E8 ?? ?? ?? ?? C3
+msvcrt|x86|sprintf_s_validation|24|0.55|8B 44 24 04 85 C0 74 ?? E8 ?? ?? ?? ?? 83 C4 04
+
+# ─── Wave 2: errno/time/locale/console/low-level I/O ───────────────
+msvcrt|x86|strerror_table|16|0.55|8B 04 85 ?? ?? ?? ?? C3
+msvcrt|x86|mblen_mbtowc|24|0.50|6A 01 6A 00 FF 75 08 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|mbstowcs_null_src|24|0.50|FF 75 10 FF 75 0C 6A 00 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|wcstombs_3push|24|0.50|FF 75 10 FF 75 0C FF 75 08 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|stat64_size|24|0.50|6A 48 50 FF 75 08 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|findfirst_err_m1|32|0.55|FF 75 0C FF 75 08 E8 ?? ?? ?? ?? 85 C0 78 ?? B8 FF FF FF FF C3
+msvcrt|x86|findnext_test_js|24|0.50|FF 75 08 E8 ?? ?? ?? ?? 85 C0 78 ?? 33 C0 C3
+msvcrt|x86|chsize_zero|24|0.50|6A 00 FF 75 0C FF 75 08 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|dup_cmp_m1|24|0.50|FF 75 08 E8 ?? ?? ?? ?? 83 F8 FF 75 ?? 33 C0 C3
+msvcrt|x86|dup2_js|24|0.50|FF 75 0C FF 75 08 E8 ?? ?? ?? ?? 85 C0 78 ?? 33 C0 C3
+msvcrt|x86|pipe_zeros|24|0.50|FF 75 08 6A 00 6A 00 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|getpid_import|16|0.55|55 8B EC FF 15 ?? ?? ?? ?? 5D C3
+msvcrt|x86|getch_cmp_m1|24|0.50|E8 ?? ?? ?? ?? 83 F8 FF 75 ?? 33 C0 C3
+msvcrt|x86|kbhit_test_jz|24|0.50|E8 ?? ?? ?? ?? 85 C0 74 ?? B8 01 00 00 00 C3
+msvcrt|x86|puts_fputs|24|0.50|FF 75 08 68 ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 C4 08 C3
+msvcrt|x86|getchar_stdin|24|0.50|A1 ?? ?? ?? ?? 50 E8 ?? ?? ?? ?? 83 C4 04 C3
+msvcrt|x86|perror_strerror|24|0.50|E8 ?? ?? ?? ?? 50 E8 ?? ?? ?? ?? 83 C4 08 C3
+msvcrt|x86|asctime_push26|24|0.50|68 ?? ?? ?? ?? 6A 1A E8 ?? ?? ?? ?? 83 C4 08 C3
+msvcrt|x86|mktime_sub8|24|0.50|55 8B EC 83 EC 08 FF 75 08 E8 ?? ?? ?? ?? 83 C4 04 C3
+msvcrt|x86|time_store_null|32|0.55|FF 75 08 E8 ?? ?? ?? ?? 85 C0 75 ?? 8B 4D 08 89 01 C3
+msvcrt|x86|clock_gettickcount|24|0.50|FF 15 ?? ?? ?? ?? 83 F8 FF 75 ?? 33 C0 C3
+msvcrt|x86|localeconv_forward|16|0.50|55 8B EC E8 ?? ?? ?? ?? 5D C3
+msvcrt|x86|setjmp3_env|24|0.50|FF 75 10 FF 75 0C 8B 45 08 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|strdate_buf_call|24|0.50|68 ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 C4 04 C3
+msvcrt|x86|splitpath_5push|24|0.55|FF 75 ?? FF 75 ?? FF 75 ?? FF 75 ?? FF 75 ?? E8 ?? ?? ?? ??
+msvcrt|x86|aligned_malloc_deref|32|0.55|FF 75 0C FF 75 08 E8 ?? ?? ?? ?? 85 C0 75 ?? 8B 00 C3
+msvcrt|x86|onexit_thunk|16|0.50|FF 75 08 E8 ?? ?? ?? ?? 83 C4 04 C3
+msvcrt|x86|c_exit_doexit|24|0.50|E8 ?? ?? ?? ?? 6A FE E8 ?? ?? ?? ?? C3
+msvcrt|x86|exit_terminate|16|0.55|FF 75 08 FF 15 ?? ?? ?? ?? CC
+msvcrt|x86|terminate_unexpected_abort|16|0.50|55 8B EC E8 ?? ?? ?? ?? CC
+msvcrt|x86|set_app_type|16|0.55|C7 05 ?? ?? ?? ?? 01 00 00 00 C3
+msvcrt|x86|setusermatherr|16|0.50|8B 44 24 04 A3 ?? ?? ?? ?? C3
+msvcrt|x86|heapchk_call_test|24|0.50|E8 ?? ?? ?? ?? 85 C0 75 ?? B8 01 00 00 00 C3
+msvcrt|x86|CrtDumpMemoryLeaks_call|24|0.50|E8 ?? ?? ?? ?? 85 C0 74 ?? 33 C0 C3
+msvcrt|x86|rename_forward|24|0.50|FF 75 0C FF 75 08 E8 ?? ?? ?? ?? 85 C0 75 ?? C3
+msvcrt|x86|chmod_default|24|0.50|6A 00 FF 75 08 E8 ?? ?? ?? ?? 83 C4 08 C3
+msvcrt|x86|ctime_gmtime_forward|16|0.50|FF 75 08 E8 ?? ?? ?? ?? C3
+msvcrt|x86|controlfp_forward|24|0.50|FF 75 0C FF 75 08 E8 ?? ?? ?? ?? 83 C4 08 C3
+msvcrt|x86|rmtmp_call|16|0.50|55 8B EC E8 ?? ?? ?? ?? 33 C0 5D C3
+msvcrt|x86|wcschr_scanw|24|0.55|55 8B EC 57 8B 7D 08 66 8B 45 0C 66 F2 AE F7 D1 75
+msvcrt|x86|wcsncmp_repcmpsw|24|0.55|55 8B EC 57 56 8B 7D ?? 8B 75 ?? 8B 4D ?? 66 F3 A7 75
+msvcrt|x86|wcscat_find_end|16|0.55|8B FA 66 F2 AE F7 D1 FF C7 8B F2
+msvcrt|x86|wmemchr_scanw|24|0.55|8B 7D ?? 66 8B 45 ?? 8B 4D ?? 66 F2 AE F7 D1 75
+msvcrt|x86|strset_fill|16|0.55|8A 45 ?? 88 06 46 84 C0 75 ?? C3
+msvcrt|x86|strnset_fill|16|0.55|8A 45 ?? 88 06 46 4E 75 ?? C3
+msvcrt|x86|strrev_swap|16|0.55|8A 07 8A 1E 88 1E 88 07 46 4E 39
+msvcrt|x86|strpbrk_strchr_call|24|0.50|8A 06 50 FF 75 ?? E8 ?? ?? ?? ?? 85 C0 75 ?? C3
+msvcrt|x86|tempnam_2push|24|0.50|68 ?? ?? ?? ?? 68 ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 C4 08 C3
+msvcrt|x86|futime_push0|24|0.50|FF 75 0C 6A 00 FF 75 08 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|tzset_calls|16|0.50|55 8B EC E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 5D C3
+msvcrt|x86|isatty_filetype|24|0.50|FF 75 08 FF 15 ?? ?? ?? ?? 83 F8 00 74 ?? 33 C0 C3
+msvcrt|x86|open_sopen|24|0.50|6A 00 6A 00 FF 75 08 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|lseek_zero|24|0.50|FF 75 10 FF 75 0C 6A 00 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|tell_lseek|24|0.50|6A 01 6A 00 FF 75 08 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|eof_test|24|0.50|FF 75 08 E8 ?? ?? ?? ?? 83 F8 00 75 ?? 33 C0 C3
+msvcrt|x86|filelength_end|24|0.50|6A 02 6A 00 FF 75 08 E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|ecvt_zeros|24|0.50|FF 75 10 FF 75 0C 6A 00 6A 00 E8 ?? ?? ?? ?? 83 C4 10 C3
+msvcrt|x86|cprintf_forward|24|0.50|8D 45 ?? 50 FF 75 ?? E8 ?? ?? ?? ?? 83 C4 08 C3
+msvcrt|x86|makepath_4push_add14|32|0.50|FF 75 ?? FF 75 ?? FF 75 ?? FF 75 ?? E8 ?? ?? ?? ?? 83 C4 14
+msvcrt|x86|putenv_call|24|0.50|FF 75 08 E8 ?? ?? ?? ?? 85 C0 75 ?? B8 00 00 00 00 C3
+msvcrt|x86|swab_copyloop|16|0.55|8A 06 88 07 46 47 49 75 ?? 33 C0 C3
+msvcrt|x86|modf_fistp|16|0.55|DD 44 24 04 DB 5C 24 08 8B 45 ?? C3
+msvcrt|x86|round_frndint|16|0.55|DD 44 24 04 D9 FC 9B C3
+msvcrt|x86|log_fyl2x|16|0.60|DD 44 24 04 D9 E8 D9 F1 C3
+msvcrt|x86|log10_fyl2x_div|16|0.60|DD 44 24 04 D9 E8 D9 F1 D9 E9
+msvcrt|x86|atan_fpatan|16|0.55|DD 44 24 04 D9 E8 D9 F3 C3
+msvcrt|x86|atan2_fpatan|16|0.55|DD 44 24 0C DD 44 24 04 D9 F3 C3
+msvcrt|x86|tan_fptan|16|0.60|DD 44 24 04 D9 F2 DD D8 C3
+msvcrt|x86|ctype_table_classify|16|0.55|0F B6 04 05 ?? ?? ?? ?? C0 E8 ?? C3
+msvcrt|x86|assert_3push|32|0.50|FF 75 ?? 68 ?? ?? ?? ?? 68 ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 C4 0C C3
+msvcrt|x86|readfsbyte|16|0.55|64 8A 05 ?? ?? ?? ?? C3
+msvcrt|x86|readdfsdword|16|0.55|64 8B 05 ?? ?? ?? ?? C3
+msvcrt|x86|writefsbyte|16|0.55|64 88 0D ?? ?? ?? ?? C3
+msvcrt|x86|readfsword|16|0.50|64 0F B7 05 ?? ?? ?? ?? C3
+msvcrt|x86|strcpy_s_validation|24|0.50|8B 44 24 04 85 C0 74 ?? E8 ?? ?? ?? ?? 83 C4 04 C3
