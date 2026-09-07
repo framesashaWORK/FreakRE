@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use sled::transaction::{ConflictableTransactionError, TransactionError};
 use crate::functions::FunctionEntry;
 use crate::Xref;
+use serde::{Deserialize, Serialize};
+use sled::transaction::{ConflictableTransactionError, TransactionError};
 
 /// An action that can be undone/redone
 #[allow(clippy::large_enum_variant)] // boxing FunctionEntry would complicate serde round-trips
@@ -74,7 +74,8 @@ impl Action {
                 format!("Set label '{}' at 0x{:X}", label, address)
             }
             Action::SetComment { address, new, .. } => {
-                let preview = new.as_deref()
+                let preview = new
+                    .as_deref()
                     .map(|s| Self::truncate_chars(s, 30))
                     .unwrap_or_else(|| "(removed)".to_string());
                 format!("Set comment '{}' at 0x{:X}", preview, address)
@@ -85,8 +86,11 @@ impl Action {
             Action::RemoveBookmark { address, bookmark } => {
                 format!("Remove bookmark '{}' at 0x{:X}", bookmark.name, address)
             }
-            Action::SetType { address, new_type, .. } => {
-                let type_str = new_type.as_ref()
+            Action::SetType {
+                address, new_type, ..
+            } => {
+                let type_str = new_type
+                    .as_ref()
                     .map(|t| format!("{:?}", t))
                     .unwrap_or_else(|| "(none)".to_string());
                 format!("Set type '{}' at 0x{:X}", type_str, address)
@@ -122,7 +126,7 @@ impl UndoStack {
     pub fn push(&mut self, action: Action) {
         self.undo.push(action);
         self.redo.clear(); // new action invalidates redo stack
-        
+
         // Trim if too large
         if self.undo.len() > self.max_size {
             self.undo.remove(0);
@@ -294,7 +298,9 @@ impl crate::ProjectDatabase {
             Action::RemoveBookmark { address, .. } => {
                 self.remove_bookmark_internal(*address)?;
             }
-            Action::SetType { address, new_type, .. } => {
+            Action::SetType {
+                address, new_type, ..
+            } => {
                 self.set_type_internal(*address, new_type.clone())?;
             }
             Action::AddXref { xref } => {
@@ -359,7 +365,9 @@ impl crate::ProjectDatabase {
             Action::RemoveBookmark { bookmark, .. } => {
                 self.add_bookmark_internal(bookmark.clone())?;
             }
-            Action::SetType { address, old_type, .. } => {
+            Action::SetType {
+                address, old_type, ..
+            } => {
                 self.set_type_internal(*address, old_type.clone())?;
             }
             Action::AddXref { xref } => {
@@ -376,7 +384,7 @@ impl crate::ProjectDatabase {
     }
 
     // Internal methods that don't push to undo stack
-    
+
     fn add_function_internal(&mut self, func: FunctionEntry) -> crate::Result<()> {
         let key = func.address.to_le_bytes();
         let value = bincode::serialize(&func)?;
@@ -546,7 +554,6 @@ impl crate::ProjectDatabase {
         self.update_modified();
         Ok(())
     }
-
 }
 
 #[cfg(test)]
@@ -556,22 +563,22 @@ mod tests {
     #[test]
     fn test_undo_stack_basic() {
         let mut stack = UndoStack::new(100);
-        
+
         assert!(!stack.can_undo());
         assert!(!stack.can_redo());
-        
+
         stack.push(Action::SetLabel {
             address: 0x1000,
             old: None,
             new: Some("main".to_string()),
         });
-        
+
         assert!(stack.can_undo());
         assert!(!stack.can_redo());
-        
+
         let action = stack.pop_undo().unwrap();
         stack.push_redo(action);
-        
+
         assert!(!stack.can_undo());
         assert!(stack.can_redo());
     }
@@ -579,7 +586,7 @@ mod tests {
     #[test]
     fn test_undo_stack_max_size() {
         let mut stack = UndoStack::new(3);
-        
+
         for i in 0..5 {
             stack.push(Action::SetLabel {
                 address: i,
@@ -587,31 +594,31 @@ mod tests {
                 new: Some(format!("label_{}", i)),
             });
         }
-        
+
         assert_eq!(stack.undo_count(), 3);
     }
 
     #[test]
     fn test_new_action_clears_redo() {
         let mut stack = UndoStack::new(100);
-        
+
         stack.push(Action::SetLabel {
             address: 0x1000,
             old: None,
             new: Some("a".to_string()),
         });
-        
+
         let action = stack.pop_undo().unwrap();
         stack.push_redo(action);
         assert!(stack.can_redo());
-        
+
         // New action should clear redo
         stack.push(Action::SetLabel {
             address: 0x2000,
             old: None,
             new: Some("b".to_string()),
         });
-        
+
         assert!(!stack.can_redo());
     }
 }

@@ -25,10 +25,10 @@ pub enum InferenceError {
 pub struct TypeInference {
     /// Substitution: TypeVar -> Ty
     pub substitutions: HashMap<TypeVar, Ty>,
-    
+
     /// Unresolved type variables (mapped to Ty::Unknown)
     pub unresolved: Vec<TypeVar>,
-    
+
     /// Whether unification reached a fixed point. `false` means the
     /// safety iteration cap was exhausted and the substitutions may be
     /// partial — consumers should treat results with suspicion.
@@ -234,8 +234,7 @@ impl TypeInference {
                         // f32 / u32) is accepted; a width mismatch across
                         // kinds (i32 vs f64) is a conflict — matching the
                         // strictness of `is_consistent`.
-                        if let (Some(w1), Some(w2)) = (numeric_width(&ty_a), numeric_width(&ty_b))
-                        {
+                        if let (Some(w1), Some(w2)) = (numeric_width(&ty_a), numeric_width(&ty_b)) {
                             if w1 != w2 {
                                 return Err(InferenceError::TypeConflict(ty_a, ty_b));
                             }
@@ -495,9 +494,10 @@ fn types_compatible(a: &Ty, b: &Ty) -> bool {
         (Ty::Array(n1, x), Ty::Array(n2, y)) => n1 == n2 && types_compatible(x, y),
         (Ty::Struct(f1), Ty::Struct(f2)) => {
             f1.len() == f2.len()
-                && f1.iter().zip(f2.iter()).all(|((n1, t1), (n2, t2))| {
-                    n1 == n2 && types_compatible(t1, t2)
-                })
+                && f1
+                    .iter()
+                    .zip(f2.iter())
+                    .all(|((n1, t1), (n2, t2))| n1 == n2 && types_compatible(t1, t2))
         }
         _ => a == b,
     }
@@ -526,34 +526,34 @@ fn int_as_pointee(pointee: &Ty, int_ty: &Ty) -> Ty {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_simple_unification() {
         let mut cs = ConstraintSystem::new();
         let v1 = cs.fresh_var();
         let v2 = cs.fresh_var();
-        
+
         cs.add_equal(v1, v2);
         cs.add_must_be(v1, Ty::i32());
-        
+
         let inference = TypeInference::solve(&cs).unwrap();
-        
+
         assert_eq!(inference.resolve(v1), Ty::i32());
         assert_eq!(inference.resolve(v2), Ty::i32());
     }
-    
+
     #[test]
     fn test_type_conflict() {
         let mut cs = ConstraintSystem::new();
         let v1 = cs.fresh_var();
-        
+
         cs.add_must_be(v1, Ty::i32());
         cs.add_must_be(v1, Ty::i64());
-        
+
         let result = TypeInference::solve(&cs);
         assert!(result.is_err());
     }
-    
+
     #[test]
     fn test_pointer_unification() {
         let mut cs = ConstraintSystem::new();
@@ -755,6 +755,10 @@ mod tests {
             MAX_PTR_DEPTH
         );
         // The variable must still be a (bounded) pointer.
-        assert!(matches!(ta, Ty::Ptr(_)), "a must remain a pointer, got {}", ta);
+        assert!(
+            matches!(ta, Ty::Ptr(_)),
+            "a must remain a pointer, got {}",
+            ta
+        );
     }
 }

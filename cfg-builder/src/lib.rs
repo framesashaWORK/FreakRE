@@ -62,9 +62,20 @@ pub struct Instruction {
 
 impl Instruction {
     /// Retrieve raw bytes from the original code slice.
+    ///
+    /// Never panics: out-of-range `(offset, length)` pairs (e.g. a hostile
+    /// hand-built `Instruction`) are clamped to the slice instead of slicing
+    /// out of bounds. Use [`Self::try_get_bytes`] for strict bounds checking.
     #[inline]
     pub fn get_bytes<'a>(&self, code: &'a [u8]) -> &'a [u8] {
-        &code[self.offset..self.offset + self.length]
+        self.try_get_bytes(code).unwrap_or(&[])
+    }
+
+    /// Retrieve raw bytes, or `None` when `(offset, length)` is out of bounds.
+    #[inline]
+    pub fn try_get_bytes<'a>(&self, code: &'a [u8]) -> Option<&'a [u8]> {
+        let end = self.offset.checked_add(self.length)?;
+        code.get(self.offset..end)
     }
 }
 
@@ -177,8 +188,7 @@ impl ControlFlowGraph {
         self.blocks
             .iter()
             .filter(|b| {
-                b.num_instructions == 1
-                    && b.edge_types.contains(&EdgeType::UnconditionalJump)
+                b.num_instructions == 1 && b.edge_types.contains(&EdgeType::UnconditionalJump)
             })
             .collect()
     }
@@ -436,7 +446,12 @@ fn find_function_starts(code: &[u8], _is_64bit: bool) -> Vec<usize> {
 
 /// Find basic block leader offsets with branch target resolution.
 /// Leaders are: first instruction, targets of branches/jumps, instruction after branches.
-fn find_leaders(instructions: &[Instruction], code: &[u8], base_va: u64, is_64bit: bool) -> HashSet<usize> {
+fn find_leaders(
+    instructions: &[Instruction],
+    code: &[u8],
+    base_va: u64,
+    is_64bit: bool,
+) -> HashSet<usize> {
     let mut leaders = HashSet::new();
 
     if !instructions.is_empty() {
@@ -483,7 +498,12 @@ fn find_leaders(instructions: &[Instruction], code: &[u8], base_va: u64, is_64bi
 /// Legacy prefixes (2E/36/3E/26/64/65 segment overrides, 66 operand-size,
 /// 67 address-size, F0 lock, F2/F3 rep) and — in 64-bit mode — REX are skipped
 /// before opcode dispatch so prefixed jumps resolve correctly too.
-fn resolve_branch_target(inst: &Instruction, code: &[u8], base_va: u64, is_64bit: bool) -> Option<usize> {
+fn resolve_branch_target(
+    inst: &Instruction,
+    code: &[u8],
+    base_va: u64,
+    is_64bit: bool,
+) -> Option<usize> {
     let bytes = inst.get_bytes(code);
     if bytes.len() < 2 {
         return None;
@@ -493,8 +513,7 @@ fn resolve_branch_target(inst: &Instruction, code: &[u8], base_va: u64, is_64bit
     let mut i = 0usize;
     while i < bytes.len() {
         match bytes[i] {
-            0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x66 | 0x67
-            | 0xF0 | 0xF2 | 0xF3 => i += 1,
+            0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x66 | 0x67 | 0xF0 | 0xF2 | 0xF3 => i += 1,
             0x40..=0x4F if is_64bit => i += 1,
             _ => break,
         }
@@ -502,8 +521,9 @@ fn resolve_branch_target(inst: &Instruction, code: &[u8], base_va: u64, is_64bit
     let opcode = *bytes.get(i)?;
     let disp_at = i + 1; // displacement starts right after the opcode
 
-    let inst_va = base_va + inst.offset as u64;
-    let next_inst_va = inst_va + inst.length as u64;
+    // saturating: `base_va`/`offset`/`length` may come from hostile input
+    let inst_va = base_va.saturating_add(inst.offset as u64);
+    let next_inst_va = inst_va.saturating_add(inst.length as u64);
 
     match opcode {
         // Short jumps: EB rel8, 70-7F rel8
@@ -606,7 +626,10 @@ fn build_blocks(instructions: &[Instruction], leaders: &HashSet<usize>) -> Vec<B
 
     // Final block
     if current_block_start < instructions.len() {
-        let last_end = instructions.last().map(|i| i.offset + i.length).unwrap_or(0);
+        let last_end = instructions
+            .last()
+            .map(|i| i.offset + i.length)
+            .unwrap_or(0);
         blocks.push(BasicBlock {
             id: block_id,
             start_offset: instructions[current_block_start].offset,
@@ -649,7 +672,9 @@ fn connect_edges(
             match inst.kind {
                 InstructionKind::UnconditionalJump => {
                     // Try to resolve jump target
-                    if let Some(target_offset) = resolve_branch_target(inst, code, config.base_va, config.is_64bit) {
+                    if let Some(target_offset) =
+                        resolve_branch_target(inst, code, config.base_va, config.is_64bit)
+                    {
                         let target_relative = if target_offset >= config.base_va as usize {
                             target_offset - config.base_va as usize
                         } else {
@@ -665,7 +690,9 @@ fn connect_edges(
                 }
                 InstructionKind::ConditionalBranch => {
                     // Resolve branch target
-                    if let Some(target_offset) = resolve_branch_target(inst, code, config.base_va, config.is_64bit) {
+                    if let Some(target_offset) =
+                        resolve_branch_target(inst, code, config.base_va, config.is_64bit)
+                    {
                         let target_relative = if target_offset >= config.base_va as usize {
                             target_offset - config.base_va as usize
                         } else {
@@ -694,7 +721,9 @@ fn connect_edges(
                 InstructionKind::Call => {
                     // Edge to the called function so its entry block is not
                     // mistaken for unreachable code during anomaly detection.
-                    if let Some(target_offset) = resolve_branch_target(inst, code, config.base_va, config.is_64bit) {
+                    if let Some(target_offset) =
+                        resolve_branch_target(inst, code, config.base_va, config.is_64bit)
+                    {
                         if target_offset >= config.base_va as usize {
                             let target_relative = target_offset - config.base_va as usize;
                             if let Some(&target_id) = offset_to_block.get(&target_relative) {
@@ -827,8 +856,7 @@ fn detect_anomalies(
         let trampolines: Vec<&BasicBlock> = blocks
             .iter()
             .filter(|b| {
-                b.num_instructions == 1
-                    && b.edge_types.contains(&EdgeType::UnconditionalJump)
+                b.num_instructions == 1 && b.edge_types.contains(&EdgeType::UnconditionalJump)
             })
             .collect();
 
@@ -932,7 +960,12 @@ impl DominatorTree {
                     if Some(p) == new_idom || idom[p].is_none() {
                         continue;
                     }
-                    new_idom = Some(Self::intersect(&idom, &rpo_idx, idom[p].unwrap(), new_idom.unwrap()));
+                    new_idom = Some(Self::intersect(
+                        &idom,
+                        &rpo_idx,
+                        idom[p].unwrap(),
+                        new_idom.unwrap(),
+                    ));
                 }
 
                 if idom[b] != new_idom {
@@ -1154,7 +1187,11 @@ pub struct FunctionBoundary {
 }
 
 /// Detect function boundaries using prologue/epilogue patterns.
-pub fn detect_functions(code: &[u8], _base_offset: usize, _config: &CfgConfig) -> Vec<FunctionBoundary> {
+pub fn detect_functions(
+    code: &[u8],
+    _base_offset: usize,
+    _config: &CfgConfig,
+) -> Vec<FunctionBoundary> {
     let mut functions = Vec::new();
 
     // Scan for common prologues
@@ -1173,11 +1210,13 @@ pub fn detect_functions(code: &[u8], _base_offset: usize, _config: &CfgConfig) -
             // Find corresponding epilogue (RET or LEAVE; RET)
             let mut end = i + 4;
             while end < code.len().saturating_sub(2) {
-                if code[end] == 0xC3 || code[end] == 0xCB { // RET
+                if code[end] == 0xC3 || code[end] == 0xCB {
+                    // RET
                     end += 1;
                     break;
                 }
-                if code[end] == 0xC9 && (code[end + 1] == 0xC3 || code[end + 1] == 0xCB) { // LEAVE; RET
+                if code[end] == 0xC9 && (code[end + 1] == 0xC3 || code[end + 1] == 0xCB) {
+                    // LEAVE; RET
                     end += 2;
                     break;
                 }
@@ -1205,6 +1244,27 @@ pub fn detect_functions(code: &[u8], _base_offset: usize, _config: &CfgConfig) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_get_bytes_clamps_hostile_instruction() {
+        let code = [0x90u8; 8];
+        // offset/length far outside the slice: no panic, strict API says No.
+        let wild = Instruction {
+            offset: usize::MAX,
+            length: 1,
+            kind: InstructionKind::Unknown,
+        };
+        assert_eq!(wild.get_bytes(&code), &[]);
+        assert_eq!(wild.try_get_bytes(&code), None);
+        // Valid range still returns the exact bytes.
+        let ok = Instruction {
+            offset: 2,
+            length: 4,
+            kind: InstructionKind::Normal,
+        };
+        assert_eq!(ok.get_bytes(&code), &[0x90; 4]);
+        assert_eq!(ok.try_get_bytes(&code), Some(&[0x90u8; 4][..]));
+    }
 
     #[test]
     fn test_lde_ret() {
@@ -1275,7 +1335,10 @@ mod tests {
         let cfg = build_cfg(&code, 0, &config);
 
         assert!(!cfg.anomalies.is_empty());
-        assert!(cfg.anomalies.iter().any(|a| a.description.contains("Excessive")));
+        assert!(cfg
+            .anomalies
+            .iter()
+            .any(|a| a.description.contains("Excessive")));
     }
 
     #[test]
@@ -1294,7 +1357,7 @@ mod tests {
         let mut code = vec![0xEB, 0x05]; // JMP +5  -> offset 7
         code.extend_from_slice(&[0x90; 5]); // offsets 2..7 (skipped)
         code.push(0xC3); // offset 7: RET
-        // 300 high-entropy bytes (LCG) as orphaned code.
+                         // 300 high-entropy bytes (LCG) as orphaned code.
         let mut rng = 0x1234_5678u32;
         for _ in 0..300 {
             rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -1335,7 +1398,9 @@ mod tests {
         let cfg = build_cfg(&code, 0, &config);
 
         assert!(
-            !cfg.anomalies.iter().any(|a| a.description.contains("unreachable")),
+            !cfg.anomalies
+                .iter()
+                .any(|a| a.description.contains("unreachable")),
             "unexpected unreachable anomaly on fully-reachable code: {:?}",
             cfg.anomalies
         );
@@ -1344,13 +1409,18 @@ mod tests {
     #[test]
     fn edge_types_stay_parallel_to_successors() {
         let samples: Vec<Vec<u8>> = vec![
-            vec![0x90, 0x90, 0xC3],                                    // plain ret
-            vec![0x74, 0x02, 0x90, 0x90, 0xC3],                        // conditional
-            vec![0x74, 0x05, 0xE8, 0x05, 0x00, 0x00, 0x00, 0xC3, 0x90, 0x90, 0x90, 0x90, 0xC3], // call graph
-            vec![0xEB, 0x00, 0xEB, 0x00],                              // jmp loop
+            vec![0x90, 0x90, 0xC3],             // plain ret
+            vec![0x74, 0x02, 0x90, 0x90, 0xC3], // conditional
+            vec![
+                0x74, 0x05, 0xE8, 0x05, 0x00, 0x00, 0x00, 0xC3, 0x90, 0x90, 0x90, 0x90, 0xC3,
+            ], // call graph
+            vec![0xEB, 0x00, 0xEB, 0x00],       // jmp loop
         ];
         for code in samples {
-            let config = CfgConfig { seed_from_prologues: false, ..Default::default() };
+            let config = CfgConfig {
+                seed_from_prologues: false,
+                ..Default::default()
+            };
             let cfg = build_cfg(&code, 0, &config);
             for b in &cfg.blocks {
                 assert_eq!(
@@ -1380,13 +1450,12 @@ mod tests {
         //   8..11: padding
         //  12: C3              RET             (block 3, call target)
         let code = vec![
-            0x74, 0x05,
-            0xE8, 0x05, 0x00, 0x00, 0x00,
-            0xC3,
-            0x90, 0x90, 0x90, 0x90,
-            0xC3,
+            0x74, 0x05, 0xE8, 0x05, 0x00, 0x00, 0x00, 0xC3, 0x90, 0x90, 0x90, 0x90, 0xC3,
         ];
-        let config = CfgConfig { seed_from_prologues: false, ..Default::default() };
+        let config = CfgConfig {
+            seed_from_prologues: false,
+            ..Default::default()
+        };
         let cfg = build_cfg(&code, 0, &config);
 
         assert_eq!(cfg.blocks.len(), 4);
@@ -1394,14 +1463,25 @@ mod tests {
         // Every RET-terminated block must have neither successors nor
         // edge-type entries (no dangling EdgeType::Return).
         for idx in [2usize, 3] {
-            assert!(cfg.blocks[idx].successors.is_empty(), "block {} has successors", idx);
-            assert!(cfg.blocks[idx].edge_types.is_empty(), "block {} has dangling edge types", idx);
+            assert!(
+                cfg.blocks[idx].successors.is_empty(),
+                "block {} has successors",
+                idx
+            );
+            assert!(
+                cfg.blocks[idx].edge_types.is_empty(),
+                "block {} has dangling edge types",
+                idx
+            );
         }
 
         // Call block: callee entry gets a Call edge, sequential continuation
         // gets a Fallthrough edge (previously mislabeled as a second Call).
         let call_block = &cfg.blocks[1];
-        assert_eq!(call_block.edge_types, vec![EdgeType::Call, EdgeType::Fallthrough]);
+        assert_eq!(
+            call_block.edge_types,
+            vec![EdgeType::Call, EdgeType::Fallthrough]
+        );
         assert_eq!(call_block.successors, vec![3, 2]);
     }
 
@@ -1409,22 +1489,47 @@ mod tests {
     fn prefixed_direct_branches_resolve() {
         // CS-prefixed short JMP: 2E EB 05 at offset 0, base 0x1000
         // -> next = 0x1003, target = 0x1008
-        let inst = Instruction { offset: 0, length: 3, kind: InstructionKind::UnconditionalJump };
+        let inst = Instruction {
+            offset: 0,
+            length: 3,
+            kind: InstructionKind::UnconditionalJump,
+        };
         let bytes = [0x2E, 0xEB, 0x05];
-        assert_eq!(resolve_branch_target(&inst, &bytes, 0x1000, false), Some(0x1008));
+        assert_eq!(
+            resolve_branch_target(&inst, &bytes, 0x1000, false),
+            Some(0x1008)
+        );
 
         // Operand-size-prefixed near JMP: 66 E9 rel32 -> next = base + 6
-        let inst = Instruction { offset: 0, length: 6, kind: InstructionKind::UnconditionalJump };
+        let inst = Instruction {
+            offset: 0,
+            length: 6,
+            kind: InstructionKind::UnconditionalJump,
+        };
         let bytes = [0x66, 0xE9, 0x10, 0x00, 0x00, 0x00];
-        assert_eq!(resolve_branch_target(&inst, &bytes, 0x1000, false), Some(0x1016));
+        assert_eq!(
+            resolve_branch_target(&inst, &bytes, 0x1000, false),
+            Some(0x1016)
+        );
 
         // Long conditional Jcc: 0F 84 FE FF FF FF -> next = base + 6, disp -2
-        let inst = Instruction { offset: 0, length: 6, kind: InstructionKind::ConditionalBranch };
+        let inst = Instruction {
+            offset: 0,
+            length: 6,
+            kind: InstructionKind::ConditionalBranch,
+        };
         let bytes = [0x0F, 0x84, 0xFE, 0xFF, 0xFF, 0xFF];
-        assert_eq!(resolve_branch_target(&inst, &bytes, 0x1000, true), Some(0x1004));
+        assert_eq!(
+            resolve_branch_target(&inst, &bytes, 0x1000, true),
+            Some(0x1004)
+        );
 
         // Prefix-only buffer (truncated) must yield None, not panic/index OOB.
-        let inst = Instruction { offset: 0, length: 1, kind: InstructionKind::Unknown };
+        let inst = Instruction {
+            offset: 0,
+            length: 1,
+            kind: InstructionKind::Unknown,
+        };
         let bytes = [0x66];
         assert_eq!(resolve_branch_target(&inst, &bytes, 0x1000, false), None);
     }
@@ -1437,7 +1542,11 @@ mod tests {
         code[0] = 0xFF;
         code[1] = 0x25;
         code[2..6].copy_from_slice(&(-0x2000i32).to_le_bytes()); // mem = base + 6 - 0x2000 < base
-        let inst = Instruction { offset: 0, length: 6, kind: InstructionKind::UnconditionalJump };
+        let inst = Instruction {
+            offset: 0,
+            length: 6,
+            kind: InstructionKind::UnconditionalJump,
+        };
         assert_eq!(resolve_branch_target(&inst, &code, 0x1_0000, true), None);
     }
 
@@ -1450,9 +1559,14 @@ mod tests {
         let mut code = vec![0u8; 24];
         code[0..6].copy_from_slice(&[0xFF, 0x25, 0x0A, 0x00, 0x00, 0x00]);
         code[16..24].copy_from_slice(&0x1014u64.to_le_bytes());
-        let inst = Instruction { offset: 0, length: 6, kind: InstructionKind::UnconditionalJump };
-        assert_eq!(resolve_branch_target(&inst, &code, 0x1000, true), Some(0x1014));
+        let inst = Instruction {
+            offset: 0,
+            length: 6,
+            kind: InstructionKind::UnconditionalJump,
+        };
+        assert_eq!(
+            resolve_branch_target(&inst, &code, 0x1000, true),
+            Some(0x1014)
+        );
     }
 }
-
-

@@ -47,6 +47,12 @@ pub fn constfold(func: &mut IrFunction) -> usize {
     folded
 }
 
+/// Evaluate a pure binary op on two constants. Shared by `constfold` and the
+/// SSA SCCP pass so both always agree.
+pub fn eval_const_binop_public(op: OpCode, a: i64, b: i64) -> Option<i64> {
+    eval_const_binop(op, a, b)
+}
+
 fn eval_const_binop(op: OpCode, a: i64, b: i64) -> Option<i64> {
     match op {
         OpCode::Add => Some(a.wrapping_add(b)),
@@ -57,6 +63,8 @@ fn eval_const_binop(op: OpCode, a: i64, b: i64) -> Option<i64> {
         OpCode::Xor => Some(a ^ b),
         OpCode::Shl => Some(a.wrapping_shl(b as u32)),
         OpCode::Shr => Some((a as u64).wrapping_shr(b as u32) as i64),
+        // `Sar` preserves the sign bit. Casting to `u64` here would turn it
+        // into a logical shift and is wrong for every negative operand.
         OpCode::Sar => Some(a.wrapping_shr(b as u32)),
         OpCode::Eq => Some(if a == b { 1 } else { 0 }),
         OpCode::Ne => Some(if a != b { 1 } else { 0 }),
@@ -92,7 +100,13 @@ pub fn dce(func: &mut IrFunction) -> usize {
                 let is_pure = matches!(
                     &block.insts[i],
                     IrInst::Binary { op, .. } if matches!(op, OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::And | OpCode::Or | OpCode::Xor | OpCode::Shl | OpCode::Shr | OpCode::Sar | OpCode::Eq | OpCode::Ne)
-                ) || matches!(&block.insts[i], IrInst::Unary { op: OpCode::Copy, .. });
+                ) || matches!(
+                    &block.insts[i],
+                    IrInst::Unary {
+                        op: OpCode::Copy,
+                        ..
+                    }
+                );
                 if is_pure {
                     if let Some(dst) = block.insts[i].dst() {
                         if let Some(id) = dst.var_id() {
@@ -123,6 +137,7 @@ pub fn cse(func: &mut IrFunction) -> usize {
         let mut seen: HashMap<(OpCode, Value, Value), Value> = HashMap::new();
         let mut new_insts = Vec::with_capacity(block.insts.len());
         for inst in std::mem::take(&mut block.insts) {
+            invalidate_cse(&mut seen, &inst);
             match &inst {
                 IrInst::Binary { op, lhs, rhs, dst } if is_pure_binop(*op) => {
                     let key = (*op, lhs.clone(), rhs.clone());
@@ -149,6 +164,26 @@ pub fn cse(func: &mut IrFunction) -> usize {
     eliminated
 }
 
+fn invalidate_cse(seen: &mut HashMap<(OpCode, Value, Value), Value>, inst: &IrInst) {
+    let changed = match inst {
+        IrInst::Binary { dst, .. }
+        | IrInst::Unary { dst, .. }
+        | IrInst::Load { dst, .. }
+        | IrInst::Adc { dst, .. }
+        | IrInst::Sbb { dst, .. } => Some(dst),
+        IrInst::Call { dst: Some(dst), .. } => Some(dst),
+        _ => None,
+    };
+    let flush_all = matches!(inst, IrInst::Store { .. } | IrInst::Call { .. });
+    if flush_all {
+        seen.clear();
+        return;
+    }
+    if let Some(dst) = changed {
+        seen.retain(|(_, lhs, rhs), value| value != dst && lhs != dst && rhs != dst);
+    }
+}
+
 fn is_pure_binop(op: OpCode) -> bool {
     matches!(
         op,
@@ -159,7 +194,7 @@ fn is_pure_binop(op: OpCode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{IrInst, IrFunction, OpCode, Value};
+    use crate::ir::{IrFunction, IrInst, OpCode, Value};
     use crate::types::Ty;
 
     #[test]
@@ -181,7 +216,36 @@ mod tests {
         assert_eq!(folded, 1);
         assert!(matches!(
             &func.blocks[0].insts[0],
-            IrInst::Unary { op: OpCode::Copy, src: Value::Const(5), .. }
+            IrInst::Unary {
+                op: OpCode::Copy,
+                src: Value::Const(5),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_constfold_sar_preserves_sign() {
+        let mut func = IrFunction::new("sar", 0x1000);
+        let dst = func.alloc_var(Ty::i64());
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: dst.clone(),
+                op: OpCode::Sar,
+                lhs: Value::Const(-2),
+                rhs: Value::Const(1),
+            },
+        );
+
+        assert_eq!(constfold(&mut func), 1);
+        assert!(matches!(
+            &func.blocks[0].insts[0],
+            IrInst::Unary {
+                op: OpCode::Copy,
+                src: Value::Const(-1),
+                ..
+            }
         ));
     }
 
@@ -243,7 +307,10 @@ mod tests {
         assert_eq!(eliminated, 1);
         assert!(matches!(
             &func.blocks[0].insts[1],
-            IrInst::Unary { op: OpCode::Copy, .. }
+            IrInst::Unary {
+                op: OpCode::Copy,
+                ..
+            }
         ));
     }
 }

@@ -54,7 +54,11 @@ impl ArmLifter {
 
     /// Register type based on architecture.
     fn reg_ty(&self) -> Ty {
-        if self.is_64bit { Ty::i64() } else { Ty::i32() }
+        if self.is_64bit {
+            Ty::i64()
+        } else {
+            Ty::i32()
+        }
     }
 
     /// Create a register value.
@@ -68,10 +72,22 @@ impl ArmLifter {
     /// ARM32 register name from index (R0-R15).
     fn arm32_reg_name(idx: u8) -> &'static str {
         match idx {
-            0 => "r0", 1 => "r1", 2 => "r2", 3 => "r3",
-            4 => "r4", 5 => "r5", 6 => "r6", 7 => "r7",
-            8 => "r8", 9 => "r9", 10 => "r10", 11 => "r11",
-            12 => "r12", 13 => "sp", 14 => "lr", 15 => "pc",
+            0 => "r0",
+            1 => "r1",
+            2 => "r2",
+            3 => "r3",
+            4 => "r4",
+            5 => "r5",
+            6 => "r6",
+            7 => "r7",
+            8 => "r8",
+            9 => "r9",
+            10 => "r10",
+            11 => "r11",
+            12 => "r12",
+            13 => "sp",
+            14 => "lr",
+            15 => "pc",
             _ => "r?",
         }
     }
@@ -79,14 +95,37 @@ impl ArmLifter {
     /// AArch64 register name from index (X0-X30, SP, XZR).
     fn aarch64_reg_name(idx: u8) -> &'static str {
         match idx {
-            0 => "x0", 1 => "x1", 2 => "x2", 3 => "x3",
-            4 => "x4", 5 => "x5", 6 => "x6", 7 => "x7",
-            8 => "x8", 9 => "x9", 10 => "x10", 11 => "x11",
-            12 => "x12", 13 => "x13", 14 => "x14", 15 => "x15",
-            16 => "x16", 17 => "x17", 18 => "x18", 19 => "x19",
-            20 => "x20", 21 => "x21", 22 => "x22", 23 => "x23",
-            24 => "x24", 25 => "x25", 26 => "x26", 27 => "x27",
-            28 => "x28", 29 => "x29", 30 => "x30",
+            0 => "x0",
+            1 => "x1",
+            2 => "x2",
+            3 => "x3",
+            4 => "x4",
+            5 => "x5",
+            6 => "x6",
+            7 => "x7",
+            8 => "x8",
+            9 => "x9",
+            10 => "x10",
+            11 => "x11",
+            12 => "x12",
+            13 => "x13",
+            14 => "x14",
+            15 => "x15",
+            16 => "x16",
+            17 => "x17",
+            18 => "x18",
+            19 => "x19",
+            20 => "x20",
+            21 => "x21",
+            22 => "x22",
+            23 => "x23",
+            24 => "x24",
+            25 => "x25",
+            26 => "x26",
+            27 => "x27",
+            28 => "x28",
+            29 => "x29",
+            30 => "x30",
             31 => "sp",
             _ => "x?",
         }
@@ -95,14 +134,37 @@ impl ArmLifter {
     /// AArch64 W-register name from index.
     fn aarch64_w_reg_name(idx: u8) -> &'static str {
         match idx {
-            0 => "w0", 1 => "w1", 2 => "w2", 3 => "w3",
-            4 => "w4", 5 => "w5", 6 => "w6", 7 => "w7",
-            8 => "w8", 9 => "w9", 10 => "w10", 11 => "w11",
-            12 => "w12", 13 => "w13", 14 => "w14", 15 => "w15",
-            16 => "w16", 17 => "w17", 18 => "w18", 19 => "w19",
-            20 => "w20", 21 => "w21", 22 => "w22", 23 => "w23",
-            24 => "w24", 25 => "w25", 26 => "w26", 27 => "w27",
-            28 => "w28", 29 => "w29", 30 => "w30",
+            0 => "w0",
+            1 => "w1",
+            2 => "w2",
+            3 => "w3",
+            4 => "w4",
+            5 => "w5",
+            6 => "w6",
+            7 => "w7",
+            8 => "w8",
+            9 => "w9",
+            10 => "w10",
+            11 => "w11",
+            12 => "w12",
+            13 => "w13",
+            14 => "w14",
+            15 => "w15",
+            16 => "w16",
+            17 => "w17",
+            18 => "w18",
+            19 => "w19",
+            20 => "w20",
+            21 => "w21",
+            22 => "w22",
+            23 => "w23",
+            24 => "w24",
+            25 => "w25",
+            26 => "w26",
+            27 => "w27",
+            28 => "w28",
+            29 => "w29",
+            30 => "w30",
             31 => "wsp",
             _ => "w?",
         }
@@ -139,11 +201,14 @@ impl ArmLifter {
             let cond_flag = func.alloc_var(Ty::Bool);
             let guarded = func.add_block(&format!("guarded_{:X}", address));
             let fallthrough = func.add_block(&format!("after_{:X}", address));
-            func.push_inst(block, IrInst::CBranch {
-                cond: cond_flag,
-                target_true: guarded,
-                target_false: fallthrough,
-            });
+            func.push_inst(
+                block,
+                IrInst::CBranch {
+                    cond: cond_flag,
+                    target_true: guarded,
+                    target_false: fallthrough,
+                },
+            );
             (guarded, Some(fallthrough))
         } else {
             (block, None)
@@ -172,26 +237,35 @@ impl ArmLifter {
 
                 match opcode {
                     3 | 7 => {
-                        func.push_inst(work, IrInst::Binary {
-                            dst: rd_val,
-                            op: OpCode::Sub,
-                            lhs: rhs,
-                            rhs: rn_val,
-                        });
+                        func.push_inst(
+                            work,
+                            IrInst::Binary {
+                                dst: rd_val,
+                                op: OpCode::Sub,
+                                lhs: rhs,
+                                rhs: rn_val,
+                            },
+                        );
                     }
                     14 => {
                         let inverted = func.alloc_var(Ty::i32());
-                        func.push_inst(work, IrInst::Unary {
-                            dst: inverted.clone(),
-                            op: OpCode::Not,
-                            src: rhs,
-                        });
-                        func.push_inst(work, IrInst::Binary {
-                            dst: rd_val,
-                            op: OpCode::And,
-                            lhs: rn_val,
-                            rhs: inverted,
-                        });
+                        func.push_inst(
+                            work,
+                            IrInst::Unary {
+                                dst: inverted.clone(),
+                                op: OpCode::Not,
+                                src: rhs,
+                            },
+                        );
+                        func.push_inst(
+                            work,
+                            IrInst::Binary {
+                                dst: rd_val,
+                                op: OpCode::And,
+                                lhs: rn_val,
+                                rhs: inverted,
+                            },
+                        );
                     }
                     8..=11 => {
                         let flags_tmp = func.alloc_var(Ty::i32());
@@ -201,26 +275,35 @@ impl ArmLifter {
                             10 => OpCode::Sub,
                             _ => OpCode::Add,
                         };
-                        func.push_inst(work, IrInst::Binary {
-                            dst: flags_tmp,
-                            op,
-                            lhs: rn_val,
-                            rhs,
-                        });
+                        func.push_inst(
+                            work,
+                            IrInst::Binary {
+                                dst: flags_tmp,
+                                op,
+                                lhs: rn_val,
+                                rhs,
+                            },
+                        );
                     }
                     13 => {
-                        func.push_inst(work, IrInst::Unary {
-                            dst: rd_val,
-                            op: OpCode::Copy,
-                            src: rhs,
-                        });
+                        func.push_inst(
+                            work,
+                            IrInst::Unary {
+                                dst: rd_val,
+                                op: OpCode::Copy,
+                                src: rhs,
+                            },
+                        );
                     }
                     15 => {
-                        func.push_inst(work, IrInst::Unary {
-                            dst: rd_val,
-                            op: OpCode::Not,
-                            src: rhs,
-                        });
+                        func.push_inst(
+                            work,
+                            IrInst::Unary {
+                                dst: rd_val,
+                                op: OpCode::Not,
+                                src: rhs,
+                            },
+                        );
                     }
                     _ => {
                         let op = match opcode {
@@ -231,12 +314,15 @@ impl ArmLifter {
                             12 => OpCode::Or,
                             _ => OpCode::Copy,
                         };
-                        func.push_inst(work, IrInst::Binary {
-                            dst: rd_val,
-                            op,
-                            lhs: rn_val,
-                            rhs,
-                        });
+                        func.push_inst(
+                            work,
+                            IrInst::Binary {
+                                dst: rd_val,
+                                op,
+                                lhs: rn_val,
+                                rhs,
+                            },
+                        );
                     }
                 }
             }
@@ -266,55 +352,76 @@ impl ArmLifter {
                 let addr = func.alloc_var(ty.clone());
                 if pre_index {
                     let op = if negate { OpCode::Sub } else { OpCode::Add };
-                    func.push_inst(work, IrInst::Binary {
-                        dst: addr.clone(),
-                        op,
-                        lhs: rn_val.clone(),
-                        rhs: offset.clone(),
-                    });
+                    func.push_inst(
+                        work,
+                        IrInst::Binary {
+                            dst: addr.clone(),
+                            op,
+                            lhs: rn_val.clone(),
+                            rhs: offset.clone(),
+                        },
+                    );
                 } else {
-                    func.push_inst(work, IrInst::Unary {
-                        dst: addr.clone(),
-                        op: OpCode::Copy,
-                        src: rn_val.clone(),
-                    });
+                    func.push_inst(
+                        work,
+                        IrInst::Unary {
+                            dst: addr.clone(),
+                            op: OpCode::Copy,
+                            src: rn_val.clone(),
+                        },
+                    );
                 }
 
                 if is_load {
-                    func.push_inst(work, IrInst::Load {
-                        dst: rd_val,
-                        addr: addr.clone(),
-                        size,
-                    });
+                    func.push_inst(
+                        work,
+                        IrInst::Load {
+                            dst: rd_val,
+                            addr: addr.clone(),
+                            size,
+                        },
+                    );
                 } else {
-                    func.push_inst(work, IrInst::Store {
-                        addr: addr.clone(),
-                        value: rd_val,
-                        size,
-                    });
+                    func.push_inst(
+                        work,
+                        IrInst::Store {
+                            addr: addr.clone(),
+                            value: rd_val,
+                            size,
+                        },
+                    );
                 }
 
                 if rn != 15 && (!pre_index || writeback) {
                     if pre_index {
-                        func.push_inst(work, IrInst::Unary {
-                            dst: rn_val,
-                            op: OpCode::Copy,
-                            src: addr,
-                        });
+                        func.push_inst(
+                            work,
+                            IrInst::Unary {
+                                dst: rn_val,
+                                op: OpCode::Copy,
+                                src: addr,
+                            },
+                        );
                     } else {
                         let new_base = func.alloc_var(ty);
                         let op = if negate { OpCode::Sub } else { OpCode::Add };
-                        func.push_inst(work, IrInst::Binary {
-                            dst: new_base.clone(),
-                            op,
-                            lhs: rn_val.clone(),
-                            rhs: offset,
-                        });
-                        func.push_inst(work, IrInst::Unary {
-                            dst: rn_val,
-                            op: OpCode::Copy,
-                            src: new_base,
-                        });
+                        func.push_inst(
+                            work,
+                            IrInst::Binary {
+                                dst: new_base.clone(),
+                                op,
+                                lhs: rn_val.clone(),
+                                rhs: offset,
+                            },
+                        );
+                        func.push_inst(
+                            work,
+                            IrInst::Unary {
+                                dst: rn_val,
+                                op: OpCode::Copy,
+                                src: new_base,
+                            },
+                        );
                     }
                 }
             }
@@ -333,34 +440,46 @@ impl ArmLifter {
                     let count = register_list.count_ones();
                     let decrement = Value::Const((count * 4) as i64);
                     let new_sp = func.alloc_var(Ty::i32());
-                    func.push_inst(work, IrInst::Binary {
-                        dst: new_sp.clone(),
-                        op: OpCode::Sub,
-                        lhs: sp.clone(),
-                        rhs: decrement,
-                    });
-                    func.push_inst(work, IrInst::Unary {
-                        dst: sp.clone(),
-                        op: OpCode::Copy,
-                        src: new_sp,
-                    });
+                    func.push_inst(
+                        work,
+                        IrInst::Binary {
+                            dst: new_sp.clone(),
+                            op: OpCode::Sub,
+                            lhs: sp.clone(),
+                            rhs: decrement,
+                        },
+                    );
+                    func.push_inst(
+                        work,
+                        IrInst::Unary {
+                            dst: sp.clone(),
+                            op: OpCode::Copy,
+                            src: new_sp,
+                        },
+                    );
                 }
 
                 if is_pop {
                     let count = register_list.count_ones();
                     let increment = Value::Const((count * 4) as i64);
                     let new_sp = func.alloc_var(Ty::i32());
-                    func.push_inst(work, IrInst::Binary {
-                        dst: new_sp.clone(),
-                        op: OpCode::Add,
-                        lhs: sp.clone(),
-                        rhs: increment,
-                    });
-                    func.push_inst(work, IrInst::Unary {
-                        dst: sp,
-                        op: OpCode::Copy,
-                        src: new_sp,
-                    });
+                    func.push_inst(
+                        work,
+                        IrInst::Binary {
+                            dst: new_sp.clone(),
+                            op: OpCode::Add,
+                            lhs: sp.clone(),
+                            rhs: increment,
+                        },
+                    );
+                    func.push_inst(
+                        work,
+                        IrInst::Unary {
+                            dst: sp,
+                            op: OpCode::Copy,
+                            src: new_sp,
+                        },
+                    );
                 }
             }
 
@@ -376,30 +495,43 @@ impl ArmLifter {
 
                 if is_link {
                     let lr = self.reg("lr");
-                    func.push_inst(work, IrInst::Unary {
-                        dst: lr,
-                        op: OpCode::Copy,
-                        src: Value::Const((address + 4) as i64),
-                    });
-                    func.push_inst(work, IrInst::Call {
-                        dst: Some(self.reg("r0")),
-                        target: Value::Symbol(format!("func_{:X}", target_addr)),
-                        args: Vec::new(),
-                    });
+                    func.push_inst(
+                        work,
+                        IrInst::Unary {
+                            dst: lr,
+                            op: OpCode::Copy,
+                            src: Value::Const((address + 4) as i64),
+                        },
+                    );
+                    func.push_inst(
+                        work,
+                        IrInst::Call {
+                            dst: Some(self.reg("r0")),
+                            target: Value::Symbol(format!("func_{:X}", target_addr)),
+                            args: Vec::new(),
+                        },
+                    );
                 } else {
                     let target_block = func.add_block(&format!("loc_{:X}", target_addr));
-                    func.push_inst(work, IrInst::Branch { target: target_block });
+                    func.push_inst(
+                        work,
+                        IrInst::Branch {
+                            target: target_block,
+                        },
+                    );
                 }
             }
 
-            7
-                if (instr >> 24) & 0xF == 0xF => {
-                    let svc_number = instr & 0xFFFFFF;
-                    func.push_inst(work, IrInst::Syscall {
+            7 if (instr >> 24) & 0xF == 0xF => {
+                let svc_number = instr & 0xFFFFFF;
+                func.push_inst(
+                    work,
+                    IrInst::Syscall {
                         number: Some(Value::Const(svc_number as i64)),
                         args: Vec::new(),
-                    });
-                }
+                    },
+                );
+            }
 
             _ => {
                 self.warn_unsupported(address, instr, "arm32");
@@ -441,41 +573,56 @@ impl ArmLifter {
         let top = ((instr >> 24) & 0xFF) as u8;
 
         if instr & 0xFFFFFC1F == 0xD65F0000 {
-            func.push_inst(block, IrInst::Return {
-                value: Some(self.reg("x0")),
-            });
+            func.push_inst(
+                block,
+                IrInst::Return {
+                    value: Some(self.reg("x0")),
+                },
+            );
             return (4, true, None);
         }
 
         if instr & 0xFFFFFC1F == 0xD61F0000 {
             let rn = ((instr >> 5) & 0x1F) as u8;
-            func.push_inst(block, IrInst::IndirectBranch {
-                target: self.reg(Self::aarch64_reg_name(rn)),
-            });
+            func.push_inst(
+                block,
+                IrInst::IndirectBranch {
+                    target: self.reg(Self::aarch64_reg_name(rn)),
+                },
+            );
             return (4, true, None);
         }
 
         if instr & 0xFFFFFC1F == 0xD63F0000 {
             let rn = ((instr >> 5) & 0x1F) as u8;
-            func.push_inst(block, IrInst::Unary {
-                dst: self.reg("x30"),
-                op: OpCode::Copy,
-                src: Value::Const((address + 4) as i64),
-            });
-            func.push_inst(block, IrInst::Call {
-                dst: Some(self.reg("x0")),
-                target: self.reg(Self::aarch64_reg_name(rn)),
-                args: Vec::new(),
-            });
+            func.push_inst(
+                block,
+                IrInst::Unary {
+                    dst: self.reg("x30"),
+                    op: OpCode::Copy,
+                    src: Value::Const((address + 4) as i64),
+                },
+            );
+            func.push_inst(
+                block,
+                IrInst::Call {
+                    dst: Some(self.reg("x0")),
+                    target: self.reg(Self::aarch64_reg_name(rn)),
+                    args: Vec::new(),
+                },
+            );
             return (4, true, None);
         }
 
         if instr & 0xFFE0001F == 0xD4000001 {
             let svc_number = (instr >> 5) & 0xFFFF;
-            func.push_inst(block, IrInst::Syscall {
-                number: Some(Value::Const(svc_number as i64)),
-                args: Vec::new(),
-            });
+            func.push_inst(
+                block,
+                IrInst::Syscall {
+                    number: Some(Value::Const(svc_number as i64)),
+                    args: Vec::new(),
+                },
+            );
             return (4, true, None);
         }
 
@@ -483,7 +630,12 @@ impl ArmLifter {
             let off = sign_extend((instr & 0x03FFFFFF) as i64, 26) << 2;
             let target_addr = (address as i64 + off) as u64;
             let target_block = func.add_block(&format!("loc_{:X}", target_addr));
-            func.push_inst(block, IrInst::Branch { target: target_block });
+            func.push_inst(
+                block,
+                IrInst::Branch {
+                    target: target_block,
+                },
+            );
             return (4, true, None);
         }
 
@@ -491,16 +643,22 @@ impl ArmLifter {
             let off = sign_extend((instr & 0x03FFFFFF) as i64, 26) << 2;
             let target_addr = (address as i64 + off) as u64;
             let lr = self.reg("x30");
-            func.push_inst(block, IrInst::Unary {
-                dst: lr,
-                op: OpCode::Copy,
-                src: Value::Const((address + 4) as i64),
-            });
-            func.push_inst(block, IrInst::Call {
-                dst: Some(self.reg("x0")),
-                target: Value::Symbol(format!("func_{:X}", target_addr)),
-                args: Vec::new(),
-            });
+            func.push_inst(
+                block,
+                IrInst::Unary {
+                    dst: lr,
+                    op: OpCode::Copy,
+                    src: Value::Const((address + 4) as i64),
+                },
+            );
+            func.push_inst(
+                block,
+                IrInst::Call {
+                    dst: Some(self.reg("x0")),
+                    target: Value::Symbol(format!("func_{:X}", target_addr)),
+                    args: Vec::new(),
+                },
+            );
             return (4, true, None);
         }
 
@@ -510,11 +668,14 @@ impl ArmLifter {
             let cond_flag = func.alloc_var(Ty::Bool);
             let taken = func.add_block(&format!("taken_{:X}", address));
             let after = func.add_block(&format!("after_{:X}", address));
-            func.push_inst(block, IrInst::CBranch {
-                cond: cond_flag,
-                target_true: taken,
-                target_false: after,
-            });
+            func.push_inst(
+                block,
+                IrInst::CBranch {
+                    cond: cond_flag,
+                    target_true: taken,
+                    target_false: after,
+                },
+            );
             let loc = func.add_block(&format!("loc_{:X}", target_addr));
             func.push_inst(taken, IrInst::Branch { target: loc });
             return (4, true, Some(after));
@@ -533,45 +694,61 @@ impl ArmLifter {
                 name: rt_name.to_string(),
                 ty: ty.clone(),
             };
-            let cmp_op = if top & 0x01 == 1 { OpCode::Ne } else { OpCode::Eq };
+            let cmp_op = if top & 0x01 == 1 {
+                OpCode::Ne
+            } else {
+                OpCode::Eq
+            };
 
             let (cond_val, target_addr) = if top & 0x02 == 0 {
                 let off = sign_extend(((instr >> 5) & 0x7FFFF) as i64, 19) << 2;
                 let zero = func.alloc_var(Ty::Bool);
-                func.push_inst(block, IrInst::Binary {
-                    dst: zero.clone(),
-                    op: cmp_op,
-                    lhs: rt_val,
-                    rhs: Value::Const(0),
-                });
+                func.push_inst(
+                    block,
+                    IrInst::Binary {
+                        dst: zero.clone(),
+                        op: cmp_op,
+                        lhs: rt_val,
+                        rhs: Value::Const(0),
+                    },
+                );
                 (zero, (address as i64 + off) as u64)
             } else {
                 let bit = ((instr >> 19) & 0x1F) + if is_64bit { 32 } else { 0 };
                 let off = sign_extend(((instr >> 5) & 0x3FFF) as i64, 14) << 2;
                 let masked = func.alloc_var(ty);
-                func.push_inst(block, IrInst::Binary {
-                    dst: masked.clone(),
-                    op: OpCode::And,
-                    lhs: rt_val,
-                    rhs: Value::Const(1i64 << bit),
-                });
+                func.push_inst(
+                    block,
+                    IrInst::Binary {
+                        dst: masked.clone(),
+                        op: OpCode::And,
+                        lhs: rt_val,
+                        rhs: Value::Const(1i64 << bit),
+                    },
+                );
                 let zero = func.alloc_var(Ty::Bool);
-                func.push_inst(block, IrInst::Binary {
-                    dst: zero.clone(),
-                    op: cmp_op,
-                    lhs: masked,
-                    rhs: Value::Const(0),
-                });
+                func.push_inst(
+                    block,
+                    IrInst::Binary {
+                        dst: zero.clone(),
+                        op: cmp_op,
+                        lhs: masked,
+                        rhs: Value::Const(0),
+                    },
+                );
                 (zero, (address as i64 + off) as u64)
             };
 
             let loc = func.add_block(&format!("loc_{:X}", target_addr));
             let after = func.add_block(&format!("after_{:X}", address));
-            func.push_inst(block, IrInst::CBranch {
-                cond: cond_val,
-                target_true: loc,
-                target_false: after,
-            });
+            func.push_inst(
+                block,
+                IrInst::CBranch {
+                    cond: cond_val,
+                    target_true: loc,
+                    target_false: after,
+                },
+            );
             return (4, true, Some(after));
         }
 
@@ -589,32 +766,43 @@ impl ArmLifter {
             let rn_val = self.reg(Self::aarch64_reg_name(rn));
             let offset = ((instr >> 10) & 0xFFF) as i64 * access_size as i64;
             let addr = func.alloc_var(Ty::i64());
-            func.push_inst(block, IrInst::Binary {
-                dst: addr.clone(),
-                op: OpCode::Add,
-                lhs: rn_val,
-                rhs: Value::Const(offset),
-            });
+            func.push_inst(
+                block,
+                IrInst::Binary {
+                    dst: addr.clone(),
+                    op: OpCode::Add,
+                    lhs: rn_val,
+                    rhs: Value::Const(offset),
+                },
+            );
             if opc == 1 {
-                func.push_inst(block, IrInst::Load {
-                    dst: rd_val,
-                    addr,
-                    size: access_size,
-                });
+                func.push_inst(
+                    block,
+                    IrInst::Load {
+                        dst: rd_val,
+                        addr,
+                        size: access_size,
+                    },
+                );
             } else {
-                func.push_inst(block, IrInst::Store {
-                    addr,
-                    value: rd_val,
-                    size: access_size,
-                });
+                func.push_inst(
+                    block,
+                    IrInst::Store {
+                        addr,
+                        value: rd_val,
+                        size: access_size,
+                    },
+                );
             }
             return (4, true, None);
         }
 
-        let a64_name = |idx: u8, w: bool| if w {
-            Self::aarch64_w_reg_name(idx)
-        } else {
-            Self::aarch64_reg_name(idx)
+        let a64_name = |idx: u8, w: bool| {
+            if w {
+                Self::aarch64_w_reg_name(idx)
+            } else {
+                Self::aarch64_reg_name(idx)
+            }
         };
 
         if (instr & 0x1F000000) == 0x0B000000 {
@@ -624,12 +812,24 @@ impl ArmLifter {
             let rd = (instr & 0x1F) as u8;
             let rn = ((instr >> 5) & 0x1F) as u8;
             let rm = ((instr >> 16) & 0x1F) as u8;
-            func.push_inst(block, IrInst::Binary {
-                dst: Value::Register { name: a64_name(rd, is_wide).to_string(), ty: ty.clone() },
-                op: if is_sub { OpCode::Sub } else { OpCode::Add },
-                lhs: Value::Register { name: a64_name(rn, is_wide).to_string(), ty: ty.clone() },
-                rhs: Value::Register { name: a64_name(rm, is_wide).to_string(), ty },
-            });
+            func.push_inst(
+                block,
+                IrInst::Binary {
+                    dst: Value::Register {
+                        name: a64_name(rd, is_wide).to_string(),
+                        ty: ty.clone(),
+                    },
+                    op: if is_sub { OpCode::Sub } else { OpCode::Add },
+                    lhs: Value::Register {
+                        name: a64_name(rn, is_wide).to_string(),
+                        ty: ty.clone(),
+                    },
+                    rhs: Value::Register {
+                        name: a64_name(rm, is_wide).to_string(),
+                        ty,
+                    },
+                },
+            );
             return (4, true, None);
         }
 
@@ -646,12 +846,24 @@ impl ArmLifter {
                 2 => OpCode::Xor,
                 _ => OpCode::And,
             };
-            func.push_inst(block, IrInst::Binary {
-                dst: Value::Register { name: a64_name(rd, is_wide).to_string(), ty: ty.clone() },
-                op,
-                lhs: Value::Register { name: a64_name(rn, is_wide).to_string(), ty: ty.clone() },
-                rhs: Value::Register { name: a64_name(rm, is_wide).to_string(), ty },
-            });
+            func.push_inst(
+                block,
+                IrInst::Binary {
+                    dst: Value::Register {
+                        name: a64_name(rd, is_wide).to_string(),
+                        ty: ty.clone(),
+                    },
+                    op,
+                    lhs: Value::Register {
+                        name: a64_name(rn, is_wide).to_string(),
+                        ty: ty.clone(),
+                    },
+                    rhs: Value::Register {
+                        name: a64_name(rm, is_wide).to_string(),
+                        ty,
+                    },
+                },
+            );
             return (4, true, None);
         }
 
@@ -664,12 +876,21 @@ impl ArmLifter {
             let shift = ((instr >> 22) & 1) * 12;
             let shifted_imm = imm << shift;
             let ty = if is_wide { Ty::i32() } else { Ty::i64() };
-            func.push_inst(block, IrInst::Binary {
-                dst: Value::Register { name: a64_name(rd, is_wide).to_string(), ty: ty.clone() },
-                op: if is_sub { OpCode::Sub } else { OpCode::Add },
-                lhs: Value::Register { name: a64_name(rn, is_wide).to_string(), ty },
-                rhs: Value::Const(shifted_imm),
-            });
+            func.push_inst(
+                block,
+                IrInst::Binary {
+                    dst: Value::Register {
+                        name: a64_name(rd, is_wide).to_string(),
+                        ty: ty.clone(),
+                    },
+                    op: if is_sub { OpCode::Sub } else { OpCode::Add },
+                    lhs: Value::Register {
+                        name: a64_name(rn, is_wide).to_string(),
+                        ty,
+                    },
+                    rhs: Value::Const(shifted_imm),
+                },
+            );
             return (4, true, None);
         }
 
@@ -691,20 +912,26 @@ impl ArmLifter {
             match opc {
                 2 => {
                     let val = (imm16 << (hw_shift * 16)) as i64;
-                    func.push_inst(block, IrInst::Unary {
-                        dst,
-                        op: OpCode::Copy,
-                        src: Value::Const(val),
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Unary {
+                            dst,
+                            op: OpCode::Copy,
+                            src: Value::Const(val),
+                        },
+                    );
                 }
                 0 => {
                     let shifted = imm16 << (hw_shift * 16);
                     let mask: u64 = if is_64bit { u64::MAX } else { 0xFFFF_FFFF };
-                    func.push_inst(block, IrInst::Unary {
-                        dst,
-                        op: OpCode::Copy,
-                        src: Value::Const(((!shifted) & mask) as i64),
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Unary {
+                            dst,
+                            op: OpCode::Copy,
+                            src: Value::Const(((!shifted) & mask) as i64),
+                        },
+                    );
                 }
                 _ => {
                     self.warn_unsupported(address, instr, "arm64");
@@ -720,11 +947,14 @@ impl ArmLifter {
             let imm = sign_extend(((immhi << 2) | immlo) as i64, 21);
             let page = (((address >> 12) as i64 + imm) << 12) as u64;
             let rd = (instr & 0x1F) as u8;
-            func.push_inst(block, IrInst::Unary {
-                dst: self.reg(Self::aarch64_reg_name(rd)),
-                op: OpCode::Copy,
-                src: Value::Const(page as i64),
-            });
+            func.push_inst(
+                block,
+                IrInst::Unary {
+                    dst: self.reg(Self::aarch64_reg_name(rd)),
+                    op: OpCode::Copy,
+                    src: Value::Const(page as i64),
+                },
+            );
             return (4, true, None);
         }
 
@@ -734,11 +964,14 @@ impl ArmLifter {
             let imm = sign_extend(((immhi << 2) | immlo) as i64, 21);
             let target_addr = (address as i64 + imm) as u64;
             let rd = (instr & 0x1F) as u8;
-            func.push_inst(block, IrInst::Unary {
-                dst: self.reg(Self::aarch64_reg_name(rd)),
-                op: OpCode::Copy,
-                src: Value::Const(target_addr as i64),
-            });
+            func.push_inst(
+                block,
+                IrInst::Unary {
+                    dst: self.reg(Self::aarch64_reg_name(rd)),
+                    op: OpCode::Copy,
+                    src: Value::Const(target_addr as i64),
+                },
+            );
             return (4, true, None);
         }
 
@@ -771,7 +1004,12 @@ impl ArmLifter {
             let off = sign_extend((hw & 0x07FF) as i64, 11) << 1;
             let target_addr = (address as i64 + 4 + off) as u64;
             let target_block = func.add_block(&format!("loc_{:X}", target_addr));
-            func.push_inst(block, IrInst::Branch { target: target_block });
+            func.push_inst(
+                block,
+                IrInst::Branch {
+                    target: target_block,
+                },
+            );
             return Ok((2, true, None));
         }
 
@@ -804,16 +1042,22 @@ impl ArmLifter {
             let final_off = if is_blx { signed_off & !3 } else { signed_off };
             let target_addr = (address as i64 + 4 + final_off) as u64;
             let lr = self.reg("lr");
-            func.push_inst(block, IrInst::Unary {
-                dst: lr,
-                op: OpCode::Copy,
-                src: Value::Const((address + 4) as i64),
-            });
-            func.push_inst(block, IrInst::Call {
-                dst: Some(self.reg("r0")),
-                target: Value::Symbol(format!("func_{:X}", target_addr)),
-                args: Vec::new(),
-            });
+            func.push_inst(
+                block,
+                IrInst::Unary {
+                    dst: lr,
+                    op: OpCode::Copy,
+                    src: Value::Const((address + 4) as i64),
+                },
+            );
+            func.push_inst(
+                block,
+                IrInst::Call {
+                    dst: Some(self.reg("r0")),
+                    target: Value::Symbol(format!("func_{:X}", target_addr)),
+                    args: Vec::new(),
+                },
+            );
             return Ok((4, true, None));
         }
 
@@ -839,12 +1083,15 @@ impl ArmLifter {
                     } else {
                         self.reg(Self::arm32_reg_name(operand as u8))
                     };
-                    func.push_inst(block, IrInst::Binary {
-                        dst: self.reg(Self::arm32_reg_name(rd)),
-                        op: if is_sub { OpCode::Sub } else { OpCode::Add },
-                        lhs: self.reg(Self::arm32_reg_name(rs)),
-                        rhs,
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Binary {
+                            dst: self.reg(Self::arm32_reg_name(rd)),
+                            op: if is_sub { OpCode::Sub } else { OpCode::Add },
+                            lhs: self.reg(Self::arm32_reg_name(rs)),
+                            rhs,
+                        },
+                    );
                 } else {
                     let op = match (hw >> 11) & 0x3 {
                         0 => OpCode::Shl,
@@ -854,12 +1101,15 @@ impl ArmLifter {
                     let imm5 = ((hw >> 6) & 0x1F) as i64;
                     let rm = ((hw >> 3) & 0x7) as u8;
                     let rd = (hw & 0x7) as u8;
-                    func.push_inst(block, IrInst::Binary {
-                        dst: self.reg(Self::arm32_reg_name(rd)),
-                        op,
-                        lhs: self.reg(Self::arm32_reg_name(rm)),
-                        rhs: Value::Const(imm5),
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Binary {
+                            dst: self.reg(Self::arm32_reg_name(rd)),
+                            op,
+                            lhs: self.reg(Self::arm32_reg_name(rm)),
+                            rhs: Value::Const(imm5),
+                        },
+                    );
                 }
             }
 
@@ -870,28 +1120,41 @@ impl ArmLifter {
                 let rd_val = self.reg(Self::arm32_reg_name(rd));
                 match sub_op {
                     0 => {
-                        func.push_inst(block, IrInst::Unary {
-                            dst: rd_val,
-                            op: OpCode::Copy,
-                            src: Value::Const(imm),
-                        });
+                        func.push_inst(
+                            block,
+                            IrInst::Unary {
+                                dst: rd_val,
+                                op: OpCode::Copy,
+                                src: Value::Const(imm),
+                            },
+                        );
                     }
                     1 => {
                         let tmp = func.alloc_var(Ty::i32());
-                        func.push_inst(block, IrInst::Binary {
-                            dst: tmp,
-                            op: OpCode::Sub,
-                            lhs: rd_val,
-                            rhs: Value::Const(imm),
-                        });
+                        func.push_inst(
+                            block,
+                            IrInst::Binary {
+                                dst: tmp,
+                                op: OpCode::Sub,
+                                lhs: rd_val,
+                                rhs: Value::Const(imm),
+                            },
+                        );
                     }
                     2 | 3 => {
-                        func.push_inst(block, IrInst::Binary {
-                            dst: rd_val.clone(),
-                            op: if sub_op == 2 { OpCode::Add } else { OpCode::Sub },
-                            lhs: rd_val,
-                            rhs: Value::Const(imm),
-                        });
+                        func.push_inst(
+                            block,
+                            IrInst::Binary {
+                                dst: rd_val.clone(),
+                                op: if sub_op == 2 {
+                                    OpCode::Add
+                                } else {
+                                    OpCode::Sub
+                                },
+                                lhs: rd_val,
+                                rhs: Value::Const(imm),
+                            },
+                        );
                     }
                     _ => unsupported!(),
                 }
@@ -919,70 +1182,94 @@ impl ArmLifter {
                     };
                     if let Some(op) = simple_op {
                         let dst = dn.clone();
-                        func.push_inst(block, IrInst::Binary {
-                            dst,
-                            op,
-                            lhs: dn,
-                            rhs: src,
-                        });
+                        func.push_inst(
+                            block,
+                            IrInst::Binary {
+                                dst,
+                                op,
+                                lhs: dn,
+                                rhs: src,
+                            },
+                        );
                     } else {
                         match alu {
                             0x8 => {
                                 let tmp = func.alloc_var(Ty::i32());
-                                func.push_inst(block, IrInst::Binary {
-                                    dst: tmp,
-                                    op: OpCode::And,
-                                    lhs: dn,
-                                    rhs: src,
-                                });
+                                func.push_inst(
+                                    block,
+                                    IrInst::Binary {
+                                        dst: tmp,
+                                        op: OpCode::And,
+                                        lhs: dn,
+                                        rhs: src,
+                                    },
+                                );
                             }
                             0x9 => {
-                                func.push_inst(block, IrInst::Binary {
-                                    dst: dn.clone(),
-                                    op: OpCode::Sub,
-                                    lhs: src,
-                                    rhs: dn,
-                                });
+                                func.push_inst(
+                                    block,
+                                    IrInst::Binary {
+                                        dst: dn.clone(),
+                                        op: OpCode::Sub,
+                                        lhs: src,
+                                        rhs: dn,
+                                    },
+                                );
                             }
                             0xA => {
                                 let tmp = func.alloc_var(Ty::i32());
-                                func.push_inst(block, IrInst::Binary {
-                                    dst: tmp,
-                                    op: OpCode::Sub,
-                                    lhs: dn,
-                                    rhs: src,
-                                });
+                                func.push_inst(
+                                    block,
+                                    IrInst::Binary {
+                                        dst: tmp,
+                                        op: OpCode::Sub,
+                                        lhs: dn,
+                                        rhs: src,
+                                    },
+                                );
                             }
                             0xB => {
                                 let tmp = func.alloc_var(Ty::i32());
-                                func.push_inst(block, IrInst::Binary {
-                                    dst: tmp,
-                                    op: OpCode::Add,
-                                    lhs: dn,
-                                    rhs: src,
-                                });
+                                func.push_inst(
+                                    block,
+                                    IrInst::Binary {
+                                        dst: tmp,
+                                        op: OpCode::Add,
+                                        lhs: dn,
+                                        rhs: src,
+                                    },
+                                );
                             }
                             0xE => {
                                 let inverted = func.alloc_var(Ty::i32());
-                                func.push_inst(block, IrInst::Unary {
-                                    dst: inverted.clone(),
-                                    op: OpCode::Not,
-                                    src,
-                                });
+                                func.push_inst(
+                                    block,
+                                    IrInst::Unary {
+                                        dst: inverted.clone(),
+                                        op: OpCode::Not,
+                                        src,
+                                    },
+                                );
                                 let dst = dn.clone();
-                                func.push_inst(block, IrInst::Binary {
-                                    dst,
-                                    op: OpCode::And,
-                                    lhs: dn,
-                                    rhs: inverted,
-                                });
+                                func.push_inst(
+                                    block,
+                                    IrInst::Binary {
+                                        dst,
+                                        op: OpCode::And,
+                                        lhs: dn,
+                                        rhs: inverted,
+                                    },
+                                );
                             }
                             0xF => {
-                                func.push_inst(block, IrInst::Unary {
-                                    dst: dn,
-                                    op: OpCode::Not,
-                                    src,
-                                });
+                                func.push_inst(
+                                    block,
+                                    IrInst::Unary {
+                                        dst: dn,
+                                        op: OpCode::Not,
+                                        src,
+                                    },
+                                );
                             }
                             _ => unsupported!(),
                         }
@@ -994,57 +1281,78 @@ impl ArmLifter {
                     let rd = (d << 3) | (hw & 0x7) as u8;
                     match op {
                         0 => {
-                            func.push_inst(block, IrInst::Binary {
-                                dst: self.reg(Self::arm32_reg_name(rd)),
-                                op: OpCode::Add,
-                                lhs: self.reg(Self::arm32_reg_name(rd)),
-                                rhs: self.reg(Self::arm32_reg_name(rm)),
-                            });
+                            func.push_inst(
+                                block,
+                                IrInst::Binary {
+                                    dst: self.reg(Self::arm32_reg_name(rd)),
+                                    op: OpCode::Add,
+                                    lhs: self.reg(Self::arm32_reg_name(rd)),
+                                    rhs: self.reg(Self::arm32_reg_name(rm)),
+                                },
+                            );
                         }
                         1 => {
                             let tmp = func.alloc_var(Ty::i32());
-                            func.push_inst(block, IrInst::Binary {
-                                dst: tmp,
-                                op: OpCode::Sub,
-                                lhs: self.reg(Self::arm32_reg_name(rd)),
-                                rhs: self.reg(Self::arm32_reg_name(rm)),
-                            });
+                            func.push_inst(
+                                block,
+                                IrInst::Binary {
+                                    dst: tmp,
+                                    op: OpCode::Sub,
+                                    lhs: self.reg(Self::arm32_reg_name(rd)),
+                                    rhs: self.reg(Self::arm32_reg_name(rm)),
+                                },
+                            );
                         }
                         2 => {
-                            func.push_inst(block, IrInst::Unary {
-                                dst: self.reg(Self::arm32_reg_name(rd)),
-                                op: OpCode::Copy,
-                                src: self.reg(Self::arm32_reg_name(rm)),
-                            });
+                            func.push_inst(
+                                block,
+                                IrInst::Unary {
+                                    dst: self.reg(Self::arm32_reg_name(rd)),
+                                    op: OpCode::Copy,
+                                    src: self.reg(Self::arm32_reg_name(rm)),
+                                },
+                            );
                         }
                         _ => {
                             if hw & 0x80 != 0 {
                                 let lr = self.reg("lr");
-                                func.push_inst(block, IrInst::Unary {
-                                    dst: lr,
-                                    op: OpCode::Copy,
-                                    src: Value::Const((address + 4) as i64),
-                                });
-                                func.push_inst(block, IrInst::Call {
-                                    dst: Some(self.reg("r0")),
-                                    target: self.reg(Self::arm32_reg_name(rm)),
-                                    args: Vec::new(),
-                                });
+                                func.push_inst(
+                                    block,
+                                    IrInst::Unary {
+                                        dst: lr,
+                                        op: OpCode::Copy,
+                                        src: Value::Const((address + 4) as i64),
+                                    },
+                                );
+                                func.push_inst(
+                                    block,
+                                    IrInst::Call {
+                                        dst: Some(self.reg("r0")),
+                                        target: self.reg(Self::arm32_reg_name(rm)),
+                                        args: Vec::new(),
+                                    },
+                                );
                             } else {
-                                func.push_inst(block, IrInst::IndirectBranch {
-                                    target: self.reg(Self::arm32_reg_name(rm)),
-                                });
+                                func.push_inst(
+                                    block,
+                                    IrInst::IndirectBranch {
+                                        target: self.reg(Self::arm32_reg_name(rm)),
+                                    },
+                                );
                             }
                         }
                     }
                 } else if hw & 0xF800 == 0x4800 {
                     let rt = ((hw >> 8) & 0x7) as u8;
                     let addr = (address + 4 + ((hw & 0xFF) as u64) * 4) as i64;
-                    func.push_inst(block, IrInst::Load {
-                        dst: self.reg(Self::arm32_reg_name(rt)),
-                        addr: Value::Const(addr),
-                        size: 4,
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Load {
+                            dst: self.reg(Self::arm32_reg_name(rt)),
+                            addr: Value::Const(addr),
+                            size: 4,
+                        },
+                    );
                 } else {
                     unsupported!();
                 }
@@ -1062,24 +1370,33 @@ impl ArmLifter {
                 let rt = (hw & 0x7) as u8;
                 let size = if is_byte { 1 } else { 4 };
                 let addr = func.alloc_var(Ty::i32());
-                func.push_inst(block, IrInst::Binary {
-                    dst: addr.clone(),
-                    op: OpCode::Add,
-                    lhs: self.reg(Self::arm32_reg_name(rn)),
-                    rhs: Value::Const(imm5),
-                });
+                func.push_inst(
+                    block,
+                    IrInst::Binary {
+                        dst: addr.clone(),
+                        op: OpCode::Add,
+                        lhs: self.reg(Self::arm32_reg_name(rn)),
+                        rhs: Value::Const(imm5),
+                    },
+                );
                 if is_load {
-                    func.push_inst(block, IrInst::Load {
-                        dst: self.reg(Self::arm32_reg_name(rt)),
-                        addr,
-                        size,
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Load {
+                            dst: self.reg(Self::arm32_reg_name(rt)),
+                            addr,
+                            size,
+                        },
+                    );
                 } else {
-                    func.push_inst(block, IrInst::Store {
-                        addr,
-                        value: self.reg(Self::arm32_reg_name(rt)),
-                        size,
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Store {
+                            addr,
+                            value: self.reg(Self::arm32_reg_name(rt)),
+                            size,
+                        },
+                    );
                 }
             }
 
@@ -1089,24 +1406,33 @@ impl ArmLifter {
                 let rn = ((hw >> 3) & 0x7) as u8;
                 let rt = (hw & 0x7) as u8;
                 let addr = func.alloc_var(Ty::i32());
-                func.push_inst(block, IrInst::Binary {
-                    dst: addr.clone(),
-                    op: OpCode::Add,
-                    lhs: self.reg(Self::arm32_reg_name(rn)),
-                    rhs: Value::Const(imm5),
-                });
+                func.push_inst(
+                    block,
+                    IrInst::Binary {
+                        dst: addr.clone(),
+                        op: OpCode::Add,
+                        lhs: self.reg(Self::arm32_reg_name(rn)),
+                        rhs: Value::Const(imm5),
+                    },
+                );
                 if is_load {
-                    func.push_inst(block, IrInst::Load {
-                        dst: self.reg(Self::arm32_reg_name(rt)),
-                        addr,
-                        size: 2,
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Load {
+                            dst: self.reg(Self::arm32_reg_name(rt)),
+                            addr,
+                            size: 2,
+                        },
+                    );
                 } else {
-                    func.push_inst(block, IrInst::Store {
-                        addr,
-                        value: self.reg(Self::arm32_reg_name(rt)),
-                        size: 2,
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Store {
+                            addr,
+                            value: self.reg(Self::arm32_reg_name(rt)),
+                            size: 2,
+                        },
+                    );
                 }
             }
 
@@ -1115,24 +1441,33 @@ impl ArmLifter {
                 let rt = ((hw >> 8) & 0x7) as u8;
                 let off = ((hw & 0xFF) as i64) * 4;
                 let addr = func.alloc_var(Ty::i32());
-                func.push_inst(block, IrInst::Binary {
-                    dst: addr.clone(),
-                    op: OpCode::Add,
-                    lhs: self.reg("sp"),
-                    rhs: Value::Const(off),
-                });
+                func.push_inst(
+                    block,
+                    IrInst::Binary {
+                        dst: addr.clone(),
+                        op: OpCode::Add,
+                        lhs: self.reg("sp"),
+                        rhs: Value::Const(off),
+                    },
+                );
                 if is_load {
-                    func.push_inst(block, IrInst::Load {
-                        dst: self.reg(Self::arm32_reg_name(rt)),
-                        addr,
-                        size: 4,
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Load {
+                            dst: self.reg(Self::arm32_reg_name(rt)),
+                            addr,
+                            size: 4,
+                        },
+                    );
                 } else {
-                    func.push_inst(block, IrInst::Store {
-                        addr,
-                        value: self.reg(Self::arm32_reg_name(rt)),
-                        size: 4,
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Store {
+                            addr,
+                            value: self.reg(Self::arm32_reg_name(rt)),
+                            size: 4,
+                        },
+                    );
                 }
             }
 
@@ -1141,18 +1476,24 @@ impl ArmLifter {
                 let off = ((hw & 0xFF) as i64) * 4;
                 if hw & 0x0800 == 0 {
                     let val = (address + 4 + off as u64) as i64;
-                    func.push_inst(block, IrInst::Unary {
-                        dst: self.reg(Self::arm32_reg_name(rd)),
-                        op: OpCode::Copy,
-                        src: Value::Const(val),
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Unary {
+                            dst: self.reg(Self::arm32_reg_name(rd)),
+                            op: OpCode::Copy,
+                            src: Value::Const(val),
+                        },
+                    );
                 } else {
-                    func.push_inst(block, IrInst::Binary {
-                        dst: self.reg(Self::arm32_reg_name(rd)),
-                        op: OpCode::Add,
-                        lhs: self.reg("sp"),
-                        rhs: Value::Const(off),
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Binary {
+                            dst: self.reg(Self::arm32_reg_name(rd)),
+                            op: OpCode::Add,
+                            lhs: self.reg("sp"),
+                            rhs: Value::Const(off),
+                        },
+                    );
                 }
             }
 
@@ -1162,37 +1503,52 @@ impl ArmLifter {
                     let list = hw & 0xFF;
                     let count = list.count_ones() as i64 + link;
                     let new_sp = func.alloc_var(Ty::i32());
-                    func.push_inst(block, IrInst::Binary {
-                        dst: new_sp.clone(),
-                        op: OpCode::Sub,
-                        lhs: self.reg("sp"),
-                        rhs: Value::Const(count * 4),
-                    });
-                    func.push_inst(block, IrInst::Unary {
-                        dst: self.reg("sp"),
-                        op: OpCode::Copy,
-                        src: new_sp,
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Binary {
+                            dst: new_sp.clone(),
+                            op: OpCode::Sub,
+                            lhs: self.reg("sp"),
+                            rhs: Value::Const(count * 4),
+                        },
+                    );
+                    func.push_inst(
+                        block,
+                        IrInst::Unary {
+                            dst: self.reg("sp"),
+                            op: OpCode::Copy,
+                            src: new_sp,
+                        },
+                    );
                 } else if hw & 0xFE00 == 0xBC00 {
                     let use_pc = (hw >> 8) & 1 == 1;
                     let list = hw & 0xFF;
                     let count = list.count_ones() as i64 + if use_pc { 1 } else { 0 };
                     let new_sp = func.alloc_var(Ty::i32());
-                    func.push_inst(block, IrInst::Binary {
-                        dst: new_sp.clone(),
-                        op: OpCode::Add,
-                        lhs: self.reg("sp"),
-                        rhs: Value::Const(count * 4),
-                    });
-                    func.push_inst(block, IrInst::Unary {
-                        dst: self.reg("sp"),
-                        op: OpCode::Copy,
-                        src: new_sp,
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Binary {
+                            dst: new_sp.clone(),
+                            op: OpCode::Add,
+                            lhs: self.reg("sp"),
+                            rhs: Value::Const(count * 4),
+                        },
+                    );
+                    func.push_inst(
+                        block,
+                        IrInst::Unary {
+                            dst: self.reg("sp"),
+                            op: OpCode::Copy,
+                            src: new_sp,
+                        },
+                    );
                     if use_pc {
-                        func.push_inst(block, IrInst::Return {
-                            value: Some(self.reg("r0")),
-                        });
+                        func.push_inst(
+                            block,
+                            IrInst::Return {
+                                value: Some(self.reg("r0")),
+                            },
+                        );
                     }
                 } else if hw & 0xFF00 == 0xBF00 {
                     func.push_inst(block, IrInst::Nop);
@@ -1200,17 +1556,23 @@ impl ArmLifter {
                     let is_sub = hw & 0x0080 != 0;
                     let imm7 = ((hw & 0x7F) as i64) * 4;
                     let new_sp = func.alloc_var(Ty::i32());
-                    func.push_inst(block, IrInst::Binary {
-                        dst: new_sp.clone(),
-                        op: if is_sub { OpCode::Sub } else { OpCode::Add },
-                        lhs: self.reg("sp"),
-                        rhs: Value::Const(imm7),
-                    });
-                    func.push_inst(block, IrInst::Unary {
-                        dst: self.reg("sp"),
-                        op: OpCode::Copy,
-                        src: new_sp,
-                    });
+                    func.push_inst(
+                        block,
+                        IrInst::Binary {
+                            dst: new_sp.clone(),
+                            op: if is_sub { OpCode::Sub } else { OpCode::Add },
+                            lhs: self.reg("sp"),
+                            rhs: Value::Const(imm7),
+                        },
+                    );
+                    func.push_inst(
+                        block,
+                        IrInst::Unary {
+                            dst: self.reg("sp"),
+                            op: OpCode::Copy,
+                            src: new_sp,
+                        },
+                    );
                 } else {
                     unsupported!();
                 }
@@ -1225,10 +1587,13 @@ impl ArmLifter {
                 match cond {
                     0xF => {
                         let svc_number = hw & 0xFF;
-                        func.push_inst(block, IrInst::Syscall {
-                            number: Some(Value::Const(svc_number as i64)),
-                            args: Vec::new(),
-                        });
+                        func.push_inst(
+                            block,
+                            IrInst::Syscall {
+                                number: Some(Value::Const(svc_number as i64)),
+                                args: Vec::new(),
+                            },
+                        );
                     }
                     0xE => unsupported!(),
                     _ => {
@@ -1237,11 +1602,14 @@ impl ArmLifter {
                         let cond_flag = func.alloc_var(Ty::Bool);
                         let taken = func.add_block(&format!("taken_{:X}", address));
                         let after = func.add_block(&format!("after_{:X}", address));
-                        func.push_inst(block, IrInst::CBranch {
-                            cond: cond_flag,
-                            target_true: taken,
-                            target_false: after,
-                        });
+                        func.push_inst(
+                            block,
+                            IrInst::CBranch {
+                                cond: cond_flag,
+                                target_true: taken,
+                                target_false: after,
+                            },
+                        );
                         let loc = func.add_block(&format!("loc_{:X}", target_addr));
                         func.push_inst(taken, IrInst::Branch { target: loc });
                         return Ok((2, true, Some(after)));
@@ -1279,6 +1647,8 @@ impl Lifter for ArmLifter {
         base_address: u64,
         function_name: &str,
     ) -> Result<IrFunction, LifterError> {
+        // See x86_lifter: clamp hostile base addresses once, up front.
+        let base_address = crate::lifter::clamp_base_address(base_address, code.len());
         let mut func = IrFunction::new(function_name, base_address);
         let mut current_block = func.entry_block;
         let mut offset = 0usize;
@@ -1332,7 +1702,11 @@ impl Lifter for ArmLifter {
 /// labels carry absolute hex addresses.
 fn parse_arm_block_addr(label: &str, base_address: u64) -> Option<u64> {
     if let Some(rest) = label.strip_prefix("bb_") {
-        return rest.parse::<usize>().ok().map(|o| base_address + o as u64);
+        // saturating: `o` comes from a (possibly hostile) label string.
+        return rest
+            .parse::<usize>()
+            .ok()
+            .map(|o| base_address.saturating_add(o as u64));
     }
     for prefix in ["loc_", "after_", "guarded_", "taken_"] {
         if let Some(rest) = label.strip_prefix(prefix) {
@@ -1391,7 +1765,12 @@ mod tests {
         let func = lifter.lift_function(&code, 0x1000, "rsb").unwrap();
         let entry = func.block(func.entry_block).unwrap();
         let found = entry.insts.iter().any(|inst| match inst {
-            IrInst::Binary { op: OpCode::Sub, lhs: Value::Const(10), rhs, .. } => {
+            IrInst::Binary {
+                op: OpCode::Sub,
+                lhs: Value::Const(10),
+                rhs,
+                ..
+            } => {
                 matches!(rhs, Value::Register { name, .. } if name == "r1")
             }
             _ => false,
@@ -1406,12 +1785,22 @@ mod tests {
         let code = [0x01, 0x00, 0xC1, 0xE3];
         let func = lifter.lift_function(&code, 0x1000, "bic").unwrap();
         let entry = func.block(func.entry_block).unwrap();
-        let has_not = entry
-            .insts
-            .iter()
-            .any(|i| matches!(i, IrInst::Unary { op: OpCode::Not, src: Value::Const(1), .. }));
+        let has_not = entry.insts.iter().any(|i| {
+            matches!(
+                i,
+                IrInst::Unary {
+                    op: OpCode::Not,
+                    src: Value::Const(1),
+                    ..
+                }
+            )
+        });
         let has_and_rn = entry.insts.iter().any(|i| match i {
-            IrInst::Binary { op: OpCode::And, lhs, .. } => {
+            IrInst::Binary {
+                op: OpCode::And,
+                lhs,
+                ..
+            } => {
                 matches!(lhs, Value::Register { name, .. } if name == "r1")
             }
             _ => false,
@@ -1428,7 +1817,12 @@ mod tests {
         let entry = func.block(func.entry_block).unwrap();
         assert_eq!(entry.insts.len(), 1);
         match &entry.insts[0] {
-            IrInst::Binary { dst: Value::Var { .. }, op: OpCode::Sub, lhs, rhs } => {
+            IrInst::Binary {
+                dst: Value::Var { .. },
+                op: OpCode::Sub,
+                lhs,
+                rhs,
+            } => {
                 assert!(matches!(lhs, Value::Register { name, .. } if name == "r0"));
                 assert_eq!(*rhs, Value::Const(1));
             }
@@ -1447,7 +1841,11 @@ mod tests {
         let guard_has_mov = func.blocks.iter().any(|b| {
             b.label.starts_with("guarded_")
                 && b.insts.iter().any(|i| match i {
-                    IrInst::Unary { op: OpCode::Copy, src: Value::Const(1), dst } => {
+                    IrInst::Unary {
+                        op: OpCode::Copy,
+                        src: Value::Const(1),
+                        dst,
+                    } => {
                         matches!(dst, Value::Register { name, .. } if name == "r0")
                     }
                     _ => false,
@@ -1463,19 +1861,27 @@ mod tests {
         let code = [0x04, 0x00, 0x91, 0xE4];
         let func = lifter.lift_function(&code, 0x1000, "ldrpost").unwrap();
         let entry = func.block(func.entry_block).unwrap();
-        let load_ok = entry
-            .insts
-            .iter()
-            .any(|i| matches!(i, IrInst::Load { dst, size: 4, .. }
-                if matches!(dst, Value::Register { name, .. } if name == "r0")));
+        let load_ok = entry.insts.iter().any(|i| {
+            matches!(i, IrInst::Load { dst, size: 4, .. }
+                if matches!(dst, Value::Register { name, .. } if name == "r0"))
+        });
         let base_add = entry.insts.iter().any(|i| match i {
-            IrInst::Binary { op: OpCode::Add, lhs, rhs: Value::Const(4), .. } => {
+            IrInst::Binary {
+                op: OpCode::Add,
+                lhs,
+                rhs: Value::Const(4),
+                ..
+            } => {
                 matches!(lhs, Value::Register { name, .. } if name == "r1")
             }
             _ => false,
         });
         let wb_ok = entry.insts.iter().any(|i| match i {
-            IrInst::Unary { op: OpCode::Copy, src: Value::Var { .. }, dst } => {
+            IrInst::Unary {
+                op: OpCode::Copy,
+                src: Value::Var { .. },
+                dst,
+            } => {
                 matches!(dst, Value::Register { name, .. } if name == "r1")
             }
             _ => false,
@@ -1490,13 +1896,16 @@ mod tests {
         let code = [0x04, 0x00, 0xA1, 0xE5];
         let func = lifter.lift_function(&code, 0x1000, "strpre").unwrap();
         let entry = func.block(func.entry_block).unwrap();
-        let store_ok = entry
-            .insts
-            .iter()
-            .any(|i| matches!(i, IrInst::Store { size: 4, value, .. }
-                if matches!(value, Value::Register { name, .. } if name == "r0")));
+        let store_ok = entry.insts.iter().any(|i| {
+            matches!(i, IrInst::Store { size: 4, value, .. }
+                if matches!(value, Value::Register { name, .. } if name == "r0"))
+        });
         let wb_ok = entry.insts.iter().any(|i| match i {
-            IrInst::Unary { op: OpCode::Copy, src: Value::Var { .. }, dst } => {
+            IrInst::Unary {
+                op: OpCode::Copy,
+                src: Value::Var { .. },
+                dst,
+            } => {
                 matches!(dst, Value::Register { name, .. } if name == "r1")
             }
             _ => false,
@@ -1526,7 +1935,12 @@ mod tests {
         let func = lifter.lift_function(&code, 0x400000, "cbz").unwrap();
         let entry = func.block(func.entry_block).unwrap();
         let has_eq = entry.insts.iter().any(|i| match i {
-            IrInst::Binary { op: OpCode::Eq, lhs, rhs: Value::Const(0), .. } => {
+            IrInst::Binary {
+                op: OpCode::Eq,
+                lhs,
+                rhs: Value::Const(0),
+                ..
+            } => {
                 matches!(lhs, Value::Register { name, .. } if name == "x0")
             }
             _ => false,
@@ -1553,7 +1967,11 @@ mod tests {
         let func = lifter.lift_function(&code, 0x1000, "tmov").unwrap();
         let entry = func.block(func.entry_block).unwrap();
         assert!(entry.insts.iter().any(|i| match i {
-            IrInst::Unary { op: OpCode::Copy, src: Value::Const(42), dst } => {
+            IrInst::Unary {
+                op: OpCode::Copy,
+                src: Value::Const(42),
+                dst,
+            } => {
                 matches!(dst, Value::Register { name, .. } if name == "r0")
             }
             _ => false,
@@ -1607,7 +2025,11 @@ mod tests {
         for b in &func.blocks {
             match b.terminator() {
                 Some(IrInst::Branch { target }) => targets.push(*target),
-                Some(IrInst::CBranch { target_true, target_false, .. }) => {
+                Some(IrInst::CBranch {
+                    target_true,
+                    target_false,
+                    ..
+                }) => {
                     targets.push(*target_true);
                     targets.push(*target_false);
                 }
@@ -1615,7 +2037,9 @@ mod tests {
             }
         }
         for t in targets {
-            let tb = func.block(t).unwrap_or_else(|| panic!("target bb{} missing", t.0));
+            let tb = func
+                .block(t)
+                .unwrap_or_else(|| panic!("target bb{} missing", t.0));
             assert!(
                 !tb.insts.is_empty(),
                 "branch target bb{} ({}) must contain lifted code, not an empty label",
@@ -1664,6 +2088,3 @@ mod tests {
         assert_all_branch_targets_have_code(&func);
     }
 }
-
-
-

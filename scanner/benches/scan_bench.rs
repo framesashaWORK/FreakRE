@@ -188,11 +188,11 @@ static YARA_BUF: LazyLock<Vec<u8>> = LazyLock::new(|| {
     Lcg::new(0x5EED_0004).fill_bytes(&mut buf);
 
     let plants: &[&[u8]] = &[
-        b"This program cannot be run in DOS mode\r\n$",                       // BenchDosStub
-        b"https://malware.example-c2.net/gate.php",                          // BenchC2Gate ($gate)
-        b"MOZILLA/4.0 (COMPATIBLE; MSIE)",                                   // BenchC2Gate ($ua, nocase)
-        &[0x4D, 0x5A, 0xA7, 0x90, 0x00, 0x3C, 0xBB, 0xCC],                   // BenchMzPrologue hex
-        b"software\\microsoft\\windows\\currentversion\\run",                // BenchRunKey (nocase)
+        b"This program cannot be run in DOS mode\r\n$", // BenchDosStub
+        b"https://malware.example-c2.net/gate.php",     // BenchC2Gate ($gate)
+        b"MOZILLA/4.0 (COMPATIBLE; MSIE)",              // BenchC2Gate ($ua, nocase)
+        &[0x4D, 0x5A, 0xA7, 0x90, 0x00, 0x3C, 0xBB, 0xCC], // BenchMzPrologue hex
+        b"software\\microsoft\\windows\\currentversion\\run", // BenchRunKey (nocase)
     ];
     let mut off = 0x10_000;
     for p in plants {

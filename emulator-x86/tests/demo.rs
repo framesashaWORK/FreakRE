@@ -43,7 +43,10 @@ fn xor_loop_decodes_payload() {
     // Write tracking saw exactly the payload region.
     assert_eq!(
         res.written_regions,
-        vec![MemRegion { start: DATA, len: CIPHER.len() as u64 }]
+        vec![MemRegion {
+            start: DATA,
+            len: CIPHER.len() as u64
+        }]
     );
 
     // Loop counter ended at the compare bound.
@@ -107,7 +110,10 @@ fn self_writing_code_write_tracking() {
     // The store was tracked as exactly one written region...
     assert_eq!(
         res.written_regions,
-        vec![MemRegion { start: PATCH, len: 1 }]
+        vec![MemRegion {
+            start: PATCH,
+            len: 1
+        }]
     );
     // ...observed by the environment hook...
     assert_eq!(emu.env().external_writes, vec![(PATCH, 1)]);

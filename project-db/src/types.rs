@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 /// A bookmark for quick navigation to important addresses.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -91,24 +91,23 @@ impl Type {
         match self {
             Type::Primitive(p) => Some(match p {
                 PrimitiveType::Void => 0,
-                PrimitiveType::Bool | PrimitiveType::I8 | PrimitiveType::U8 | PrimitiveType::Char => 1,
+                PrimitiveType::Bool
+                | PrimitiveType::I8
+                | PrimitiveType::U8
+                | PrimitiveType::Char => 1,
                 PrimitiveType::I16 | PrimitiveType::U16 => 2,
                 PrimitiveType::I32 | PrimitiveType::U32 | PrimitiveType::F32 => 4,
                 PrimitiveType::I64 | PrimitiveType::U64 | PrimitiveType::F64 => 8,
             }),
             Type::Pointer(_) => Some(8), // assume 64-bit
-            Type::Array(inner, count) => inner
-                .size(type_db)
-                .and_then(|s| s.checked_mul(*count)),
+            Type::Array(inner, count) => inner.size(type_db).and_then(|s| s.checked_mul(*count)),
             Type::Struct(name) => type_db.get_struct(name).map(|s| s.total_size),
-            Type::Enum(name) => type_db.get_enum(name).map(|e| {
-                match e.underlying {
-                    PrimitiveType::I8 | PrimitiveType::U8 => 1,
-                    PrimitiveType::I16 | PrimitiveType::U16 => 2,
-                    PrimitiveType::I32 | PrimitiveType::U32 => 4,
-                    PrimitiveType::I64 | PrimitiveType::U64 => 8,
-                    _ => 4,
-                }
+            Type::Enum(name) => type_db.get_enum(name).map(|e| match e.underlying {
+                PrimitiveType::I8 | PrimitiveType::U8 => 1,
+                PrimitiveType::I16 | PrimitiveType::U16 => 2,
+                PrimitiveType::I32 | PrimitiveType::U32 => 4,
+                PrimitiveType::I64 | PrimitiveType::U64 => 8,
+                _ => 4,
             }),
             Type::Function(_) => None,
             Type::Typedef(_, inner) => inner.size(type_db),
@@ -138,7 +137,9 @@ impl Type {
             Type::Struct(name) => format!("struct {}", name),
             Type::Enum(name) => format!("enum {}", name),
             Type::Function(sig) => {
-                let params: Vec<String> = sig.parameters.iter()
+                let params: Vec<String> = sig
+                    .parameters
+                    .iter()
                     .map(|(name, ty)| format!("{} {}", ty.display(_type_db), name))
                     .collect();
                 let params_str = if sig.variadic {
@@ -179,7 +180,8 @@ impl TypeDatabase {
     }
 
     pub fn add_typedef(&mut self, name: String, ty: Type) {
-        self.typedefs.insert(name.clone(), Type::Typedef(name, Box::new(ty)));
+        self.typedefs
+            .insert(name.clone(), Type::Typedef(name, Box::new(ty)));
     }
 
     pub fn get_struct(&self, name: &str) -> Option<&StructType> {
@@ -195,7 +197,11 @@ impl TypeDatabase {
         self.resolve_typedef_inner(ty, &mut visited)
     }
 
-    fn resolve_typedef_inner(&self, ty: &Type, visited: &mut std::collections::HashSet<String>) -> Type {
+    fn resolve_typedef_inner(
+        &self,
+        ty: &Type,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> Type {
         match ty {
             Type::Typedef(name, _) => {
                 if visited.len() >= 64 || !visited.insert(name.clone()) {
@@ -221,13 +227,34 @@ impl TypeDatabase {
         self.add_typedef("ULONG".to_string(), Type::Primitive(PrimitiveType::U32));
         self.add_typedef("LONGLONG".to_string(), Type::Primitive(PrimitiveType::I64));
         self.add_typedef("ULONGLONG".to_string(), Type::Primitive(PrimitiveType::U64));
-        self.add_typedef("HANDLE".to_string(), Type::Pointer(Box::new(Type::Primitive(PrimitiveType::Void))));
-        self.add_typedef("PVOID".to_string(), Type::Pointer(Box::new(Type::Primitive(PrimitiveType::Void))));
-        self.add_typedef("LPVOID".to_string(), Type::Pointer(Box::new(Type::Primitive(PrimitiveType::Void))));
-        self.add_typedef("LPSTR".to_string(), Type::Pointer(Box::new(Type::Primitive(PrimitiveType::Char))));
-        self.add_typedef("LPCSTR".to_string(), Type::Pointer(Box::new(Type::Primitive(PrimitiveType::Char))));
-        self.add_typedef("LPWSTR".to_string(), Type::Pointer(Box::new(Type::Primitive(PrimitiveType::U16))));
-        self.add_typedef("LPCWSTR".to_string(), Type::Pointer(Box::new(Type::Primitive(PrimitiveType::U16))));
+        self.add_typedef(
+            "HANDLE".to_string(),
+            Type::Pointer(Box::new(Type::Primitive(PrimitiveType::Void))),
+        );
+        self.add_typedef(
+            "PVOID".to_string(),
+            Type::Pointer(Box::new(Type::Primitive(PrimitiveType::Void))),
+        );
+        self.add_typedef(
+            "LPVOID".to_string(),
+            Type::Pointer(Box::new(Type::Primitive(PrimitiveType::Void))),
+        );
+        self.add_typedef(
+            "LPSTR".to_string(),
+            Type::Pointer(Box::new(Type::Primitive(PrimitiveType::Char))),
+        );
+        self.add_typedef(
+            "LPCSTR".to_string(),
+            Type::Pointer(Box::new(Type::Primitive(PrimitiveType::Char))),
+        );
+        self.add_typedef(
+            "LPWSTR".to_string(),
+            Type::Pointer(Box::new(Type::Primitive(PrimitiveType::U16))),
+        );
+        self.add_typedef(
+            "LPCWSTR".to_string(),
+            Type::Pointer(Box::new(Type::Primitive(PrimitiveType::U16))),
+        );
         self.add_typedef("SIZE_T".to_string(), Type::Primitive(PrimitiveType::U64));
         self.add_typedef("UINT".to_string(), Type::Primitive(PrimitiveType::U32));
         self.add_typedef("INT".to_string(), Type::Primitive(PrimitiveType::I32));
@@ -279,10 +306,7 @@ mod tests {
     fn test_array_size_overflow_is_graceful() {
         let db = TypeDatabase::new();
         // usize::MAX * 8 would overflow; must yield None instead of panicking.
-        let arr = Type::Array(
-            Box::new(Type::Primitive(PrimitiveType::U64)),
-            usize::MAX,
-        );
+        let arr = Type::Array(Box::new(Type::Primitive(PrimitiveType::U64)), usize::MAX);
         assert_eq!(arr.size(&db), None);
     }
 }

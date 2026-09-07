@@ -195,7 +195,8 @@ impl EnsembleClassifier {
             .max(probs.pua);
 
         // Generate explanation
-        let explanation = generate_explanation(class, confidence, &tree_scores, &important_features);
+        let explanation =
+            generate_explanation(class, confidence, &tree_scores, &important_features);
 
         ClassificationResult {
             class,
@@ -369,10 +370,16 @@ impl Rule {
                 0.0
             }
             RuleLogic::All => {
-                let all_exceed = self.feature_indices.iter()
+                let all_exceed = self
+                    .feature_indices
+                    .iter()
                     .zip(self.thresholds.iter())
                     .all(|(i, t)| features.features[*i] >= *t);
-                if all_exceed { self.weights[0] } else { 0.0 }
+                if all_exceed {
+                    self.weights[0]
+                } else {
+                    0.0
+                }
             }
             RuleLogic::Sum => {
                 let mut sum = 0.0;
@@ -478,7 +485,7 @@ impl Rule {
     fn high_import_count(weight: f32) -> Self {
         Rule {
             feature_indices: vec![60], // total_imports_log
-            thresholds: vec![8.0], // ~256 imports
+            thresholds: vec![8.0],     // ~256 imports
             weights: vec![weight],
             logic: RuleLogic::Any,
         }
@@ -730,7 +737,8 @@ fn find_important_features(
     }
 
     importances.sort_by(|a, b| {
-        b.contribution.abs()
+        b.contribution
+            .abs()
             .partial_cmp(&a.contribution.abs())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
@@ -745,7 +753,11 @@ fn generate_explanation(
     tree_scores: &[TreeScore],
     important_features: &[FeatureImportance],
 ) -> String {
-    let mut explanation = format!("Classification: {} (confidence: {:.0}%)\n\n", class, confidence * 100.0);
+    let mut explanation = format!(
+        "Classification: {} (confidence: {:.0}%)\n\n",
+        class,
+        confidence * 100.0
+    );
 
     let triggered: Vec<_> = tree_scores.iter().filter(|t| t.triggered).collect();
     if !triggered.is_empty() {
@@ -759,7 +771,10 @@ fn generate_explanation(
     if !important_features.is_empty() {
         explanation.push_str("Top contributing features:\n");
         for f in important_features.iter().take(5) {
-            explanation.push_str(&format!("  - {}: {:.3} (weight: {:.2})\n", f.name, f.value, f.weight));
+            explanation.push_str(&format!(
+                "  - {}: {:.3} (weight: {:.2})\n",
+                f.name, f.value, f.weight
+            ));
         }
     }
 
@@ -791,7 +806,9 @@ mod tests {
         features.features[80] = 2.0; // anti-debug
         features.features[51] = 1.0; // ws2_32 import (network C2)
         let result = classifier.classify(&features);
-        assert!(result.class == MalwareClass::Malicious || result.class == MalwareClass::Suspicious);
+        assert!(
+            result.class == MalwareClass::Malicious || result.class == MalwareClass::Suspicious
+        );
     }
 
     #[test]
@@ -832,7 +849,12 @@ mod tests {
         assert_eq!(result.class, MalwareClass::Clean);
 
         let p = &result.probabilities;
-        let max_prob = p.clean.max(p.suspicious).max(p.malicious).max(p.packed).max(p.pua);
+        let max_prob = p
+            .clean
+            .max(p.suspicious)
+            .max(p.malicious)
+            .max(p.packed)
+            .max(p.pua);
         assert!((result.confidence - max_prob).abs() < 1e-6);
         assert!(result.confidence > 0.9);
     }

@@ -93,74 +93,125 @@ pub struct DllFinding {
 
 /// Well-known system DLL names (lowercase).
 const SYSTEM_DLLS: &[&str] = &[
-    "kernel32.dll", "kernelbase.dll", "ntdll.dll", "user32.dll",
-    "gdi32.dll", "gdiplus.dll", "advapi32.dll", "secur32.dll",
-    "crypt32.dll", "wininet.dll", "ws2_32.dll", "ole32.dll",
-    "oleaut32.dll", "shell32.dll", "shlwapi.dll", "comctl32.dll",
-    "comdlg32.dll", "msvcrt.dll", "vcruntime140.dll", "ucrtbase.dll",
-    "ntoskrnl.exe", "hal.dll", "msvcrt*.dll", "api-ms-win-*.dll",
+    "kernel32.dll",
+    "kernelbase.dll",
+    "ntdll.dll",
+    "user32.dll",
+    "gdi32.dll",
+    "gdiplus.dll",
+    "advapi32.dll",
+    "secur32.dll",
+    "crypt32.dll",
+    "wininet.dll",
+    "ws2_32.dll",
+    "ole32.dll",
+    "oleaut32.dll",
+    "shell32.dll",
+    "shlwapi.dll",
+    "comctl32.dll",
+    "comdlg32.dll",
+    "msvcrt.dll",
+    "vcruntime140.dll",
+    "ucrtbase.dll",
+    "ntoskrnl.exe",
+    "hal.dll",
+    "msvcrt*.dll",
+    "api-ms-win-*.dll",
 ];
 
 /// COM/ActiveX required exports.
 const COM_EXPORTS: &[&str] = &[
-    "DllGetClassObject", "DllCanUnloadNow", "DllRegisterServer",
+    "DllGetClassObject",
+    "DllCanUnloadNow",
+    "DllRegisterServer",
     "DllUnregisterServer",
 ];
 
 /// Injectable DLL indicators: exports that suggest process injection.
 const INJECTABLE_EXPORTS: &[&str] = &[
-    "VirtualAllocEx", "WriteProcessMemory", "CreateRemoteThread",
-    "NtCreateThreadEx", "RtlCreateUserThread",
+    "VirtualAllocEx",
+    "WriteProcessMemory",
+    "CreateRemoteThread",
+    "NtCreateThreadEx",
+    "RtlCreateUserThread",
 ];
 
 /// Well-known SSP/AP / credential provider DLL indicators.
-const SSP_AP_INDICATORS: &[&str] = &[
-    "SpInitialize", "SpLsaModeInitialize", "SpGetInfoFn",
-];
+const SSP_AP_INDICATORS: &[&str] = &["SpInitialize", "SpLsaModeInitialize", "SpGetInfoFn"];
 
 /// Suspicious API exports commonly used in malware.
 const SUSPICIOUS_APIS: &[&str] = &[
     // Process injection
-    "VirtualAllocEx", "WriteProcessMemory", "CreateRemoteThread",
-    "NtCreateThreadEx", "RtlCreateUserThread", "QueueUserAPC",
-    "NtQueueApcThread", "SetThreadContext", "GetThreadContext",
+    "VirtualAllocEx",
+    "WriteProcessMemory",
+    "CreateRemoteThread",
+    "NtCreateThreadEx",
+    "RtlCreateUserThread",
+    "QueueUserAPC",
+    "NtQueueApcThread",
+    "SetThreadContext",
+    "GetThreadContext",
     // Memory manipulation
-    "VirtualProtect", "VirtualProtectEx", "NtProtectVirtualMemory",
-    "VirtualAlloc", "NtAllocateVirtualMemory",
+    "VirtualProtect",
+    "VirtualProtectEx",
+    "NtProtectVirtualMemory",
+    "VirtualAlloc",
+    "NtAllocateVirtualMemory",
     // Hooking / IAT
-    "SetWindowsHookExA", "SetWindowsHookExW", "NtSetInformationThread",
+    "SetWindowsHookExA",
+    "SetWindowsHookExW",
+    "NtSetInformationThread",
     // Credential theft
-    "LsaRetrievePrivateData", "SamQueryInformationUser",
-    "CredReadA", "CredReadW", "CryptUnprotectData",
+    "LsaRetrievePrivateData",
+    "SamQueryInformationUser",
+    "CredReadA",
+    "CredReadW",
+    "CryptUnprotectData",
     // Anti-debug
-    "IsDebuggerPresent", "CheckRemoteDebuggerPresent",
-    "NtQueryInformationProcess", "OutputDebugStringA",
+    "IsDebuggerPresent",
+    "CheckRemoteDebuggerPresent",
+    "NtQueryInformationProcess",
+    "OutputDebugStringA",
     // Network
-    "InternetOpenA", "InternetOpenW", "InternetConnectA",
-    "HttpSendRequestA", "URLDownloadToFileA",
-    "WSAStartup", "connect", "send", "recv",
+    "InternetOpenA",
+    "InternetOpenW",
+    "InternetConnectA",
+    "HttpSendRequestA",
+    "URLDownloadToFileA",
+    "WSAStartup",
+    "connect",
+    "send",
+    "recv",
     // Registry (persistence)
-    "RegCreateKeyExA", "RegSetValueExA",
+    "RegCreateKeyExA",
+    "RegSetValueExA",
     // Service (persistence)
-    "CreateServiceA", "OpenSCManagerA",
+    "CreateServiceA",
+    "OpenSCManagerA",
     // Crypto
-    "CryptEncrypt", "CryptDecrypt", "CryptGenKey",
+    "CryptEncrypt",
+    "CryptDecrypt",
+    "CryptGenKey",
     // Process manipulation
-    "OpenProcess", "NtOpenProcess", "TerminateProcess",
-    "CreateProcessA", "CreateProcessW", "ShellExecuteA",
+    "OpenProcess",
+    "NtOpenProcess",
+    "TerminateProcess",
+    "CreateProcessA",
+    "CreateProcessW",
+    "ShellExecuteA",
 ];
 
 /// Shellcode signature byte patterns that may appear in export names or ordinals.
 const SHELLCODE_SIGNATURES: &[&[u8]] = &[
-    &[0x64, 0x8B, 0x35],           // mov esi, dword ptr fs:[0x35] (PEB)
-    &[0x64, 0xA1, 0x30, 0x00],     // mov eax, dword ptr fs:[0x30] (TEB)
-    &[0x48, 0x8B, 0x05],           // mov rax, qword ptr [rip+...] (x64)
-    &[0xFF, 0x15],                 // call [rip+...] (indirect call)
-    &[0x0F, 0x01, 0xC8],           // rdtsc
-    &[0xCD, 0x80],                 // int 0x80 (Linux syscall)
-    &[0x0F, 0x05],                 // syscall (x64 Linux)
-    &[0xCC],                       // int3 (breakpoint/debug trap)
-    &[0xEB, 0xFE],                 // jmp $ (infinite loop)
+    &[0x64, 0x8B, 0x35],       // mov esi, dword ptr fs:[0x35] (PEB)
+    &[0x64, 0xA1, 0x30, 0x00], // mov eax, dword ptr fs:[0x30] (TEB)
+    &[0x48, 0x8B, 0x05],       // mov rax, qword ptr [rip+...] (x64)
+    &[0xFF, 0x15],             // call [rip+...] (indirect call)
+    &[0x0F, 0x01, 0xC8],       // rdtsc
+    &[0xCD, 0x80],             // int 0x80 (Linux syscall)
+    &[0x0F, 0x05],             // syscall (x64 Linux)
+    &[0xCC],                   // int3 (breakpoint/debug trap)
+    &[0xEB, 0xFE],             // jmp $ (infinite loop)
 ];
 
 /// Analyze a PE file as a DLL and return DllInfo.
@@ -227,7 +278,8 @@ pub fn analyze_dll(
     let export_lower: Vec<String> = exports.iter().map(|e| e.to_lowercase()).collect();
 
     // System DLL detection (needed before injectable check)
-    let is_system = dll_name.as_ref()
+    let is_system = dll_name
+        .as_ref()
         .map(|n| SYSTEM_DLLS.iter().any(|s| n.to_lowercase().ends_with(s)))
         .unwrap_or(false);
 
@@ -235,7 +287,8 @@ pub fn analyze_dll(
     let is_resource_only = exports.is_empty() && !is_dll_has_code(pe_data);
 
     // COM/ActiveX: has required COM exports
-    let com_count = COM_EXPORTS.iter()
+    let com_count = COM_EXPORTS
+        .iter()
         .filter(|com_e| export_lower.iter().any(|e| e.eq_ignore_ascii_case(com_e)))
         .count();
     let is_com = com_count >= 2; // Need at least DllGetClassObject + DllRegisterServer
@@ -251,10 +304,13 @@ pub fn analyze_dll(
     // Injectable: has injection-related exports or suspicious patterns
     // Skip this check for known system DLLs (they legitimately export these APIs)
     let inject_count = if !is_system {
-        INJECTABLE_EXPORTS.iter()
+        INJECTABLE_EXPORTS
+            .iter()
             .filter(|ie| export_lower.iter().any(|e| e.eq_ignore_ascii_case(ie)))
             .count()
-    } else { 0 };
+    } else {
+        0
+    };
     // DllMain-only only makes sense for actual DLLs: an EXE without
     // exports is normal, flagging it injectable was a false positive.
     let has_dllmain_only = is_dll && exports.is_empty() && import_count > 0;
@@ -271,14 +327,19 @@ pub fn analyze_dll(
 
     // Suspicious API detection
     if !is_system {
-        let suspicious_count: usize = SUSPICIOUS_APIS.iter()
+        let suspicious_count: usize = SUSPICIOUS_APIS
+            .iter()
             .filter(|api| export_lower.iter().any(|e| e.eq_ignore_ascii_case(api)))
             .count();
         if suspicious_count > 0 {
             let score = (suspicious_count as f64 * 0.05).min(0.4);
             suspicion_score += score;
             findings.push(DllFinding {
-                severity: if suspicious_count >= 5 { "High".to_string() } else { "Medium".to_string() },
+                severity: if suspicious_count >= 5 {
+                    "High".to_string()
+                } else {
+                    "Medium".to_string()
+                },
                 rule_id: "DLL_SUSPICIOUS_APIS".to_string(),
                 description: format!("{} suspicious API exports detected", suspicious_count),
             });
@@ -286,12 +347,13 @@ pub fn analyze_dll(
     }
 
     // Shellcode signature detection in export names
-    let shellcode_exports: Vec<&String> = exports.iter()
+    let shellcode_exports: Vec<&String> = exports
+        .iter()
         .filter(|name| {
             let name_bytes = name.as_bytes();
-            SHELLCODE_SIGNATURES.iter().any(|sig| {
-                name_bytes.windows(sig.len()).any(|w| w == *sig)
-            })
+            SHELLCODE_SIGNATURES
+                .iter()
+                .any(|sig| name_bytes.windows(sig.len()).any(|w| w == *sig))
         })
         .collect();
     if !shellcode_exports.is_empty() {
@@ -328,19 +390,26 @@ pub fn analyze_dll(
         findings.push(DllFinding {
             severity: "Medium".to_string(),
             rule_id: "DLL_LONG_EXPORT_NAMES".to_string(),
-            description: format!("{} export(s) with extremely long names (>128 chars)", long_name_count),
+            description: format!(
+                "{} export(s) with extremely long names (>128 chars)",
+                long_name_count
+            ),
         });
     }
 
     // SSP/AP indicators
-    let ssp_count = SSP_AP_INDICATORS.iter()
+    let ssp_count = SSP_AP_INDICATORS
+        .iter()
         .filter(|ssp| export_lower.iter().any(|e| e.eq_ignore_ascii_case(ssp)))
         .count();
     if ssp_count > 0 {
         findings.push(DllFinding {
             severity: "Critical".to_string(),
             rule_id: "DLL_SSP_AP".to_string(),
-            description: format!("SSP/AP credential provider DLL with {} security exports", ssp_count),
+            description: format!(
+                "SSP/AP credential provider DLL with {} security exports",
+                ssp_count
+            ),
         });
         suspicion_score += 0.5;
     }
@@ -419,7 +488,9 @@ fn detect_calling_conventions(architecture: &str, exports: &[String]) -> Vec<Cal
         "ARM64" => cc.push(CallingConvention::MicrosoftX64), // Windows ARM64 uses MS x64 ABI
         "x86" => {
             // Heuristic: check for common stdcall name patterns (_FunctionName@N)
-            let has_stdcall = exports.iter().any(|e| e.starts_with('_') && e.contains('@'));
+            let has_stdcall = exports
+                .iter()
+                .any(|e| e.starts_with('_') && e.contains('@'));
             let has_fastcall = exports.iter().any(|e| e.starts_with('@'));
             if has_stdcall {
                 cc.push(CallingConvention::Stdcall);
@@ -456,17 +527,39 @@ fn is_dll_has_code(pe_data: &[u8]) -> bool {
 /// Decode DllCharacteristics flags into human-readable strings.
 fn decode_dll_characteristics(flags: u16) -> Vec<String> {
     let mut out = Vec::new();
-    if flags & 0x0020 != 0 { out.push("HIGH_ENTROPY_VA".into()); }
-    if flags & 0x0040 != 0 { out.push("DYNAMIC_BASE/ASLR".into()); }
-    if flags & 0x0080 != 0 { out.push("FORCE_INTEGRITY".into()); }
-    if flags & 0x0100 != 0 { out.push("NX_COMPAT/DEP".into()); }
-    if flags & 0x0200 != 0 { out.push("NO_ISOLATION".into()); }
-    if flags & 0x0400 != 0 { out.push("NO_SEH".into()); }
-    if flags & 0x0800 != 0 { out.push("NO_BIND".into()); }
-    if flags & 0x1000 != 0 { out.push("APPCONTAINER".into()); }
-    if flags & 0x2000 != 0 { out.push("WDM_DRIVER".into()); }
-    if flags & 0x4000 != 0 { out.push("GUARD_CF/CFG".into()); }
-    if flags & 0x8000 != 0 { out.push("TERMINAL_SERVER_AWARE".into()); }
+    if flags & 0x0020 != 0 {
+        out.push("HIGH_ENTROPY_VA".into());
+    }
+    if flags & 0x0040 != 0 {
+        out.push("DYNAMIC_BASE/ASLR".into());
+    }
+    if flags & 0x0080 != 0 {
+        out.push("FORCE_INTEGRITY".into());
+    }
+    if flags & 0x0100 != 0 {
+        out.push("NX_COMPAT/DEP".into());
+    }
+    if flags & 0x0200 != 0 {
+        out.push("NO_ISOLATION".into());
+    }
+    if flags & 0x0400 != 0 {
+        out.push("NO_SEH".into());
+    }
+    if flags & 0x0800 != 0 {
+        out.push("NO_BIND".into());
+    }
+    if flags & 0x1000 != 0 {
+        out.push("APPCONTAINER".into());
+    }
+    if flags & 0x2000 != 0 {
+        out.push("WDM_DRIVER".into());
+    }
+    if flags & 0x4000 != 0 {
+        out.push("GUARD_CF/CFG".into());
+    }
+    if flags & 0x8000 != 0 {
+        out.push("TERMINAL_SERVER_AWARE".into());
+    }
     out
 }
 
@@ -511,10 +604,19 @@ mod tests {
     fn test_dll_type_classification() {
         // COM DLL
         let info = analyze_dll(
-            &[0u8; 100], true, false, 0x8664, 0,
-            &["DllGetClassObject".into(), "DllCanUnloadNow".into(),
-              "DllRegisterServer".into(), "DllUnregisterServer".into()],
-            Some("mycom.dll".into()), 10,
+            &[0u8; 100],
+            true,
+            false,
+            0x8664,
+            0,
+            &[
+                "DllGetClassObject".into(),
+                "DllCanUnloadNow".into(),
+                "DllRegisterServer".into(),
+                "DllUnregisterServer".into(),
+            ],
+            Some("mycom.dll".into()),
+            10,
         );
         assert_eq!(info.dll_type, DllType::ComActiveX);
         assert!(info.is_com);
@@ -524,9 +626,14 @@ mod tests {
     #[test]
     fn test_injectable_dll() {
         let info = analyze_dll(
-            &[0u8; 100], true, false, 0x8664, 0,
+            &[0u8; 100],
+            true,
+            false,
+            0x8664,
+            0,
             &["VirtualAllocEx".into(), "WriteProcessMemory".into()],
-            Some("payload.dll".into()), 5,
+            Some("payload.dll".into()),
+            5,
         );
         assert_eq!(info.dll_type, DllType::Injectable);
         assert!(info.is_injectable);
@@ -536,9 +643,14 @@ mod tests {
     #[test]
     fn test_system_dll() {
         let info = analyze_dll(
-            &[0u8; 100], true, false, 0x8664, 0,
+            &[0u8; 100],
+            true,
+            false,
+            0x8664,
+            0,
             &["CreateFileW".into(), "ReadFile".into()],
-            Some("kernel32.dll".into()), 100,
+            Some("kernel32.dll".into()),
+            100,
         );
         assert_eq!(info.dll_type, DllType::System);
     }
@@ -546,9 +658,14 @@ mod tests {
     #[test]
     fn test_wdm_driver() {
         let info = analyze_dll(
-            &[0u8; 100], true, false, 0x8664, 0x2000,
+            &[0u8; 100],
+            true,
+            false,
+            0x8664,
+            0x2000,
             &["DriverEntry".into()],
-            Some("mydriver.dll".into()), 3,
+            Some("mydriver.dll".into()),
+            3,
         );
         assert!(info.is_wdm_driver);
         assert_eq!(info.dll_type, DllType::WdmDriver);
@@ -557,9 +674,14 @@ mod tests {
     #[test]
     fn test_dotnet_dll() {
         let info = analyze_dll(
-            &[0u8; 100], true, true, 0x8664, 0,
+            &[0u8; 100],
+            true,
+            true,
+            0x8664,
+            0,
             &[".ctor".into(), "Main".into()],
-            Some("mylib.dll".into()), 20,
+            Some("mylib.dll".into()),
+            20,
         );
         assert!(info.is_dotnet);
         assert_eq!(info.dll_type, DllType::DotNet);
@@ -568,9 +690,14 @@ mod tests {
     #[test]
     fn test_ssp_ap_dll() {
         let info = analyze_dll(
-            &[0u8; 100], true, false, 0x8664, 0,
+            &[0u8; 100],
+            true,
+            false,
+            0x8664,
+            0,
             &["SpInitialize".into(), "SpLsaModeInitialize".into()],
-            Some("mimilib.dll".into()), 2,
+            Some("mimilib.dll".into()),
+            2,
         );
         // SSP/AP DLLs are credential providers, not injectable
         assert_eq!(info.dll_type, DllType::Native);
@@ -581,27 +708,45 @@ mod tests {
     #[test]
     fn test_calling_conventions_x64() {
         let info = analyze_dll(
-            &[0u8; 100], true, false, 0x8664, 0,
+            &[0u8; 100],
+            true,
+            false,
+            0x8664,
+            0,
             &["main".into()],
-            Some("test.dll".into()), 5,
+            Some("test.dll".into()),
+            5,
         );
-        assert!(info.calling_conventions.contains(&CallingConvention::MicrosoftX64));
+        assert!(info
+            .calling_conventions
+            .contains(&CallingConvention::MicrosoftX64));
     }
 
     #[test]
     fn test_calling_conventions_x86() {
         let info = analyze_dll(
-            &[0u8; 100], true, false, 0x014C, 0,
+            &[0u8; 100],
+            true,
+            false,
+            0x014C,
+            0,
             &["_CreateFileW@28".into(), "_ReadFile@20".into()],
-            Some("test.dll".into()), 5,
+            Some("test.dll".into()),
+            5,
         );
-        assert!(info.calling_conventions.contains(&CallingConvention::Stdcall));
+        assert!(info
+            .calling_conventions
+            .contains(&CallingConvention::Stdcall));
     }
 
     #[test]
     fn test_suspicious_apis_detected() {
         let info = analyze_dll(
-            &[0u8; 100], true, false, 0x8664, 0,
+            &[0u8; 100],
+            true,
+            false,
+            0x8664,
+            0,
             &[
                 "VirtualAllocEx".into(),
                 "WriteProcessMemory".into(),
@@ -609,36 +754,56 @@ mod tests {
                 "NtCreateThreadEx".into(),
                 "QueueUserAPC".into(),
             ],
-            Some("suspicious.dll".into()), 10,
+            Some("suspicious.dll".into()),
+            10,
         );
         assert!(info.suspicion_score > 0.0);
-        assert!(info.findings.iter().any(|f| f.rule_id == "DLL_SUSPICIOUS_APIS"));
+        assert!(info
+            .findings
+            .iter()
+            .any(|f| f.rule_id == "DLL_SUSPICIOUS_APIS"));
     }
 
     #[test]
     fn test_high_export_entropy() {
         // Export names with high entropy (random-looking)
         let info = analyze_dll(
-            &[0u8; 100], true, false, 0x8664, 0,
+            &[0u8; 100],
+            true,
+            false,
+            0x8664,
+            0,
             &[
                 "xK9mP2nQ7wR4".into(),
                 "jB3vL8yT5uF1".into(),
                 "aH6dW0sE3gZ9".into(),
             ],
-            Some("obfuscated.dll".into()), 5,
+            Some("obfuscated.dll".into()),
+            5,
         );
-        assert!(info.findings.iter().any(|f| f.rule_id == "DLL_HIGH_EXPORT_ENTROPY"));
+        assert!(info
+            .findings
+            .iter()
+            .any(|f| f.rule_id == "DLL_HIGH_EXPORT_ENTROPY"));
     }
 
     #[test]
     fn test_long_export_names() {
         let long_name = "A".repeat(200);
         let info = analyze_dll(
-            &[0u8; 100], true, false, 0x8664, 0,
+            &[0u8; 100],
+            true,
+            false,
+            0x8664,
+            0,
             &[long_name],
-            Some("longnames.dll".into()), 5,
+            Some("longnames.dll".into()),
+            5,
         );
-        assert!(info.findings.iter().any(|f| f.rule_id == "DLL_LONG_EXPORT_NAMES"));
+        assert!(info
+            .findings
+            .iter()
+            .any(|f| f.rule_id == "DLL_LONG_EXPORT_NAMES"));
         assert!(info.suspicion_score > 0.0);
     }
 

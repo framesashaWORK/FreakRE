@@ -24,8 +24,8 @@ const URL_SCHEMES: [&str; 5] = ["http://", "https://", "ftp://", "ftps://", "tcp
 
 const COMMON_TLDS: [&str; 30] = [
     "com", "net", "org", "io", "ru", "su", "cn", "xyz", "top", "info", "biz", "online", "site",
-    "club", "vip", "onion", "tk", "ml", "ga", "cf", "gq", "pw", "cc", "me", "uk", "us", "de",
-    "fr", "example", "test",
+    "club", "vip", "onion", "tk", "ml", "ga", "cf", "gq", "pw", "cc", "me", "uk", "us", "de", "fr",
+    "example", "test",
 ];
 
 /// Kind of encoding used by the detected blob.
@@ -322,7 +322,13 @@ fn scan_ascii_runs(data: &[u8], cfg: &ExtractConfig, out: &mut Vec<BlobFinding>)
                 run.len() >= cfg.min_blob_hex_len && run.iter().all(|&b| is_hex_char(b));
             if hex_priority {
                 let decoded = hex_decode(run);
-                out.push(make_finding(s, run.len(), &decoded, BlobKind::Hex, Encoding::Ascii));
+                out.push(make_finding(
+                    s,
+                    run.len(),
+                    &decoded,
+                    BlobKind::Hex,
+                    Encoding::Ascii,
+                ));
             } else if run.len() >= cfg.min_blob_base64_len {
                 let decoded = base64_decode(run).unwrap_or_default();
                 out.push(make_finding(
@@ -377,7 +383,13 @@ fn scan_wide_runs(
 
     for (s, encoded) in dedup_overlapping(candidates) {
         let decoded = base64_decode(&encoded).unwrap_or_default();
-        out.push(make_finding(s, encoded.len(), &decoded, BlobKind::Base64, encoding));
+        out.push(make_finding(
+            s,
+            encoded.len(),
+            &decoded,
+            BlobKind::Base64,
+            encoding,
+        ));
     }
 }
 
@@ -503,7 +515,8 @@ mod tests {
 
     #[test]
     fn random_short_strings_do_not_fire() {
-        let data = b"Hello World\x00This is a normal binary\x01\x02with short tokens AAA21+/ zzz\x00";
+        let data =
+            b"Hello World\x00This is a normal binary\x01\x02with short tokens AAA21+/ zzz\x00";
         let (_, blobs) = extract_strings_with_blobs(data, &ExtractConfig::default());
         assert!(
             blobs.is_empty(),
@@ -557,13 +570,20 @@ mod tests {
         let data = surround(&hexed, 4);
 
         let (_, blobs) = extract_strings_with_blobs(&data, &ExtractConfig::default());
-        let hit = blobs.iter().find(|b| b.kind == BlobKind::Hex).expect("hex blob must be found");
+        let hit = blobs
+            .iter()
+            .find(|b| b.kind == BlobKind::Hex)
+            .expect("hex blob must be found");
         assert_eq!(hit.offset, 4);
         assert_eq!(hit.encoded_len, hexed.len());
         assert_eq!(hit.decoded_len, payload.len());
         assert!(hit.looks_like_pe, "pe flag must fire on hex mz blob: {hit}");
         assert!(hit.is_probable_payload);
-        assert_eq!(blobs.iter().filter(|b| b.offset == 4).count(), 1, "hex run must not double-report as base64");
+        assert_eq!(
+            blobs.iter().filter(|b| b.offset == 4).count(),
+            1,
+            "hex run must not double-report as base64"
+        );
     }
 
     #[test]
@@ -572,8 +592,14 @@ mod tests {
         let encoded = b64_encode(payload);
         let data = surround(&encoded, 0);
         let (_, blobs) = extract_strings_with_blobs(&data, &ExtractConfig::default());
-        let hit = blobs.iter().find(|b| b.kind == BlobKind::Base64).expect("blob must be found");
-        assert!(hit.looks_like_powershell, "powershell flag must fire: {hit}");
+        let hit = blobs
+            .iter()
+            .find(|b| b.kind == BlobKind::Base64)
+            .expect("blob must be found");
+        assert!(
+            hit.looks_like_powershell,
+            "powershell flag must fire: {hit}"
+        );
     }
 
     #[test]
@@ -586,7 +612,11 @@ mod tests {
             ..Default::default()
         };
         let (_, blobs) = extract_strings_with_blobs(&data, &cfg);
-        assert!(blobs.is_empty(), "above threshold nothing may fire: {:?}", blobs);
+        assert!(
+            blobs.is_empty(),
+            "above threshold nothing may fire: {:?}",
+            blobs
+        );
 
         let cfg = ExtractConfig {
             min_blob_base64_len: encoded_len - 1,
@@ -613,7 +643,10 @@ mod tests {
         let encoded = b64_encode(payload);
         let data = surround(&encoded, 0);
         let (_, blobs) = extract_strings_with_blobs(&data, &ExtractConfig::default());
-        let hit = blobs.iter().find(|b| b.kind == BlobKind::Base64).expect("blob must be found");
+        let hit = blobs
+            .iter()
+            .find(|b| b.kind == BlobKind::Base64)
+            .expect("blob must be found");
         assert!(hit.decoded_preview.contains("\\x00\\x01\\x02"));
         assert!(!hit.decoded_preview.contains('\0'));
         // "AAAABBBB" (8) + TAIL*9 (36) printable; \x00\x01\x02 are not.

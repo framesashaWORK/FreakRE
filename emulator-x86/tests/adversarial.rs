@@ -3,9 +3,9 @@
 
 use emulator_x86::{BudgetKind, DefaultEnv, Emulator, ExitReason};
 use freakre_ir::ir::{BlockId, IrFunction, IrInst, OpCode, Value};
-use freakre_ir::Ty;
 use freakre_ir::lifter::Lifter;
 use freakre_ir::x86_lifter::X86Lifter;
+use freakre_ir::Ty;
 
 const BASE: u64 = 0x0040_1000;
 
@@ -23,11 +23,14 @@ fn bin(f: &mut IrFunction, dst: &Value, op: OpCode, l: Value, r: Value) {
 }
 
 fn store_const(f: &mut IrFunction, addr: &Value, val: i64, size: u32) {
-    f.push_inst(f.entry_block, IrInst::Store {
-        addr: addr.clone(),
-        value: Value::Const(val),
-        size,
-    });
+    f.push_inst(
+        f.entry_block,
+        IrInst::Store {
+            addr: addr.clone(),
+            value: Value::Const(val),
+            size,
+        },
+    );
 }
 
 #[test]
@@ -61,7 +64,12 @@ fn modulo_by_zero_is_unsupported() {
 #[test]
 fn dangling_branch_stops_safely() {
     let mut f = IrFunction::new("dangle", BASE);
-    f.push_inst(f.entry_block, IrInst::Branch { target: BlockId(42) });
+    f.push_inst(
+        f.entry_block,
+        IrInst::Branch {
+            target: BlockId(42),
+        },
+    );
 
     let mut emu = Emulator::new(DefaultEnv::new());
     let res = emu.run(&f, BASE, 0, 100);
@@ -75,7 +83,9 @@ fn dangling_branch_stops_safely() {
 #[test]
 fn indirect_branch_and_phi_are_unsupported() {
     for inst in [
-        IrInst::IndirectBranch { target: Value::Const(0x1000) },
+        IrInst::IndirectBranch {
+            target: Value::Const(0x1000),
+        },
         IrInst::Phi {
             dst: Value::var(0, Ty::i64()),
             incoming: vec![(BlockId(0), Value::Const(1))],
@@ -99,7 +109,10 @@ fn infinite_jmp_hits_step_budget() {
     let mut emu = Emulator::new(DefaultEnv::new());
     let res = emu.run(&func, BASE, 0, 1_000);
 
-    assert_eq!(res.exit_reason, ExitReason::BudgetExhausted(BudgetKind::Steps));
+    assert_eq!(
+        res.exit_reason,
+        ExitReason::BudgetExhausted(BudgetKind::Steps)
+    );
     assert_eq!(res.steps, 1_001); // limit + the step that tripped it
 }
 
@@ -108,12 +121,15 @@ fn memory_budget_guard_trips() {
     // Store to page 0, then to page +4096 with a one-page memory budget.
     let mut f = IrFunction::new("hog", BASE);
     let v = f.alloc_var(Ty::i64());
-    f.push_inst(f.entry_block, IrInst::Binary {
-        dst: v.clone(),
-        op: OpCode::Copy,
-        lhs: Value::Const(0x10_0000),
-        rhs: Value::Const(0),
-    });
+    f.push_inst(
+        f.entry_block,
+        IrInst::Binary {
+            dst: v.clone(),
+            op: OpCode::Copy,
+            lhs: Value::Const(0x10_0000),
+            rhs: Value::Const(0),
+        },
+    );
     store_const(&mut f, &v, 0xAA, 1);
     let w = f.alloc_var(Ty::i64());
     bin(&mut f, &w, OpCode::Add, v.clone(), Value::Const(0x1000));
@@ -123,7 +139,10 @@ fn memory_budget_guard_trips() {
     let mut emu = Emulator::with_limits(DefaultEnv::new(), 4096, 128);
     let res = emu.run(&f, BASE, 0, 1_000);
 
-    assert_eq!(res.exit_reason, ExitReason::BudgetExhausted(BudgetKind::Memory));
+    assert_eq!(
+        res.exit_reason,
+        ExitReason::BudgetExhausted(BudgetKind::Memory)
+    );
 }
 
 /// Garbage widths / shift counts / truncations must saturate sanely.
@@ -134,60 +153,115 @@ fn hostile_arithmetic_saturates_without_panic() {
 
     // v_shl = 1 << 500  (count masked to 52 -> 1<<52)
     let shl = f.alloc_var(Ty::i64());
-    bin(&mut f, &shl, OpCode::Shl, Value::Const(1), Value::Const(500));
+    bin(
+        &mut f,
+        &shl,
+        OpCode::Shl,
+        Value::Const(1),
+        Value::Const(500),
+    );
 
     // v_sar = i64::MIN >>> arithmetic 63 -> -1
     let sar = f.alloc_var(Ty::i64());
-    bin(&mut f, &sar, OpCode::Sar, Value::Const(i64::MIN), Value::Const(63));
+    bin(
+        &mut f,
+        &sar,
+        OpCode::Sar,
+        Value::Const(i64::MIN),
+        Value::Const(63),
+    );
 
     // v_trunc = 0x11223344 truncated to 8 bits
     let tr_dst = Value::var(90, Ty::u8());
-    f.push_inst(f.entry_block, IrInst::Unary {
-        dst: tr_dst.clone(),
-        op: OpCode::Trunc,
-        src: Value::Const(0x1122_3344),
-    });
+    f.push_inst(
+        f.entry_block,
+        IrInst::Unary {
+            dst: tr_dst.clone(),
+            op: OpCode::Trunc,
+            src: Value::Const(0x1122_3344),
+        },
+    );
 
     // v_sext = sign-extend 0xFF from 8 bits (use i8 var as source to encode 8-bit width)
     let sx_src = f.alloc_var(Ty::i8());
-    f.push_inst(f.entry_block, IrInst::Unary {
-        dst: sx_src.clone(),
-        op: OpCode::Copy,
-        src: Value::Const(0xFF),
-    });
+    f.push_inst(
+        f.entry_block,
+        IrInst::Unary {
+            dst: sx_src.clone(),
+            op: OpCode::Copy,
+            src: Value::Const(0xFF),
+        },
+    );
     let sx_dst = Value::var(91, Ty::i64());
-    f.push_inst(f.entry_block, IrInst::Unary {
-        dst: sx_dst.clone(),
-        op: OpCode::Sext,
-        src: sx_src,
-    });
+    f.push_inst(
+        f.entry_block,
+        IrInst::Unary {
+            dst: sx_dst.clone(),
+            op: OpCode::Sext,
+            src: sx_src,
+        },
+    );
 
     let base = f.alloc_var(Ty::i64());
-    f.push_inst(f.entry_block, IrInst::Binary {
-        dst: base.clone(),
-        op: OpCode::Copy,
-        lhs: Value::Const(OUT as i64),
-        rhs: Value::Const(0),
-    });
+    f.push_inst(
+        f.entry_block,
+        IrInst::Binary {
+            dst: base.clone(),
+            op: OpCode::Copy,
+            lhs: Value::Const(OUT as i64),
+            rhs: Value::Const(0),
+        },
+    );
 
     // scratch = OUT; store results at increasing offsets.
     let t = f.alloc_var(Ty::i64());
-    f.push_inst(f.entry_block, IrInst::Binary {
-        dst: t.clone(),
-        op: OpCode::Add,
-        lhs: base.clone(),
-        rhs: Value::Const(0),
-    });
-    f.push_inst(f.entry_block, IrInst::Store { addr: t.clone(), value: shl, size: 8 });
+    f.push_inst(
+        f.entry_block,
+        IrInst::Binary {
+            dst: t.clone(),
+            op: OpCode::Add,
+            lhs: base.clone(),
+            rhs: Value::Const(0),
+        },
+    );
+    f.push_inst(
+        f.entry_block,
+        IrInst::Store {
+            addr: t.clone(),
+            value: shl,
+            size: 8,
+        },
+    );
     let t2 = f.alloc_var(Ty::i64());
     bin(&mut f, &t2, OpCode::Add, base.clone(), Value::Const(8));
-    f.push_inst(f.entry_block, IrInst::Store { addr: t2, value: sar, size: 8 });
+    f.push_inst(
+        f.entry_block,
+        IrInst::Store {
+            addr: t2,
+            value: sar,
+            size: 8,
+        },
+    );
     let t3 = f.alloc_var(Ty::i64());
     bin(&mut f, &t3, OpCode::Add, base.clone(), Value::Const(16));
-    f.push_inst(f.entry_block, IrInst::Store { addr: t3.clone(), value: tr_dst.clone(), size: 1 });
+    f.push_inst(
+        f.entry_block,
+        IrInst::Store {
+            addr: t3.clone(),
+            value: tr_dst.clone(),
+            size: 1,
+        },
+    );
     let t4 = f.alloc_var(Ty::i64());
     bin(&mut f, &t4, OpCode::Add, base, Value::Const(24));
-    f.push_inst(f.entry_block, IrInst::Store { addr: t4, value: sx_dst, size: 8 });
+    f.push_inst(
+        f.entry_block,
+        IrInst::Store {
+            addr: t4,
+            value: sx_dst,
+            size: 8,
+        },
+    );
 
     f.push_inst(f.entry_block, IrInst::Return { value: None });
 

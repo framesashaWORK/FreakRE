@@ -106,7 +106,7 @@ pub struct Import {
 /// Import kind
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ImportKind {
-    Function(u32),       // type index
+    Function(u32), // type index
     Table(TableType),
     Memory(MemType),
     Global(GlobalType),
@@ -180,7 +180,7 @@ pub struct Global {
 pub struct Function {
     pub type_idx: u32,
     pub locals: Vec<(u32, ValueType)>, // (count, type)
-    pub code: Vec<u8>,                  // bytecode
+    pub code: Vec<u8>,                 // bytecode
 }
 
 /// Data segment
@@ -253,7 +253,9 @@ pub struct WasmModule {
 impl WasmModule {
     /// Count of all function definitions (imports + local)
     pub fn total_functions(&self) -> usize {
-        let imported_funcs = self.imports.iter()
+        let imported_funcs = self
+            .imports
+            .iter()
             .filter(|i| matches!(i.kind, ImportKind::Function(_)))
             .count();
         imported_funcs + self.functions.len()
@@ -261,7 +263,8 @@ impl WasmModule {
 
     /// Get all imported function names
     pub fn imported_function_names(&self) -> Vec<String> {
-        self.imports.iter()
+        self.imports
+            .iter()
             .filter(|i| matches!(i.kind, ImportKind::Function(_)))
             .map(|i| format!("{}.{}", i.module, i.name))
             .collect()
@@ -269,7 +272,8 @@ impl WasmModule {
 
     /// Get all exported function names
     pub fn exported_function_names(&self) -> Vec<String> {
-        self.exports.iter()
+        self.exports
+            .iter()
             .filter(|e| e.kind == ExportKind::Function)
             .map(|e| e.name.clone())
             .collect()
@@ -329,7 +333,9 @@ impl fmt::Display for WasmError {
 
 impl std::error::Error for WasmError {}
 impl From<std::io::Error> for WasmError {
-    fn from(e: std::io::Error) -> Self { Self::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
 }
 
 /// LEB128 unsigned integer decoder
@@ -364,8 +370,8 @@ fn read_name(data: &[u8], offset: &mut usize) -> Result<String, WasmError> {
     if len.checked_add(*offset).is_none_or(|end| end > data.len()) {
         return Err(WasmError::UnexpectedEnd);
     }
-    let s = std::str::from_utf8(&data[*offset..*offset + len])
-        .map_err(|_| WasmError::InvalidUtf8)?;
+    let s =
+        std::str::from_utf8(&data[*offset..*offset + len]).map_err(|_| WasmError::InvalidUtf8)?;
     *offset += len;
     Ok(s.to_string())
 }
@@ -481,7 +487,9 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
             section_id::TYPE => {
                 let count = read_leb128_u32(data, &mut offset)?;
                 for _ in 0..count {
-                    if offset >= section_end { break; }
+                    if offset >= section_end {
+                        break;
+                    }
                     let form = data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)?;
                     if form != 0x60 {
                         return Err(WasmError::InvalidValueType(form));
@@ -506,7 +514,9 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
             section_id::IMPORT => {
                 let count = read_leb128_u32(data, &mut offset)?;
                 for _ in 0..count {
-                    if offset >= section_end { break; }
+                    if offset >= section_end {
+                        break;
+                    }
                     let mod_name = read_name(data, &mut offset)?;
                     let name = read_name(data, &mut offset)?;
                     let kind_byte = data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)?;
@@ -527,19 +537,29 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
                         }
                         0x03 => {
                             let vt = read_value_type(data, &mut offset)?;
-                            let mutable = data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)? != 0;
+                            let mutable =
+                                data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)? != 0;
                             offset += 1;
-                            ImportKind::Global(GlobalType { value_type: vt, mutable })
+                            ImportKind::Global(GlobalType {
+                                value_type: vt,
+                                mutable,
+                            })
                         }
                         _ => return Err(WasmError::InvalidImportKind(kind_byte)),
                     };
-                    module.imports.push(Import { module: mod_name, name, kind });
+                    module.imports.push(Import {
+                        module: mod_name,
+                        name,
+                        kind,
+                    });
                 }
             }
             section_id::FUNCTION => {
                 let count = read_leb128_u32(data, &mut offset)?;
                 for _ in 0..count {
-                    if offset >= section_end { break; }
+                    if offset >= section_end {
+                        break;
+                    }
                     let type_idx = read_leb128_u32(data, &mut offset)?;
                     func_type_indices.push(type_idx);
                 }
@@ -547,7 +567,9 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
             section_id::TABLE => {
                 let count = read_leb128_u32(data, &mut offset)?;
                 for _ in 0..count {
-                    if offset >= section_end { break; }
+                    if offset >= section_end {
+                        break;
+                    }
                     let elem_type = read_value_type(data, &mut offset)?;
                     let limits = read_limits(data, &mut offset)?;
                     module.tables.push(TableType { elem_type, limits });
@@ -556,7 +578,9 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
             section_id::MEMORY => {
                 let count = read_leb128_u32(data, &mut offset)?;
                 for _ in 0..count {
-                    if offset >= section_end { break; }
+                    if offset >= section_end {
+                        break;
+                    }
                     let limits = read_limits(data, &mut offset)?;
                     module.memories.push(MemType { limits });
                 }
@@ -564,13 +588,18 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
             section_id::GLOBAL => {
                 let count = read_leb128_u32(data, &mut offset)?;
                 for _ in 0..count {
-                    if offset >= section_end { break; }
+                    if offset >= section_end {
+                        break;
+                    }
                     let vt = read_value_type(data, &mut offset)?;
                     let mutable = data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)? != 0;
                     offset += 1;
                     let init_expr = read_init_expr(data, &mut offset, section_end)?;
                     module.globals.push(Global {
-                        typ: GlobalType { value_type: vt, mutable },
+                        typ: GlobalType {
+                            value_type: vt,
+                            mutable,
+                        },
                         init_expr,
                     });
                 }
@@ -578,7 +607,9 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
             section_id::EXPORT => {
                 let count = read_leb128_u32(data, &mut offset)?;
                 for _ in 0..count {
-                    if offset >= section_end { break; }
+                    if offset >= section_end {
+                        break;
+                    }
                     let name = read_name(data, &mut offset)?;
                     let kind_byte = data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)?;
                     offset += 1;
@@ -594,7 +625,9 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
             section_id::ELEMENT => {
                 let count = read_leb128_u32(data, &mut offset)?;
                 for _ in 0..count {
-                    if offset >= section_end { break; }
+                    if offset >= section_end {
+                        break;
+                    }
                     let flags = read_leb128_u32(data, &mut offset)?;
                     let segment = match flags {
                         0 => {
@@ -609,10 +642,14 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
                             }
                         }
                         1 => {
-                            let elemkind = data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)?;
+                            let elemkind =
+                                data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)?;
                             offset += 1;
                             if elemkind != 0x00 {
-                                return Err(WasmError::Unsupported(format!("element kind 0x{:02x}", elemkind)));
+                                return Err(WasmError::Unsupported(format!(
+                                    "element kind 0x{:02x}",
+                                    elemkind
+                                )));
                             }
                             let func_indices = read_func_index_vec(data, &mut offset)?;
                             ElementSegment {
@@ -626,10 +663,14 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
                         2 => {
                             let table_idx = read_leb128_u32(data, &mut offset)?;
                             let offset_expr = read_init_expr(data, &mut offset, section_end)?;
-                            let elemkind = data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)?;
+                            let elemkind =
+                                data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)?;
                             offset += 1;
                             if elemkind != 0x00 {
-                                return Err(WasmError::Unsupported(format!("element kind 0x{:02x}", elemkind)));
+                                return Err(WasmError::Unsupported(format!(
+                                    "element kind 0x{:02x}",
+                                    elemkind
+                                )));
                             }
                             let func_indices = read_func_index_vec(data, &mut offset)?;
                             ElementSegment {
@@ -641,10 +682,14 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
                             }
                         }
                         3 => {
-                            let elemkind = data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)?;
+                            let elemkind =
+                                data.get(offset).copied().ok_or(WasmError::UnexpectedEnd)?;
                             offset += 1;
                             if elemkind != 0x00 {
-                                return Err(WasmError::Unsupported(format!("element kind 0x{:02x}", elemkind)));
+                                return Err(WasmError::Unsupported(format!(
+                                    "element kind 0x{:02x}",
+                                    elemkind
+                                )));
                             }
                             let func_indices = read_func_index_vec(data, &mut offset)?;
                             ElementSegment {
@@ -656,7 +701,10 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
                             }
                         }
                         other => {
-                            return Err(WasmError::Unsupported(format!("element segment flags {}", other)));
+                            return Err(WasmError::Unsupported(format!(
+                                "element segment flags {}",
+                                other
+                            )));
                         }
                     };
                     module.elements.push(segment);
@@ -665,7 +713,9 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
             section_id::CODE => {
                 let count = read_leb128_u32(data, &mut offset)?;
                 for i in 0..count {
-                    if offset >= section_end { break; }
+                    if offset >= section_end {
+                        break;
+                    }
                     let body_size = read_leb128_u32(data, &mut offset)? as usize;
                     let body_end = match offset.checked_add(body_size) {
                         Some(e) if e <= section_end && e <= data.len() => e,
@@ -694,23 +744,26 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
                     let code = data[offset..body_end].to_vec();
                     offset = body_end;
 
-                    let type_idx = func_type_indices
-                        .get(i as usize)
-                        .copied()
-                        .ok_or_else(|| {
-                            WasmError::Unsupported(format!(
-                                "Function section index {} out of range (have {} type indices)",
-                                i,
-                                func_type_indices.len()
-                            ))
-                        })?;
-                    module.functions.push(Function { type_idx, locals, code });
+                    let type_idx = func_type_indices.get(i as usize).copied().ok_or_else(|| {
+                        WasmError::Unsupported(format!(
+                            "Function section index {} out of range (have {} type indices)",
+                            i,
+                            func_type_indices.len()
+                        ))
+                    })?;
+                    module.functions.push(Function {
+                        type_idx,
+                        locals,
+                        code,
+                    });
                 }
             }
             section_id::DATA => {
                 let count = read_leb128_u32(data, &mut offset)?;
                 for _ in 0..count {
-                    if offset >= section_end { break; }
+                    if offset >= section_end {
+                        break;
+                    }
                     let flags = read_leb128_u32(data, &mut offset)?;
                     let (memory_idx, offset_expr) = match flags {
                         0 => (0u32, read_init_expr(data, &mut offset, section_end)?),
@@ -720,7 +773,10 @@ pub fn parse_wasm(data: &[u8]) -> Result<WasmModule, WasmError> {
                             (memory_idx, read_init_expr(data, &mut offset, section_end)?)
                         }
                         other => {
-                            return Err(WasmError::Unsupported(format!("data segment flags {}", other)));
+                            return Err(WasmError::Unsupported(format!(
+                                "data segment flags {}",
+                                other
+                            )));
                         }
                     };
                     let data_len = read_leb128_u32(data, &mut offset)? as usize;
@@ -780,7 +836,12 @@ mod tests {
 
     #[test]
     fn test_value_type_roundtrip() {
-        for vt in [ValueType::I32, ValueType::I64, ValueType::F32, ValueType::F64] {
+        for vt in [
+            ValueType::I32,
+            ValueType::I64,
+            ValueType::F32,
+            ValueType::F64,
+        ] {
             let b = vt.to_byte();
             assert_eq!(ValueType::from_byte(b), Some(vt));
         }

@@ -76,12 +76,24 @@ pub struct SectionHeader {
 }
 
 impl SectionHeader {
-    pub fn is_code(&self) -> bool { self.characteristics & 0x00000020 != 0 }
-    pub fn is_initialized_data(&self) -> bool { self.characteristics & 0x00000040 != 0 }
-    pub fn is_uninitialized_data(&self) -> bool { self.characteristics & 0x00000080 != 0 }
-    pub fn is_readable(&self) -> bool { self.characteristics & 0x40000000 != 0 }
-    pub fn is_writable(&self) -> bool { self.characteristics & 0x80000000 != 0 }
-    pub fn is_executable(&self) -> bool { self.characteristics & 0x20000000 != 0 }
+    pub fn is_code(&self) -> bool {
+        self.characteristics & 0x00000020 != 0
+    }
+    pub fn is_initialized_data(&self) -> bool {
+        self.characteristics & 0x00000040 != 0
+    }
+    pub fn is_uninitialized_data(&self) -> bool {
+        self.characteristics & 0x00000080 != 0
+    }
+    pub fn is_readable(&self) -> bool {
+        self.characteristics & 0x40000000 != 0
+    }
+    pub fn is_writable(&self) -> bool {
+        self.characteristics & 0x80000000 != 0
+    }
+    pub fn is_executable(&self) -> bool {
+        self.characteristics & 0x20000000 != 0
+    }
 }
 
 /// COFF symbol table entry (18 bytes)
@@ -96,9 +108,15 @@ pub struct Symbol {
 }
 
 impl Symbol {
-    pub fn is_function(&self) -> bool { self.typ & 0x20 != 0 }
-    pub fn is_defined(&self) -> bool { self.section_number > 0 }
-    pub fn is_external(&self) -> bool { self.section_number == 0 && self.storage_class == 2 }
+    pub fn is_function(&self) -> bool {
+        self.typ & 0x20 != 0
+    }
+    pub fn is_defined(&self) -> bool {
+        self.section_number > 0
+    }
+    pub fn is_external(&self) -> bool {
+        self.section_number == 0 && self.storage_class == 2
+    }
 }
 
 /// Relocation entry (10 bytes)
@@ -153,7 +171,10 @@ impl CoffFile {
     }
 
     pub fn functions(&self) -> Vec<&Symbol> {
-        self.symbols.iter().filter(|s| s.is_function() && s.is_defined()).collect()
+        self.symbols
+            .iter()
+            .filter(|s| s.is_function() && s.is_defined())
+            .collect()
     }
 
     pub fn externals(&self) -> Vec<&Symbol> {
@@ -187,17 +208,28 @@ impl fmt::Display for CoffError {
 
 impl std::error::Error for CoffError {}
 impl From<std::io::Error> for CoffError {
-    fn from(e: std::io::Error) -> Self { Self::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
 }
 
 fn read_u16_le(data: &[u8], offset: usize) -> Option<u16> {
-    if offset + 2 > data.len() { return None; }
+    if offset + 2 > data.len() {
+        return None;
+    }
     Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
 }
 
 fn read_u32_le(data: &[u8], offset: usize) -> Option<u32> {
-    if offset + 4 > data.len() { return None; }
-    Some(u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]))
+    if offset + 4 > data.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]))
 }
 
 fn read_i16_le(data: &[u8], offset: usize) -> Option<i16> {
@@ -205,16 +237,24 @@ fn read_i16_le(data: &[u8], offset: usize) -> Option<i16> {
 }
 
 fn read_section_name(data: &[u8], offset: usize, string_table: &[u8]) -> Option<String> {
-    if offset + 8 > data.len() { return None; }
+    if offset + 8 > data.len() {
+        return None;
+    }
     let name_bytes = &data[offset..offset + 8];
 
     if name_bytes[0] == b'/' {
         let offset_str = std::str::from_utf8(&name_bytes[1..8]).ok()?;
         let st_offset: usize = offset_str.trim().parse().ok()?;
-        if st_offset >= string_table.len() { return None; }
-        let end = string_table[st_offset..].iter().position(|&b| b == 0)
+        if st_offset >= string_table.len() {
+            return None;
+        }
+        let end = string_table[st_offset..]
+            .iter()
+            .position(|&b| b == 0)
             .unwrap_or(string_table.len() - st_offset);
-        return Some(String::from_utf8_lossy(&string_table[st_offset..st_offset + end]).into_owned());
+        return Some(
+            String::from_utf8_lossy(&string_table[st_offset..st_offset + end]).into_owned(),
+        );
     }
 
     let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(8);
@@ -261,10 +301,14 @@ pub fn parse_coff(data: &[u8]) -> Result<CoffFile, CoffError> {
             virtual_address: read_u32_le(data, offset + 12).ok_or(CoffError::InvalidHeader)?,
             size_of_raw_data: read_u32_le(data, offset + 16).ok_or(CoffError::InvalidHeader)?,
             pointer_to_raw_data: read_u32_le(data, offset + 20).ok_or(CoffError::InvalidHeader)?,
-            pointer_to_relocations: read_u32_le(data, offset + 24).ok_or(CoffError::InvalidHeader)?,
-            pointer_to_line_numbers: read_u32_le(data, offset + 28).ok_or(CoffError::InvalidHeader)?,
-            number_of_relocations: read_u16_le(data, offset + 32).ok_or(CoffError::InvalidHeader)?,
-            number_of_line_numbers: read_u16_le(data, offset + 34).ok_or(CoffError::InvalidHeader)?,
+            pointer_to_relocations: read_u32_le(data, offset + 24)
+                .ok_or(CoffError::InvalidHeader)?,
+            pointer_to_line_numbers: read_u32_le(data, offset + 28)
+                .ok_or(CoffError::InvalidHeader)?,
+            number_of_relocations: read_u16_le(data, offset + 32)
+                .ok_or(CoffError::InvalidHeader)?,
+            number_of_line_numbers: read_u16_le(data, offset + 34)
+                .ok_or(CoffError::InvalidHeader)?,
             characteristics: read_u32_le(data, offset + 36).ok_or(CoffError::InvalidHeader)?,
         };
         sections.push(section);
@@ -291,16 +335,17 @@ pub fn parse_coff(data: &[u8]) -> Result<CoffFile, CoffError> {
         Some(v) => v,
         None => return Err(CoffError::TruncatedStringTable),
     };
-    let string_table_start = match (header.pointer_to_symbol_table as usize).checked_add(sym_table_bytes) {
-        Some(v) => v,
-        None => return Err(CoffError::TruncatedStringTable),
-    };
+    let string_table_start =
+        match (header.pointer_to_symbol_table as usize).checked_add(sym_table_bytes) {
+            Some(v) => v,
+            None => return Err(CoffError::TruncatedStringTable),
+        };
     let string_table = if string_table_start < data.len() {
         if string_table_start + 4 > data.len() {
             return Err(CoffError::TruncatedStringTable);
         }
-        let st_size = read_u32_le(data, string_table_start)
-            .ok_or(CoffError::TruncatedStringTable)? as usize;
+        let st_size =
+            read_u32_le(data, string_table_start).ok_or(CoffError::TruncatedStringTable)? as usize;
         let st_end = match string_table_start.checked_add(st_size) {
             Some(e) => e,
             None => return Err(CoffError::TruncatedStringTable),
@@ -325,10 +370,12 @@ pub fn parse_coff(data: &[u8]) -> Result<CoffFile, CoffError> {
         }
 
         let name = if data[sym_offset..sym_offset + 4] == [0, 0, 0, 0] {
-            let st_offset = read_u32_le(data, sym_offset + 4)
-                .ok_or(CoffError::TruncatedSymbols)? as usize;
+            let st_offset =
+                read_u32_le(data, sym_offset + 4).ok_or(CoffError::TruncatedSymbols)? as usize;
             if st_offset < string_table.len() {
-                let end = string_table[st_offset..].iter().position(|&b| b == 0)
+                let end = string_table[st_offset..]
+                    .iter()
+                    .position(|&b| b == 0)
                     .unwrap_or(string_table.len() - st_offset);
                 String::from_utf8_lossy(&string_table[st_offset..st_offset + end]).into_owned()
             } else {
@@ -343,10 +390,17 @@ pub fn parse_coff(data: &[u8]) -> Result<CoffFile, CoffError> {
         let symbol = Symbol {
             name,
             value: read_u32_le(data, sym_offset + 8).ok_or(CoffError::TruncatedSymbols)?,
-            section_number: read_i16_le(data, sym_offset + 12).ok_or(CoffError::TruncatedSymbols)?,
+            section_number: read_i16_le(data, sym_offset + 12)
+                .ok_or(CoffError::TruncatedSymbols)?,
             typ: read_u16_le(data, sym_offset + 14).ok_or(CoffError::TruncatedSymbols)?,
-            storage_class: data.get(sym_offset + 16).copied().ok_or(CoffError::TruncatedSymbols)?,
-            number_of_aux_symbols: data.get(sym_offset + 17).copied().ok_or(CoffError::TruncatedSymbols)?,
+            storage_class: data
+                .get(sym_offset + 16)
+                .copied()
+                .ok_or(CoffError::TruncatedSymbols)?,
+            number_of_aux_symbols: data
+                .get(sym_offset + 17)
+                .copied()
+                .ok_or(CoffError::TruncatedSymbols)?,
         };
         let aux = symbol.number_of_aux_symbols as u32;
         symbols.push(symbol);
@@ -369,7 +423,9 @@ pub fn parse_coff(data: &[u8]) -> Result<CoffFile, CoffError> {
         }
         for j in 0..count {
             let r_off = ptr + j * 10;
-            if r_off + 10 > data.len() { break; }
+            if r_off + 10 > data.len() {
+                break;
+            }
             relocs.push(Relocation {
                 virtual_address: read_u32_le(data, r_off).unwrap_or(0),
                 symbol_table_index: read_u32_le(data, r_off + 4).unwrap_or(0),
@@ -399,21 +455,28 @@ pub fn parse_coff(data: &[u8]) -> Result<CoffFile, CoffError> {
 
 /// Check if data looks like a COFF file (heuristic, since COFF has no magic)
 pub fn is_coff(data: &[u8]) -> bool {
-    if data.len() < 20 { return false; }
-    if data.starts_with(b"MZ") { return false; }
-    if data.starts_with(b"\x7fELF") { return false; }
+    if data.len() < 20 {
+        return false;
+    }
+    if data.starts_with(b"MZ") {
+        return false;
+    }
+    if data.starts_with(b"\x7fELF") {
+        return false;
+    }
     let machine = read_u16_le(data, 0).unwrap_or(0);
-    matches!(machine,
-        machine::IMAGE_FILE_MACHINE_I386 |
-        machine::IMAGE_FILE_MACHINE_AMD64 |
-        machine::IMAGE_FILE_MACHINE_ARM |
-        machine::IMAGE_FILE_MACHINE_ARMNT |
-        machine::IMAGE_FILE_MACHINE_ARM64 |
-        machine::IMAGE_FILE_MACHINE_R4000 |
-        machine::IMAGE_FILE_MACHINE_POWERPC |
-        machine::IMAGE_FILE_MACHINE_IA64 |
-        machine::IMAGE_FILE_MACHINE_EBC |
-        machine::IMAGE_FILE_MACHINE_M32R
+    matches!(
+        machine,
+        machine::IMAGE_FILE_MACHINE_I386
+            | machine::IMAGE_FILE_MACHINE_AMD64
+            | machine::IMAGE_FILE_MACHINE_ARM
+            | machine::IMAGE_FILE_MACHINE_ARMNT
+            | machine::IMAGE_FILE_MACHINE_ARM64
+            | machine::IMAGE_FILE_MACHINE_R4000
+            | machine::IMAGE_FILE_MACHINE_POWERPC
+            | machine::IMAGE_FILE_MACHINE_IA64
+            | machine::IMAGE_FILE_MACHINE_EBC
+            | machine::IMAGE_FILE_MACHINE_M32R
     )
 }
 
@@ -422,10 +485,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_coff_rejects_pe() { assert!(!is_coff(b"MZ\x90\x00")); }
+    fn test_is_coff_rejects_pe() {
+        assert!(!is_coff(b"MZ\x90\x00"));
+    }
 
     #[test]
-    fn test_is_coff_rejects_elf() { assert!(!is_coff(b"\x7fELF\x02\x01\x01\x00")); }
+    fn test_is_coff_rejects_elf() {
+        assert!(!is_coff(b"\x7fELF\x02\x01\x01\x00"));
+    }
 
     #[test]
     fn test_machine_name() {

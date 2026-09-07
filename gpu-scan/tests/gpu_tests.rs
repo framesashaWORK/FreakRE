@@ -61,7 +61,10 @@ fn lock_gpu() -> std::sync::MutexGuard<'static, ()> {
 fn empty_backends_yield_cpu_fallback_scanner() {
     let mut s = cpu_only_scanner();
     assert!(!s.is_gpu_active());
-    assert_eq!(s.fallback_reason(), Some(gpu_scan::FallbackReason::NoAdapter));
+    assert_eq!(
+        s.fallback_reason(),
+        Some(gpu_scan::FallbackReason::NoAdapter)
+    );
 
     let data = deterministic_buffer(4096);
     let got = s.scan_entropy(&data, 256, 128);
@@ -165,6 +168,57 @@ fn cpu_find_literal_respects_cap_and_reports_exact_total() {
     );
 }
 
+#[test]
+fn cpu_find_masked_matches_wildcards_and_overlaps() {
+    let pattern = [0xAA, 0x00, 0xCC];
+    let mask = [0xFF, 0x00, 0xFF];
+    let scan = cpu::find_masked(&[0xAA, 1, 0xCC, 0xAA, 2, 0xCC], &pattern, &mask);
+
+    assert_eq!(scan.offsets, vec![0, 3]);
+    assert_eq!(scan.total, 2);
+    assert!(!scan.truncated);
+
+    let scan = cpu::find_masked(b"AAAA", b"AA", &[0xFF, 0]);
+    assert_eq!(scan.offsets, vec![0, 1, 2]);
+}
+
+#[test]
+fn cpu_find_masked_empty_and_bounds_return_no_matches() {
+    assert_eq!(cpu::find_masked(b"abc", b"", &[]), LiteralScan::default());
+    assert_eq!(cpu::find_masked(b"abc", b"a", &[]), LiteralScan::default());
+    assert_eq!(
+        cpu::find_masked(b"a", b"ab", &[0xFF, 0xFF]),
+        LiteralScan::default()
+    );
+    assert_eq!(
+        cpu::find_masked(b"abc", b"abcd", &[0xFF; 4]),
+        LiteralScan::default()
+    );
+}
+
+#[test]
+fn cpu_find_masked_respects_cap_and_reports_exact_total() {
+    let pattern = [0xAA, 0xBB, 0xCC];
+    let mask = [0xFF, 0x00, 0xFF];
+    let data = vec![pattern.as_slice(); MAX_MATCHES + 50].concat();
+    let scan = cpu::find_masked(&data, &pattern, &mask);
+
+    assert_eq!(scan.offsets.len(), MAX_MATCHES);
+    assert_eq!(scan.total as usize, MAX_MATCHES + 50);
+    assert!(scan.truncated);
+}
+
+#[test]
+fn scanner_find_masked_uses_exact_cpu_fallback() {
+    let mut scanner = cpu_only_scanner();
+    let pattern = [0x10, 0x00, 0x30];
+    let mask = [0xFF, 0x00, 0xFF];
+    assert_eq!(
+        scanner.find_masked(b"\x10\xFF\x30\x10\x00\x31", &pattern, &mask),
+        cpu::find_masked(b"\x10\xFF\x30\x10\x00\x31", &pattern, &mask)
+    );
+}
+
 // ── GPU kernels (runtime-detected; skip cleanly without an adapter) ──
 
 /// Property test: kernel A vs `entropy-rs` on random buffers whose window
@@ -185,7 +239,11 @@ fn gpu_windowed_entropy_matches_cpu_within_1e4() {
             .map(|(o, r)| (o, r.entropy))
             .collect();
 
-        assert_eq!(gpu_out.len(), reference.len(), "window count w={window} s={step}");
+        assert_eq!(
+            gpu_out.len(),
+            reference.len(),
+            "window count w={window} s={step}"
+        );
         for ((g_off, g_ent), (r_off, r_ent)) in gpu_out.iter().zip(&reference) {
             assert_eq!(g_off, r_off, "offset layout w={window} s={step}");
             let diff = (*g_ent - *r_ent as f32).abs();

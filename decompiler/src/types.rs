@@ -113,12 +113,16 @@ pub fn reconstruct_types(func: &mut AstFunction) {
     // rediscovering them from usage alone.
     for param in &func.params {
         if param.ty != Ty::Unknown {
-            engine.var_types.insert(param.name.clone(), param.ty.clone());
+            engine
+                .var_types
+                .insert(param.name.clone(), param.ty.clone());
         }
     }
     for local in &func.locals {
         if local.ty != Ty::Unknown {
-            engine.var_types.insert(local.name.clone(), local.ty.clone());
+            engine
+                .var_types
+                .insert(local.name.clone(), local.ty.clone());
         }
     }
 
@@ -213,45 +217,90 @@ impl TypeEngine {
                 self.collect_from_expr(value);
                 self.collect_assignment_constraints(target, value);
             }
-            Stmt::If { cond, then_body, else_body } => {
-                self.add_constraint(TypeConstraint::Boolean(expr_var_name(cond).unwrap_or_default()));
+            Stmt::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                self.add_constraint(TypeConstraint::Boolean(
+                    expr_var_name(cond).unwrap_or_default(),
+                ));
                 self.collect_from_expr(cond);
                 self.collect_from_stmts(then_body);
-                if let Some(eb) = else_body { self.collect_from_stmts(eb); }
+                if let Some(eb) = else_body {
+                    self.collect_from_stmts(eb);
+                }
             }
             Stmt::While { cond, body } | Stmt::DoWhile { body, cond } => {
-                self.add_constraint(TypeConstraint::Boolean(expr_var_name(cond).unwrap_or_default()));
+                self.add_constraint(TypeConstraint::Boolean(
+                    expr_var_name(cond).unwrap_or_default(),
+                ));
                 self.collect_from_expr(cond);
                 self.collect_from_stmts(body);
             }
-            Stmt::For { init, cond, update, body } => {
-                if let Some(i) = init { self.collect_from_stmt(i); }
+            Stmt::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                if let Some(i) = init {
+                    self.collect_from_stmt(i);
+                }
                 if let Some(c) = cond {
-                    self.add_constraint(TypeConstraint::Boolean(expr_var_name(c).unwrap_or_default()));
+                    self.add_constraint(TypeConstraint::Boolean(
+                        expr_var_name(c).unwrap_or_default(),
+                    ));
                     self.collect_from_expr(c);
                 }
-                if let Some(u) = update { self.collect_from_stmt(u); }
+                if let Some(u) = update {
+                    self.collect_from_stmt(u);
+                }
                 self.collect_from_stmts(body);
             }
-            Stmt::Switch { expr, cases, default } => {
+            Stmt::Switch {
+                expr,
+                cases,
+                default,
+            } => {
                 self.collect_from_expr(expr);
                 if let Some(name) = expr_var_name(expr) {
                     self.add_constraint(TypeConstraint::Integer(name));
                 }
-                for c in cases { self.collect_from_stmts(&c.body); }
-                if let Some(d) = default { self.collect_from_stmts(d); }
+                for c in cases {
+                    self.collect_from_stmts(&c.body);
+                }
+                if let Some(d) = default {
+                    self.collect_from_stmts(d);
+                }
             }
-            Stmt::Return { value: Some(v) } => { self.collect_from_expr(v); }
-            Stmt::Call { args, .. } => { for a in args { self.collect_from_expr(a); } }
-            Stmt::Expr(e) => { self.collect_from_expr(e); }
-            Stmt::Block(inner) => { self.collect_from_stmts(inner); }
+            Stmt::Return { value: Some(v) } => {
+                self.collect_from_expr(v);
+            }
+            Stmt::Call { args, .. } => {
+                for a in args {
+                    self.collect_from_expr(a);
+                }
+            }
+            Stmt::Expr(e) => {
+                self.collect_from_expr(e);
+            }
+            Stmt::Block(inner) => {
+                self.collect_from_stmts(inner);
+            }
             Stmt::Decl { name, ty, init } => {
                 if *ty != Ty::Unknown {
                     self.add_constraint(TypeConstraint::Exact(name.clone(), ty.clone()));
                 }
-                if let Some(e) = init { self.collect_from_expr(e); }
+                if let Some(e) = init {
+                    self.collect_from_expr(e);
+                }
             }
-            Stmt::TryCatch { try_body, catch_body, .. } => {
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 self.collect_from_stmts(try_body);
                 self.collect_from_stmts(catch_body);
             }
@@ -266,9 +315,19 @@ impl TypeEngine {
                 self.collect_from_expr(rhs);
 
                 // Arithmetic ops → integer constraint
-                if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div |
-                           BinOp::Mod | BinOp::And | BinOp::Or | BinOp::Xor |
-                           BinOp::Shl | BinOp::Shr) {
+                if matches!(
+                    op,
+                    BinOp::Add
+                        | BinOp::Sub
+                        | BinOp::Mul
+                        | BinOp::Div
+                        | BinOp::Mod
+                        | BinOp::And
+                        | BinOp::Or
+                        | BinOp::Xor
+                        | BinOp::Shl
+                        | BinOp::Shr
+                ) {
                     if let Some(name) = expr_var_name(lhs) {
                         self.add_constraint(TypeConstraint::Integer(name));
                     }
@@ -278,8 +337,10 @@ impl TypeEngine {
                 }
 
                 // Comparison ops → integer constraint on operands, bool result
-                if matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
-                           BinOp::Gt | BinOp::Ge) {
+                if matches!(
+                    op,
+                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+                ) {
                     if let Some(name) = expr_var_name(lhs) {
                         self.add_constraint(TypeConstraint::Integer(name));
                     }
@@ -342,10 +403,18 @@ impl TypeEngine {
                 self.collect_from_expr(inner);
             }
             Expr::Call { args, .. } => {
-                for a in args { self.collect_from_expr(a); }
+                for a in args {
+                    self.collect_from_expr(a);
+                }
             }
-            Expr::Ternary { cond, then_expr, else_expr } => {
-                self.add_constraint(TypeConstraint::Boolean(expr_var_name(cond).unwrap_or_default()));
+            Expr::Ternary {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                self.add_constraint(TypeConstraint::Boolean(
+                    expr_var_name(cond).unwrap_or_default(),
+                ));
                 self.collect_from_expr(cond);
                 self.collect_from_expr(then_expr);
                 self.collect_from_expr(else_expr);
@@ -388,10 +457,16 @@ impl TypeEngine {
     fn add_constraint(&mut self, c: TypeConstraint) {
         // Skip empty-name constraints
         match &c {
-            TypeConstraint::Exact(n, _) | TypeConstraint::PointerTo(n, _) |
-            TypeConstraint::Integer(n) | TypeConstraint::Boolean(n) |
-            TypeConstraint::StructAccess(n, _, _) | TypeConstraint::Equal(n, _)
-                if n.is_empty() => return,
+            TypeConstraint::Exact(n, _)
+            | TypeConstraint::PointerTo(n, _)
+            | TypeConstraint::Integer(n)
+            | TypeConstraint::Boolean(n)
+            | TypeConstraint::StructAccess(n, _, _)
+            | TypeConstraint::Equal(n, _)
+                if n.is_empty() =>
+            {
+                return
+            }
             _ => {}
         }
         self.constraints.push(c);
@@ -412,11 +487,10 @@ impl TypeEngine {
                 match constraint {
                     TypeConstraint::Exact(name, ty) => {
                         let entry = self.var_types.entry(name).or_insert(Ty::Unknown);
-                        if (*entry == Ty::Unknown || unify_types(entry, &ty))
-                            && *entry != ty {
-                                *entry = ty;
-                                changed = true;
-                            }
+                        if (*entry == Ty::Unknown || unify_types(entry, &ty)) && *entry != ty {
+                            *entry = ty;
+                            changed = true;
+                        }
                     }
                     TypeConstraint::Integer(name) => {
                         let entry = self.var_types.entry(name).or_insert(Ty::Unknown);
@@ -480,27 +554,30 @@ impl TypeEngine {
             let mut fields: Vec<(String, Ty)> = Vec::new();
             let mut prev_offset = 0u64;
 
-        for (&offset, receiver) in offsets {
-            // Add padding field if there's a gap
-            if offset > prev_offset {
-                let gap = offset - prev_offset;
-                if gap > 0 && !fields.is_empty() {
-                    // Only add explicit padding for large gaps
-                    if gap > 8 {
-                        fields.push((format!("_pad_0x{:X}", prev_offset), Ty::Array(gap as u32, Box::new(Ty::u8()))));
+            for (&offset, receiver) in offsets {
+                // Add padding field if there's a gap
+                if offset > prev_offset {
+                    let gap = offset - prev_offset;
+                    if gap > 0 && !fields.is_empty() {
+                        // Only add explicit padding for large gaps
+                        if gap > 8 {
+                            fields.push((
+                                format!("_pad_0x{:X}", prev_offset),
+                                Ty::Array(gap as u32, Box::new(Ty::u8())),
+                            ));
+                        }
                     }
                 }
-            }
 
-            // The field's type is whatever the receiving variable ended up as
-            // (seeded declaration + solved constraints); unresolved receivers
-            // stay Unknown and print with the `int` fallback.
-            let field_ty = self.var_types.get(receiver).cloned().unwrap_or(Ty::Unknown);
-            let field_name = format!("field_0x{:X}", offset);
-            let field_size = field_ty.size_bytes().unwrap_or(4) as u64;
-            fields.push((field_name, field_ty));
-            prev_offset = offset + field_size;
-        }
+                // The field's type is whatever the receiving variable ended up as
+                // (seeded declaration + solved constraints); unresolved receivers
+                // stay Unknown and print with the `int` fallback.
+                let field_ty = self.var_types.get(receiver).cloned().unwrap_or(Ty::Unknown);
+                let field_name = format!("field_0x{:X}", offset);
+                let field_size = field_ty.size_bytes().unwrap_or(4) as u64;
+                fields.push((field_name, field_ty));
+                prev_offset = offset + field_size;
+            }
 
             if fields.len() >= 2 {
                 let struct_ty = Ty::Struct(fields);
@@ -541,7 +618,11 @@ fn infer_int_type(val: i64) -> Ty {
 /// Extract (base_var_name, offset) from expressions like `var + const` or `const + var`.
 fn extract_base_offset(expr: &Expr) -> Option<(String, u64)> {
     match expr {
-        Expr::Binary { op: BinOp::Add, lhs, rhs } => {
+        Expr::Binary {
+            op: BinOp::Add,
+            lhs,
+            rhs,
+        } => {
             if let (Expr::Var(name), Expr::IntLit(off)) = (lhs.as_ref(), rhs.as_ref()) {
                 Some((name.clone(), *off as u64))
             } else if let (Expr::IntLit(off), Expr::Var(name)) = (lhs.as_ref(), rhs.as_ref()) {
@@ -597,9 +678,15 @@ impl ExprTypeHelper for Expr {
             Expr::StringLit(_) => Ty::Ptr(Box::new(Ty::u8())),
             Expr::Var(_) => Ty::Unknown,
             Expr::Binary { op, .. } => {
-                if op.is_comparison() { Ty::Bool } else { Ty::Unknown }
+                if op.is_comparison() {
+                    Ty::Bool
+                } else {
+                    Ty::Unknown
+                }
             }
-            Expr::Unary { op: UnOp::LogNot, .. } => Ty::Bool,
+            Expr::Unary {
+                op: UnOp::LogNot, ..
+            } => Ty::Bool,
             Expr::Deref(_) => Ty::Unknown,
             Expr::Cast { ty, .. } => ty.clone(),
             _ => Ty::Unknown,

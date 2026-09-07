@@ -48,11 +48,17 @@ pub enum HexToken {
     Wildcard,
     /// Nibble wildcard: `?A` or `A?` — stored as (mask, value)
     /// mask bits = 1 means "don't care", value bits are the fixed part.
-    NibbleWildcard { mask: u8, value: u8 },
+    NibbleWildcard {
+        mask: u8,
+        value: u8,
+    },
     /// Alternation: `(4D | 5A | ??)` — matches any of the alternatives.
     Alternation(Vec<HexToken>),
     /// Jump: `[N-M]` — skip N to M bytes between hex tokens.
-    Jump { min: usize, max: usize },
+    Jump {
+        min: usize,
+        max: usize,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -133,9 +139,9 @@ pub enum IntCompOp {
 #[derive(Debug, Clone)]
 pub enum IntExpr {
     Literal(usize),
-    Count(String),        // #s
-    Filesize,             // filesize keyword
-    MatchOffset(String),  // @s[1] — offset of first match
+    Count(String),       // #s
+    Filesize,            // filesize keyword
+    MatchOffset(String), // @s[1] — offset of first match
     /// `uint8(offset)` — read unsigned 8-bit integer at offset
     Uint8(Box<IntExpr>),
     /// `uint16(offset)` — read unsigned 16-bit LE integer at offset
@@ -187,7 +193,9 @@ impl Condition {
             Condition::StringMatch(s) | Condition::StringCount(s) => out.push(s.as_str()),
             Condition::At(s, _) | Condition::AtExpr(s, _) => out.push(s.as_str()),
             Condition::In(s, _, _) | Condition::InExpr(s, _, _) => out.push(s.as_str()),
-            Condition::Contains(s, _) | Condition::IsType(s, _) | Condition::Eq(s, _) => out.push(s.as_str()),
+            Condition::Contains(s, _) | Condition::IsType(s, _) | Condition::Eq(s, _) => {
+                out.push(s.as_str())
+            }
             Condition::IntComp(_, a, b) => {
                 a.collect_string_refs(out);
                 b.collect_string_refs(out);
@@ -208,7 +216,9 @@ impl Condition {
 impl IntExpr {
     fn collect_string_refs<'a>(&'a self, out: &mut Vec<&'a str>) {
         match self {
-            IntExpr::Count(id) | IntExpr::MatchOffset(id) | IntExpr::StringLength(id) => out.push(id.as_str()),
+            IntExpr::Count(id) | IntExpr::MatchOffset(id) | IntExpr::StringLength(id) => {
+                out.push(id.as_str())
+            }
             IntExpr::Uint8(inner) | IntExpr::Uint16(inner) | IntExpr::Uint32(inner) => {
                 inner.collect_string_refs(out)
             }

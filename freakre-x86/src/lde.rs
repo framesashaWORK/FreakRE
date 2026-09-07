@@ -1,7 +1,7 @@
 //! Length Disassembler (LDE) for x86/x64.
 //! Returns instruction length without full decode. Fast path for CFG building.
 
-use crate::types::{Mode, DecodeError};
+use crate::types::{DecodeError, Mode};
 
 const MAX_INSN_LEN: usize = 15;
 
@@ -20,13 +20,27 @@ pub fn decode_len(code: &[u8], mode: Mode) -> Result<usize, DecodeError> {
     // Skip legacy prefixes
     loop {
         if pos >= code.len() || pos >= MAX_INSN_LEN {
-            return Err(if pos >= MAX_INSN_LEN { DecodeError::MaxLengthExceeded } else { DecodeError::TooShort });
+            return Err(if pos >= MAX_INSN_LEN {
+                DecodeError::MaxLengthExceeded
+            } else {
+                DecodeError::TooShort
+            });
         }
         match code[pos] {
-            0xF0 | 0xF2 | 0xF3 => { pos += 1; } // LOCK, REPNE, REP
-            0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65 => { pos += 1; } // CS, SS, DS, ES, FS, GS
-            0x66 => { has_66 = true; pos += 1; } // Operand size override
-            0x67 => { has_67 = true; pos += 1; } // Address size override
+            0xF0 | 0xF2 | 0xF3 => {
+                pos += 1;
+            } // LOCK, REPNE, REP
+            0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65 => {
+                pos += 1;
+            } // CS, SS, DS, ES, FS, GS
+            0x66 => {
+                has_66 = true;
+                pos += 1;
+            } // Operand size override
+            0x67 => {
+                has_67 = true;
+                pos += 1;
+            } // Address size override
             _ => break,
         }
     }
@@ -61,25 +75,29 @@ pub fn decode_len(code: &[u8], mode: Mode) -> Result<usize, DecodeError> {
 
     // Two-byte opcode escape
     let (opcode, _two_byte) = if opcode == 0x0F {
-        if pos >= code.len() { return Err(DecodeError::TooShort); }
+        if pos >= code.len() {
+            return Err(DecodeError::TooShort);
+        }
         let op2 = code[pos];
         pos += 1;
 
         // Three-byte opcode
         if op2 == 0x38 || op2 == 0x3A {
-            if pos >= code.len() { return Err(DecodeError::TooShort); }
+            if pos >= code.len() {
+                return Err(DecodeError::TooShort);
+            }
             pos += 1; // skip third opcode byte
             if op2 == 0x3A {
                 // 3-byte + imm8
-                return read_modrm_and_disp(code, pos, addr16)
-                    .map(|mr| pos + mr + 1);
+                return read_modrm_and_disp(code, pos, addr16).map(|mr| pos + mr + 1);
             }
-            return read_modrm_and_disp(code, pos, addr16)
-                .map(|mr| pos + mr);
+            return read_modrm_and_disp(code, pos, addr16).map(|mr| pos + mr);
         }
 
         let len = two_byte_tail_len(code, pos, op2, addr16, rel_size)?;
-        if len > code.len() { return Err(DecodeError::TooShort); }
+        if len > code.len() {
+            return Err(DecodeError::TooShort);
+        }
         return Ok(len);
     } else {
         (opcode, false)
@@ -92,7 +110,9 @@ pub fn decode_len(code: &[u8], mode: Mode) -> Result<usize, DecodeError> {
         } else {
             vex_len(code, pos - 1, opcode)?
         };
-        if len > code.len() { return Err(DecodeError::TooShort); }
+        if len > code.len() {
+            return Err(DecodeError::TooShort);
+        }
         return Ok(len);
     }
 
@@ -149,8 +169,22 @@ pub fn decode_len(code: &[u8], mode: Mode) -> Result<usize, DecodeError> {
         0xC8 => 3,
         0x6A => 1,
         0x68 => grp_imm,
-        0xA0..=0xA3 => if addr16 { 2 } else if has_rex_w && is_64 { 8 } else { 4 },
-        0xB8..=0xBF => if has_rex_w && is_64 { 8 } else { grp_imm },
+        0xA0..=0xA3 => {
+            if addr16 {
+                2
+            } else if has_rex_w && is_64 {
+                8
+            } else {
+                4
+            }
+        }
+        0xB8..=0xBF => {
+            if has_rex_w && is_64 {
+                8
+            } else {
+                grp_imm
+            }
+        }
         _ => imm_size,
     };
 
@@ -158,7 +192,11 @@ pub fn decode_len(code: &[u8], mode: Mode) -> Result<usize, DecodeError> {
         // F6/F7 /0 and /1 are TEST r/m, imm forms with a trailing immediate
         let extra_imm = if opcode == 0xF6 || opcode == 0xF7 {
             if pos < code.len() && (code[pos] >> 3) & 7 <= 1 {
-                if opcode == 0xF6 { 1 } else { grp_imm }
+                if opcode == 0xF6 {
+                    1
+                } else {
+                    grp_imm
+                }
             } else {
                 0
             }
@@ -169,13 +207,21 @@ pub fn decode_len(code: &[u8], mode: Mode) -> Result<usize, DecodeError> {
     } else {
         pos + imm_size
     };
-    if len > code.len() { return Err(DecodeError::TooShort); }
+    if len > code.len() {
+        return Err(DecodeError::TooShort);
+    }
     Ok(len)
 }
 
 /// Two-byte (0F xx / VEX.map1) tail: ModR/M presence + immediate.
 /// Returns total bytes consumed from `pos` (which points past the op2 byte).
-fn two_byte_tail_len(code: &[u8], pos: usize, op2: u8, addr16: bool, rel_size: usize) -> Result<usize, DecodeError> {
+fn two_byte_tail_len(
+    code: &[u8],
+    pos: usize,
+    op2: u8,
+    addr16: bool,
+    rel_size: usize,
+) -> Result<usize, DecodeError> {
     let has_modrm = matches!(op2,
          0x00..=0x01 | 0x0D | 0x10..=0x19 | 0x1F |
          0x20..=0x23 | 0x28..=0x2F | 0x36..=0x37 | 0x3F |
@@ -185,12 +231,12 @@ fn two_byte_tail_len(code: &[u8], pos: usize, op2: u8, addr16: bool, rel_size: u
     );
 
     let imm_size = match op2 {
-        0x70..=0x73 => 1, // pshuf* etc
+        0x70..=0x73 => 1,        // pshuf* etc
         0x80..=0x8F => rel_size, // jcc rel16/rel32
-        0xA4 | 0xAC => 1, // shld/shrd imm8
-        0xBA => 1,        // bt/bts/btr/btc imm8
-        0xC2 => 1,        // cmpps imm8
-        0xC4..=0xC6 => 1, // pinsrw/pextrw/shufps imm8
+        0xA4 | 0xAC => 1,        // shld/shrd imm8
+        0xBA => 1,               // bt/bts/btr/btc imm8
+        0xC2 => 1,               // cmpps imm8
+        0xC4..=0xC6 => 1,        // pinsrw/pextrw/shufps imm8
         _ => 0,
     };
 
@@ -222,13 +268,11 @@ fn vex_len(code: &[u8], vex_pos: usize, vex_byte: u8) -> Result<usize, DecodeErr
             1 => two_byte_tail_len(code, vex_pos + 4, op3, false, 4),
             2 => {
                 // 0F38: all have ModR/M, no immediates in practice
-                read_modrm_and_disp(code, vex_pos + 4, false)
-                    .map(|mr| vex_pos + 4 + mr)
+                read_modrm_and_disp(code, vex_pos + 4, false).map(|mr| vex_pos + 4 + mr)
             }
             _ => {
                 // 0F3A: all have ModR/M + imm8
-                read_modrm_and_disp(code, vex_pos + 4, false)
-                    .map(|mr| vex_pos + 5 + mr)
+                read_modrm_and_disp(code, vex_pos + 4, false).map(|mr| vex_pos + 5 + mr)
             }
         }
     }
@@ -275,9 +319,15 @@ fn read_modrm_and_disp(code: &[u8], pos: usize, addr16: bool) -> Result<usize, D
     // 16-bit addressing: no SIB; disp16 instead of disp32.
     if addr16 {
         let disp_size = match r#mod {
-            0 => if rm == 6 { 2 } else { 0 }, // disp16-only
-            1 => 1,                           // disp8
-            2 => 2,                           // disp16
+            0 => {
+                if rm == 6 {
+                    2
+                } else {
+                    0
+                }
+            } // disp16-only
+            1 => 1, // disp8
+            2 => 2, // disp16
             _ => 0, // mod == 3: register direct
         };
         consumed += disp_size;
@@ -347,13 +397,19 @@ mod tests {
     #[test]
     fn test_mov_reg_imm32() {
         // mov eax, 0x12345678
-        assert_eq!(decode_len(&[0xB8, 0x78, 0x56, 0x34, 0x12], Mode::X64).unwrap(), 5);
+        assert_eq!(
+            decode_len(&[0xB8, 0x78, 0x56, 0x34, 0x12], Mode::X64).unwrap(),
+            5
+        );
     }
 
     #[test]
     fn test_rex_mov_r64_imm64() {
         // REX.W mov rax, imm64
-        assert_eq!(decode_len(&[0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0], Mode::X64).unwrap(), 10);
+        assert_eq!(
+            decode_len(&[0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0], Mode::X64).unwrap(),
+            10
+        );
     }
 
     #[test]

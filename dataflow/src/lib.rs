@@ -18,16 +18,18 @@
 //!
 //! All analyses use worklist algorithms with monotone frameworks.
 
-pub mod reaching_definitions;
 pub mod live_variables;
+pub mod reaching_definitions;
 pub mod use_def_chains;
-pub mod worklist;
 pub mod value_set;
+pub mod worklist;
+pub mod taint;
 
-pub use reaching_definitions::ReachingDefinitions;
 pub use live_variables::LiveVariables;
+pub use reaching_definitions::ReachingDefinitions;
 pub use use_def_chains::UseDefChains;
-pub use value_set::{ValueSetAnalysis, AbstractValue};
+pub use value_set::{AbstractValue, ValueSetAnalysis};
+pub use taint::{analyze_taint, TaintConfig, TaintReport, TaintSink, TaintSource};
 
 use freakre_ir::IrFunction;
 
@@ -47,7 +49,7 @@ impl DataFlowAnalysis {
         let live_vars = LiveVariables::analyze(func);
         let use_def = UseDefChains::build(func, &reaching_defs);
         let value_sets = ValueSetAnalysis::analyze(func);
-        
+
         DataFlowAnalysis {
             reaching_defs,
             live_vars,
@@ -55,11 +57,11 @@ impl DataFlowAnalysis {
             value_sets,
         }
     }
-    
+
     /// Get all suspicious patterns detected during analysis
     pub fn suspicious_patterns(&self) -> Vec<String> {
         let mut patterns = Vec::new();
-        
+
         // Detect use before def
         for (use_site, defs) in &self.use_def.chains {
             if defs.is_empty() {
@@ -69,12 +71,10 @@ impl DataFlowAnalysis {
                 ));
             }
         }
-        
+
         // Detect dead code (definitions never used)
         // This would require reverse analysis (def-use chains)
-        
+
         patterns
     }
 }
-
-

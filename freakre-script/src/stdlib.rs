@@ -44,7 +44,12 @@ fn missing_arg(fn_name: &str, expected: &str) -> ScriptError {
     ScriptError::TypeError(format!("{} expects {}", fn_name, expected))
 }
 
-fn arg_str<'a>(fn_name: &str, args: &'a [Value], idx: usize, what: &str) -> Result<&'a str, ScriptError> {
+fn arg_str<'a>(
+    fn_name: &str,
+    args: &'a [Value],
+    idx: usize,
+    what: &str,
+) -> Result<&'a str, ScriptError> {
     match args.get(idx) {
         Some(Value::Str(s)) => Ok(s.as_str()),
         Some(other) => Err(type_error(fn_name, what, other)),
@@ -288,7 +293,9 @@ pub fn call(name: &str, args: &[Value]) -> Result<Value, ScriptError> {
         "u32_to_bytes_le" => {
             let n = arg_int(name, args, 0, "an integer")?;
             // Lossy for values whose low bytes are not valid UTF-8.
-            Ok(Value::Str(String::from_utf8_lossy(&(n as u32).to_le_bytes()).into_owned()))
+            Ok(Value::Str(
+                String::from_utf8_lossy(&(n as u32).to_le_bytes()).into_owned(),
+            ))
         }
         "base64_encode" => {
             let s = arg_str(name, args, 0, "a string")?;
@@ -424,7 +431,11 @@ pub fn call(name: &str, args: &[Value]) -> Result<Value, ScriptError> {
 /// Shared min/max fold over numeric arguments. Keeps integer precision when
 /// every operand is an integer; NaN operands are a clean runtime error.
 fn extremum(args: &[Value], want: core::cmp::Ordering) -> Result<Value, ScriptError> {
-    let name = if want == core::cmp::Ordering::Less { "min" } else { "max" };
+    let name = if want == core::cmp::Ordering::Less {
+        "min"
+    } else {
+        "max"
+    };
     if args.is_empty() {
         return Err(missing_arg(name, "at least one number"));
     }
@@ -527,8 +538,7 @@ fn invalid_hex_digit(b: u8) -> ScriptError {
     ScriptError::RuntimeError(format!("hex_decode: invalid hex digit {}", shown))
 }
 
-const B64_ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn base64_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -661,7 +671,9 @@ fn write_pretty(out: &mut String, v: &Value, depth: usize) {
             // (Keeps `{a = {b = {c = 1}}}` fully rendered while
             // `{a = {b = {c = {}}}}` becomes `{a = {b = {...}}}`.)
             if depth == PRETTY_MAX_DEPTH
-                && entries.iter().any(|(_, val)| matches!(val, Value::Table(_)))
+                && entries
+                    .iter()
+                    .any(|(_, val)| matches!(val, Value::Table(_)))
             {
                 out.push_str("{...}");
                 return;
@@ -712,7 +724,9 @@ fn write_pretty(out: &mut String, v: &Value, depth: usize) {
 
 fn is_identifier_key(s: &str) -> bool {
     !s.is_empty()
-        && s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && s.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -735,7 +749,9 @@ mod tests {
     }
 
     fn ri(src: &str) -> i64 {
-        r(src).as_integer().unwrap_or_else(|| panic!("expected integer from {:?}", src))
+        r(src)
+            .as_integer()
+            .unwrap_or_else(|| panic!("expected integer from {:?}", src))
     }
 
     fn err(src: &str) -> ScriptError {
@@ -804,30 +820,63 @@ mod tests {
     #[test]
     fn test_string_utils_malformed_args() {
         assert!(matches!(err("return len()"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return len(5)"), ScriptError::TypeError(ref m) if m.contains("got integer")));
-        assert!(matches!(err("return sub('abc')"), ScriptError::TypeError(_)));
+        assert!(
+            matches!(err("return len(5)"), ScriptError::TypeError(ref m) if m.contains("got integer"))
+        );
+        assert!(matches!(
+            err("return sub('abc')"),
+            ScriptError::TypeError(_)
+        ));
         assert!(matches!(err("return sub(1, 2)"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return find('abc', 2)"), ScriptError::TypeError(_)));
+        assert!(matches!(
+            err("return find('abc', 2)"),
+            ScriptError::TypeError(_)
+        ));
         assert!(matches!(err("return find()"), ScriptError::TypeError(_)));
         assert!(matches!(
             err("return replace('a', '', 'x')"),
             ScriptError::RuntimeError(ref m) if m.contains("pattern must not be empty")
         ));
-        assert!(matches!(err("return replace('a', '.')"), ScriptError::TypeError(_)));
+        assert!(matches!(
+            err("return replace('a', '.')"),
+            ScriptError::TypeError(_)
+        ));
         assert!(matches!(err("return upper(1)"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return lower(nil)"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return trim(true)"), ScriptError::TypeError(_)));
+        assert!(matches!(
+            err("return lower(nil)"),
+            ScriptError::TypeError(_)
+        ));
+        assert!(matches!(
+            err("return trim(true)"),
+            ScriptError::TypeError(_)
+        ));
         assert!(matches!(
             err("return split('a,b', '')"),
             ScriptError::RuntimeError(ref m) if m.contains("separator")
         ));
-        assert!(matches!(err("return split('a', 3)"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return join('ab', '-')"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return join({'a'})"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return format_number('x')"), ScriptError::TypeError(_)));
+        assert!(matches!(
+            err("return split('a', 3)"),
+            ScriptError::TypeError(_)
+        ));
+        assert!(matches!(
+            err("return join('ab', '-')"),
+            ScriptError::TypeError(_)
+        ));
+        assert!(matches!(
+            err("return join({'a'})"),
+            ScriptError::TypeError(_)
+        ));
+        assert!(matches!(
+            err("return format_number('x')"),
+            ScriptError::TypeError(_)
+        ));
         // Malformed args never panic even at index extremes.
-        assert!(run("return sub('abc', -9999999999999999999999, 1)",
-            &SandboxConfig::default(), &Capabilities::default()).is_err()); // lex error, not panic
+        assert!(run(
+            "return sub('abc', -9999999999999999999999, 1)",
+            &SandboxConfig::default(),
+            &Capabilities::default()
+        )
+        .is_err()); // lex error, not panic
     }
 
     // ── Namespace: data helpers ───────────────────────────────────
@@ -837,7 +886,10 @@ mod tests {
         assert_eq!(rs("return hex_encode('ABC')"), "414243");
         assert_eq!(rs("return hex_encode('')"), "");
         assert_eq!(rs("return hex_decode('414243')"), "ABC");
-        assert_eq!(rs("return hex_decode('414243') == hex_decode(hex_encode('ABC')) and 'ok' or 'bad'"), "ok");
+        assert_eq!(
+            rs("return hex_decode('414243') == hex_decode(hex_encode('ABC')) and 'ok' or 'bad'"),
+            "ok"
+        );
     }
 
     #[test]
@@ -868,7 +920,10 @@ mod tests {
             "payload!"
         );
         // 16909060 == 0x01020304 -> bytes 04 03 02 01 (valid UTF-8)
-        assert_eq!(ri("return bytes_to_u32_le(u32_to_bytes_le(16909060), 0)"), 16909060);
+        assert_eq!(
+            ri("return bytes_to_u32_le(u32_to_bytes_le(16909060), 0)"),
+            16909060
+        );
         assert_eq!(
             ri("return bytes_to_u32_le('AAAA' .. u32_to_bytes_le(16909060), 4)"),
             16909060
@@ -885,8 +940,14 @@ mod tests {
             err("return hex_decode('zz')"),
             ScriptError::RuntimeError(ref m) if m.contains("invalid hex digit")
         ));
-        assert!(matches!(err("return hex_decode(5)"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return hex_encode(1)"), ScriptError::TypeError(_)));
+        assert!(matches!(
+            err("return hex_decode(5)"),
+            ScriptError::TypeError(_)
+        ));
+        assert!(matches!(
+            err("return hex_encode(1)"),
+            ScriptError::TypeError(_)
+        ));
         assert!(matches!(
             err("return bytes_to_u32_le('ab', 0)"),
             ScriptError::RuntimeError(ref m) if m.contains("out of range")
@@ -895,14 +956,26 @@ mod tests {
             err("return bytes_to_u32_le(u32_to_bytes_le(0), -1)"),
             ScriptError::RuntimeError(ref m) if m.contains("negative")
         ));
-        assert!(matches!(err("return bytes_to_u32_le('abcd')"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return u32_to_bytes_le('x')"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return u32_to_bytes_le()"), ScriptError::TypeError(_)));
+        assert!(matches!(
+            err("return bytes_to_u32_le('abcd')"),
+            ScriptError::TypeError(_)
+        ));
+        assert!(matches!(
+            err("return u32_to_bytes_le('x')"),
+            ScriptError::TypeError(_)
+        ));
+        assert!(matches!(
+            err("return u32_to_bytes_le()"),
+            ScriptError::TypeError(_)
+        ));
         assert!(matches!(
             err("return xor_bytes('a', '')"),
             ScriptError::RuntimeError(ref m) if m.contains("key must not be empty")
         ));
-        assert!(matches!(err("return xor_bytes(1, 'k')"), ScriptError::TypeError(_)));
+        assert!(matches!(
+            err("return xor_bytes(1, 'k')"),
+            ScriptError::TypeError(_)
+        ));
         assert!(matches!(
             err("return base64_decode('!!!!')"),
             ScriptError::RuntimeError(ref m) if m.contains("invalid character")
@@ -915,7 +988,10 @@ mod tests {
             err("return base64_decode('AB=A')"),
             ScriptError::RuntimeError(ref m) if m.contains("after padding")
         ));
-        assert!(matches!(err("return base64_decode(7)"), ScriptError::TypeError(_)));
+        assert!(matches!(
+            err("return base64_decode(7)"),
+            ScriptError::TypeError(_)
+        ));
         assert!(matches!(err("return crc32({})"), ScriptError::TypeError(_)));
     }
 
@@ -931,7 +1007,10 @@ mod tests {
 
     #[test]
     fn test_contains_any() {
-        assert_eq!(ri("return contains_any('hello world', {'xyz', 'wor'}) and 1 or 0"), 1);
+        assert_eq!(
+            ri("return contains_any('hello world', {'xyz', 'wor'}) and 1 or 0"),
+            1
+        );
         assert_eq!(ri("return contains_any('hello', {'xyz'}) and 1 or 0"), 0);
         assert_eq!(ri("return contains_any('hello', {}) and 1 or 0"), 0);
         // Keyed entries are ignored; only the array part participates.
@@ -943,9 +1022,18 @@ mod tests {
         assert_eq!(ri("return count_occurrences('aaaa', 'aa')"), 2); // non-overlapping
         assert_eq!(ri("return count_occurrences('ababab', 'aba')"), 1);
         assert_eq!(ri("return count_occurrences('xyz', 'q')"), 0);
-        assert_eq!(rs("return extract_between('<a>content<b>', '<a>', '<b>')"), "content");
-        assert!(matches!(r("return extract_between('abc', 'x', 'y')"), Value::Nil));
-        assert!(matches!(r("return extract_between('abc', 'a', 'z')"), Value::Nil));
+        assert_eq!(
+            rs("return extract_between('<a>content<b>', '<a>', '<b>')"),
+            "content"
+        );
+        assert!(matches!(
+            r("return extract_between('abc', 'x', 'y')"),
+            Value::Nil
+        ));
+        assert!(matches!(
+            r("return extract_between('abc', 'a', 'z')"),
+            Value::Nil
+        ));
         assert_eq!(rs("return extract_between('a=1;', '=', ';')"), "1");
     }
 
@@ -955,16 +1043,34 @@ mod tests {
             err("return contains_any('s', {1})"),
             ScriptError::TypeError(ref m) if m.contains("item 1 must be a string")
         ));
-        assert!(matches!(err("return contains_any('s', 'notatable')"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return contains_any(1, {})"), ScriptError::TypeError(_)));
+        assert!(matches!(
+            err("return contains_any('s', 'notatable')"),
+            ScriptError::TypeError(_)
+        ));
+        assert!(matches!(
+            err("return contains_any(1, {})"),
+            ScriptError::TypeError(_)
+        ));
         assert!(matches!(
             err("return count_occurrences('abc', '')"),
             ScriptError::RuntimeError(ref m) if m.contains("needle must not be empty")
         ));
-        assert!(matches!(err("return count_occurrences('abc')"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return extract_between(1, 'a', 'b')"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return extract_between('abc', 2, 'b')"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return extract_between('abc', 'a')"), ScriptError::TypeError(_)));
+        assert!(matches!(
+            err("return count_occurrences('abc')"),
+            ScriptError::TypeError(_)
+        ));
+        assert!(matches!(
+            err("return extract_between(1, 'a', 'b')"),
+            ScriptError::TypeError(_)
+        ));
+        assert!(matches!(
+            err("return extract_between('abc', 2, 'b')"),
+            ScriptError::TypeError(_)
+        ));
+        assert!(matches!(
+            err("return extract_between('abc', 'a')"),
+            ScriptError::TypeError(_)
+        ));
     }
 
     // ── Namespace: math/misc ──────────────────────────────────────
@@ -987,11 +1093,19 @@ mod tests {
 
     #[test]
     fn test_math_malformed_args() {
-        assert!(matches!(err("return min()"), ScriptError::TypeError(ref m) if m.contains("at least one")));
-        assert!(matches!(err("return max(1, 'x')"), ScriptError::TypeError(_)));
+        assert!(
+            matches!(err("return min()"), ScriptError::TypeError(ref m) if m.contains("at least one"))
+        );
+        assert!(matches!(
+            err("return max(1, 'x')"),
+            ScriptError::TypeError(_)
+        ));
         assert!(matches!(err("return abs('x')"), ScriptError::TypeError(_)));
         assert!(matches!(err("return abs()"), ScriptError::TypeError(_)));
-        assert!(matches!(err("return floor('x')"), ScriptError::TypeError(_)));
+        assert!(matches!(
+            err("return floor('x')"),
+            ScriptError::TypeError(_)
+        ));
         assert!(matches!(err("return ceil({})"), ScriptError::TypeError(_)));
         assert!(matches!(
             err("local m = -1 * 9223372036854775807 - 1\nreturn abs(m)"),
@@ -1014,16 +1128,25 @@ mod tests {
         assert_eq!(rs("return tostring({})"), "{}");
         assert_eq!(rs("return tostring({1, 2})"), "{1, 2}");
         assert_eq!(rs("return tostring({10, 20, x = 1})"), "{10, 20, x = 1}");
-        assert_eq!(rs("return tostring({['my-key'] = 1})"), "{[\"my-key\"] = 1}");
+        assert_eq!(
+            rs("return tostring({['my-key'] = 1})"),
+            "{[\"my-key\"] = 1}"
+        );
         assert_eq!(rs("return tostring({[true] = 1})"), "{[true] = 1}");
         assert_eq!(
             rs("return tostring({version = 2, tags = {'re', 'auto'}})"),
             "{version = 2, tags = {\"re\", \"auto\"}}"
         );
         // Depth cap: tables nested deeper than 3 levels render as {...}.
-        assert_eq!(rs("return tostring({a = {b = {c = 1}}})"), "{a = {b = {c = 1}}}");
-        assert_eq!(rs("return tostring({a = {b = {c = {}}}})"), "{a = {b = {...}}}");
-        assert_eq!(rs("return tostring({f = print})", ), "{f = <function>}");
+        assert_eq!(
+            rs("return tostring({a = {b = {c = 1}}})"),
+            "{a = {b = {c = 1}}}"
+        );
+        assert_eq!(
+            rs("return tostring({a = {b = {c = {}}}})"),
+            "{a = {b = {...}}}"
+        );
+        assert_eq!(rs("return tostring({f = print})",), "{f = <function>}");
     }
 
     // ── Capabilities ──────────────────────────────────────────────
@@ -1059,7 +1182,11 @@ mod tests {
         ] {
             match run(src, &cfg, &caps) {
                 Err(ScriptError::CapabilityDenied(_)) => {}
-                other => panic!("expected CapabilityDenied for {:?}, got {:?}", src, other.map(|v| v.type_name())),
+                other => panic!(
+                    "expected CapabilityDenied for {:?}, got {:?}",
+                    src,
+                    other.map(|v| v.type_name())
+                ),
             }
         }
         // File I/O stays gated by its own flag, independent of the whitelist.
@@ -1085,9 +1212,13 @@ mod tests {
         ));
         // User functions with the same name are unaffected (env lookup first).
         assert_eq!(
-            run("function len(s) return 99 end\nreturn len('ab')", &cfg, &caps)
-                .unwrap()
-                .as_integer(),
+            run(
+                "function len(s) return 99 end\nreturn len('ab')",
+                &cfg,
+                &caps
+            )
+            .unwrap()
+            .as_integer(),
             Some(99)
         );
     }
@@ -1096,39 +1227,67 @@ mod tests {
 
     #[test]
     fn test_result_respects_string_length_limit() {
-        let cfg = SandboxConfig { max_string_len: 8, ..Default::default() };
+        let cfg = SandboxConfig {
+            max_string_len: 8,
+            ..Default::default()
+        };
         assert!(matches!(
-            run("return join({'aaaa', 'bbbb'}, '-')", &cfg, &Capabilities::default()),
+            run(
+                "return join({'aaaa', 'bbbb'}, '-')",
+                &cfg,
+                &Capabilities::default()
+            ),
             Err(ScriptError::StringLengthLimit)
         ));
         assert!(matches!(
-            run("return hex_encode('0123456789abcdef')", &cfg, &Capabilities::default()),
+            run(
+                "return hex_encode('0123456789abcdef')",
+                &cfg,
+                &Capabilities::default()
+            ),
             Err(ScriptError::StringLengthLimit)
         ));
     }
 
     #[test]
     fn test_result_respects_memory_limit() {
-        let cfg = SandboxConfig { max_memory: 16, ..Default::default() };
+        let cfg = SandboxConfig {
+            max_memory: 16,
+            ..Default::default()
+        };
         // Output (32 bytes) exceeds the quota: charged through account_result.
         assert!(matches!(
-            run("return hex_encode('0123456789abcdef')", &cfg, &Capabilities::default()),
+            run(
+                "return hex_encode('0123456789abcdef')",
+                &cfg,
+                &Capabilities::default()
+            ),
             Err(ScriptError::MemoryLimit)
         ));
     }
 
     #[test]
     fn test_result_respects_table_limit() {
-        let cfg = SandboxConfig { max_table_entries: 2, ..Default::default() };
+        let cfg = SandboxConfig {
+            max_table_entries: 2,
+            ..Default::default()
+        };
         assert!(matches!(
-            run("return split('a,b,c,d', ',')", &cfg, &Capabilities::default()),
+            run(
+                "return split('a,b,c,d', ',')",
+                &cfg,
+                &Capabilities::default()
+            ),
             Err(ScriptError::TableSizeLimit)
         ));
     }
 
     #[test]
     fn test_user_binding_shadows_builtin() {
-        assert_eq!(rs("function sub(s, a, b) return 'X' end\nreturn sub('a', 1, 2)"), "X");
+        assert_eq!(
+            rs("function sub(s, a, b) return 'X' end\nreturn sub('a', 1, 2)"),
+            "X"
+        );
         assert_eq!(ri("local len = 5\nreturn len"), 5);
     }
 

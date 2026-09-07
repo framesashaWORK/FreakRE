@@ -250,15 +250,47 @@ pub enum LoadCommand {
     LoadDylinker(String),
     IdDylinker(String),
     Uuid([u8; 16]),
-    Main { entry_off: u64, stack_size: u64 },
-    Symtab { symoff: u32, nsyms: u32, stroff: u32, strsize: u32 },
-    EncryptionInfo { cryptoff: u32, cryptsize: u32, cryptid: u32 },
-    CodeSignature { dataoff: u32, datasize: u32 },
+    Main {
+        entry_off: u64,
+        stack_size: u64,
+    },
+    Symtab {
+        symoff: u32,
+        nsyms: u32,
+        stroff: u32,
+        strsize: u32,
+    },
+    EncryptionInfo {
+        cryptoff: u32,
+        cryptsize: u32,
+        cryptid: u32,
+    },
+    CodeSignature {
+        dataoff: u32,
+        datasize: u32,
+    },
     Rpath(String),
     SourceVersion(u64),
-    FunctionStarts { dataoff: u32, datasize: u32 },
-    DyldInfo { rebase_off: u32, rebase_size: u32, bind_off: u32, bind_size: u32, weak_bind_off: u32, weak_bind_size: u32, lazy_bind_off: u32, lazy_bind_size: u32, export_off: u32, export_size: u32 },
-    Unknown { cmd: u32, cmdsize: u32 },
+    FunctionStarts {
+        dataoff: u32,
+        datasize: u32,
+    },
+    DyldInfo {
+        rebase_off: u32,
+        rebase_size: u32,
+        bind_off: u32,
+        bind_size: u32,
+        weak_bind_off: u32,
+        weak_bind_size: u32,
+        lazy_bind_off: u32,
+        lazy_bind_size: u32,
+        export_off: u32,
+        export_size: u32,
+    },
+    Unknown {
+        cmd: u32,
+        cmdsize: u32,
+    },
 }
 
 // ─── Segment ─────────────────────────────────────────────────────────
@@ -279,9 +311,7 @@ pub struct Segment {
 impl Segment {
     pub fn is_rwx(&self) -> bool {
         let prot = self.initprot;
-        (prot & VM_PROT_READ != 0)
-            && (prot & VM_PROT_WRITE != 0)
-            && (prot & VM_PROT_EXECUTE != 0)
+        (prot & VM_PROT_READ != 0) && (prot & VM_PROT_WRITE != 0) && (prot & VM_PROT_EXECUTE != 0)
     }
 
     pub fn is_executable(&self) -> bool {
@@ -456,7 +486,9 @@ impl<'a> MachoFile<'a> {
         }
 
         // Check for code signature
-        let has_code_sig = load_commands.iter().any(|lc| matches!(lc, LoadCommand::CodeSignature { .. }));
+        let has_code_sig = load_commands
+            .iter()
+            .any(|lc| matches!(lc, LoadCommand::CodeSignature { .. }));
         if file_type == FileType::Execute && !has_code_sig {
             warnings.push(MachoWarning {
                 kind: WarningKind::NoCodeSignature,
@@ -479,31 +511,32 @@ impl<'a> MachoFile<'a> {
         // Check for RWX segments
         for lc in &load_commands {
             match lc {
-                LoadCommand::Segment(seg) | LoadCommand::Segment64(seg)
-                    if seg.is_rwx() => {
-                        warnings.push(MachoWarning {
-                            kind: WarningKind::RwxSection,
-                            message: format!("RWX segment: {} (addr=0x{:X})", seg.name, seg.vmaddr),
-                        });
-                    }
+                LoadCommand::Segment(seg) | LoadCommand::Segment64(seg) if seg.is_rwx() => {
+                    warnings.push(MachoWarning {
+                        kind: WarningKind::RwxSection,
+                        message: format!("RWX segment: {} (addr=0x{:X})", seg.name, seg.vmaddr),
+                    });
+                }
                 _ => {}
             }
         }
 
         // Check for overlapping segments
-        let segments: Vec<&Segment> = load_commands.iter().filter_map(|lc| {
-            match lc {
+        let segments: Vec<&Segment> = load_commands
+            .iter()
+            .filter_map(|lc| match lc {
                 LoadCommand::Segment(s) | LoadCommand::Segment64(s) => Some(s),
                 _ => None,
-            }
-        }).collect();
+            })
+            .collect();
 
         let mut overlap_warnings = 0usize;
         'overlap_scan: for i in 0..segments.len() {
             for j in (i + 1)..segments.len() {
                 let a = segments[i];
                 let b = segments[j];
-                if a.filesize > 0 && b.filesize > 0
+                if a.filesize > 0
+                    && b.filesize > 0
                     && a.fileoff < b.fileoff.saturating_add(b.filesize)
                     && b.fileoff < a.fileoff.saturating_add(a.filesize)
                 {
@@ -520,7 +553,9 @@ impl<'a> MachoFile<'a> {
         }
 
         // Check if statically linked (no dylibs)
-        let has_dylibs = load_commands.iter().any(|lc| matches!(lc, LoadCommand::LoadDylib(_)));
+        let has_dylibs = load_commands
+            .iter()
+            .any(|lc| matches!(lc, LoadCommand::LoadDylib(_)));
         if file_type == FileType::Execute && !has_dylibs {
             warnings.push(MachoWarning {
                 kind: WarningKind::StaticallyLinked,
@@ -573,9 +608,7 @@ impl<'a> MachoFile<'a> {
 
     /// Get the __TEXT segment (if present).
     pub fn text_segment(&self) -> Option<&Segment> {
-        self.segments()
-            .into_iter()
-            .find(|s| s.name == "__TEXT")
+        self.segments().into_iter().find(|s| s.name == "__TEXT")
     }
 
     /// Get the __DATA segment (if present).
@@ -612,14 +645,16 @@ impl<'a> MachoFile<'a> {
 
     /// Check if the binary is encrypted (FairPlay DRM).
     pub fn is_encrypted(&self) -> bool {
-        self.load_commands.iter().any(|lc| {
-            matches!(lc, LoadCommand::EncryptionInfo { cryptid, .. } if *cryptid != 0)
-        })
+        self.load_commands
+            .iter()
+            .any(|lc| matches!(lc, LoadCommand::EncryptionInfo { cryptid, .. } if *cryptid != 0))
     }
 
     /// Check if the binary has a code signature.
     pub fn has_code_signature(&self) -> bool {
-        self.load_commands.iter().any(|lc| matches!(lc, LoadCommand::CodeSignature { .. }))
+        self.load_commands
+            .iter()
+            .any(|lc| matches!(lc, LoadCommand::CodeSignature { .. }))
     }
 }
 
@@ -635,14 +670,28 @@ fn parse_load_command(
 ) -> LoadCommand {
     let read_u32 = |off: usize| -> u32 {
         let bytes = [data[off], data[off + 1], data[off + 2], data[off + 3]];
-        if is_swapped { u32::from_be_bytes(bytes) } else { u32::from_le_bytes(bytes) }
+        if is_swapped {
+            u32::from_be_bytes(bytes)
+        } else {
+            u32::from_le_bytes(bytes)
+        }
     };
     let read_u64 = |off: usize| -> u64 {
         let bytes = [
-            data[off], data[off + 1], data[off + 2], data[off + 3],
-            data[off + 4], data[off + 5], data[off + 6], data[off + 7],
+            data[off],
+            data[off + 1],
+            data[off + 2],
+            data[off + 3],
+            data[off + 4],
+            data[off + 5],
+            data[off + 6],
+            data[off + 7],
         ];
-        if is_swapped { u64::from_be_bytes(bytes) } else { u64::from_le_bytes(bytes) }
+        if is_swapped {
+            u64::from_be_bytes(bytes)
+        } else {
+            u64::from_le_bytes(bytes)
+        }
     };
 
     match cmd {
@@ -678,7 +727,10 @@ fn parse_load_command(
                     _ => unreachable!(),
                 }
             } else {
-                LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
+                LoadCommand::Unknown {
+                    cmd,
+                    cmdsize: cmdsize as u32,
+                }
             }
         }
         LC_LOAD_DYLINKER => {
@@ -690,7 +742,10 @@ fn parse_load_command(
                 };
                 LoadCommand::LoadDylinker(name)
             } else {
-                LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
+                LoadCommand::Unknown {
+                    cmd,
+                    cmdsize: cmdsize as u32,
+                }
             }
         }
         LC_ID_DYLINKER => {
@@ -702,7 +757,10 @@ fn parse_load_command(
                 };
                 LoadCommand::IdDylinker(name)
             } else {
-                LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
+                LoadCommand::Unknown {
+                    cmd,
+                    cmdsize: cmdsize as u32,
+                }
             }
         }
         LC_UUID => {
@@ -711,7 +769,10 @@ fn parse_load_command(
                 uuid.copy_from_slice(&data[offset + 8..offset + 24]);
                 LoadCommand::Uuid(uuid)
             } else {
-                LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
+                LoadCommand::Unknown {
+                    cmd,
+                    cmdsize: cmdsize as u32,
+                }
             }
         }
         LC_MAIN => {
@@ -721,7 +782,10 @@ fn parse_load_command(
                     stack_size: read_u64(offset + 16),
                 }
             } else {
-                LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
+                LoadCommand::Unknown {
+                    cmd,
+                    cmdsize: cmdsize as u32,
+                }
             }
         }
         LC_SYMTAB => {
@@ -733,7 +797,10 @@ fn parse_load_command(
                     strsize: read_u32(offset + 20),
                 }
             } else {
-                LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
+                LoadCommand::Unknown {
+                    cmd,
+                    cmdsize: cmdsize as u32,
+                }
             }
         }
         LC_ENCRYPTION_INFO | LC_ENCRYPTION_INFO_64 => {
@@ -744,7 +811,10 @@ fn parse_load_command(
                     cryptid: read_u32(offset + 16),
                 }
             } else {
-                LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
+                LoadCommand::Unknown {
+                    cmd,
+                    cmdsize: cmdsize as u32,
+                }
             }
         }
         LC_CODE_SIGNATURE => {
@@ -754,7 +824,10 @@ fn parse_load_command(
                     datasize: read_u32(offset + 12),
                 }
             } else {
-                LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
+                LoadCommand::Unknown {
+                    cmd,
+                    cmdsize: cmdsize as u32,
+                }
             }
         }
         LC_RPATH => {
@@ -766,14 +839,20 @@ fn parse_load_command(
                 };
                 LoadCommand::Rpath(name)
             } else {
-                LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
+                LoadCommand::Unknown {
+                    cmd,
+                    cmdsize: cmdsize as u32,
+                }
             }
         }
         LC_SOURCE_VERSION => {
             if offset + 16 <= data.len() {
                 LoadCommand::SourceVersion(read_u64(offset + 8))
             } else {
-                LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
+                LoadCommand::Unknown {
+                    cmd,
+                    cmdsize: cmdsize as u32,
+                }
             }
         }
         LC_FUNCTION_STARTS => {
@@ -783,7 +862,10 @@ fn parse_load_command(
                     datasize: read_u32(offset + 12),
                 }
             } else {
-                LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
+                LoadCommand::Unknown {
+                    cmd,
+                    cmdsize: cmdsize as u32,
+                }
             }
         }
         LC_DYLD_INFO | LC_DYLD_INFO_ONLY => {
@@ -801,10 +883,16 @@ fn parse_load_command(
                     export_size: read_u32(offset + 44),
                 }
             } else {
-                LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 }
+                LoadCommand::Unknown {
+                    cmd,
+                    cmdsize: cmdsize as u32,
+                }
             }
         }
-        _ => LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 },
+        _ => LoadCommand::Unknown {
+            cmd,
+            cmdsize: cmdsize as u32,
+        },
     }
 }
 
@@ -818,14 +906,28 @@ fn parse_segment(
 ) -> LoadCommand {
     let read_u32 = |off: usize| -> u32 {
         let bytes = [data[off], data[off + 1], data[off + 2], data[off + 3]];
-        if is_swapped { u32::from_be_bytes(bytes) } else { u32::from_le_bytes(bytes) }
+        if is_swapped {
+            u32::from_be_bytes(bytes)
+        } else {
+            u32::from_le_bytes(bytes)
+        }
     };
     let read_u64 = |off: usize| -> u64 {
         let bytes = [
-            data[off], data[off + 1], data[off + 2], data[off + 3],
-            data[off + 4], data[off + 5], data[off + 6], data[off + 7],
+            data[off],
+            data[off + 1],
+            data[off + 2],
+            data[off + 3],
+            data[off + 4],
+            data[off + 5],
+            data[off + 6],
+            data[off + 7],
         ];
-        if is_swapped { u64::from_be_bytes(bytes) } else { u64::from_le_bytes(bytes) }
+        if is_swapped {
+            u64::from_be_bytes(bytes)
+        } else {
+            u64::from_le_bytes(bytes)
+        }
     };
 
     let seg64 = cmd == LC_SEGMENT_64;
@@ -836,14 +938,20 @@ fn parse_segment(
     let name_bytes = if name_start < data.len() {
         &data[name_start..name_end]
     } else {
-        return LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 };
+        return LoadCommand::Unknown {
+            cmd,
+            cmdsize: cmdsize as u32,
+        };
     };
     let name = read_fixed_cstring(name_bytes);
 
     if seg64 {
         // 64-bit segment_command: 72 bytes header
         if offset + 72 > data.len() {
-            return LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 };
+            return LoadCommand::Unknown {
+                cmd,
+                cmdsize: cmdsize as u32,
+            };
         }
         let vmaddr = read_u64(offset + 24);
         let vmsize = read_u64(offset + 32);
@@ -861,7 +969,9 @@ fn parse_segment(
                 Some(v) => v,
                 None => break,
             };
-            if sect_off + 80 > data.len() { break; }
+            if sect_off + 80 > data.len() {
+                break;
+            }
             let sect_name = read_fixed_cstring(&data[sect_off..sect_off + 16]);
             let seg_name = read_fixed_cstring(&data[sect_off + 16..sect_off + 32]);
             let addr = read_u64(sect_off + 32);
@@ -893,7 +1003,10 @@ fn parse_segment(
     } else {
         // 32-bit segment_command: 56 bytes header
         if offset + 56 > data.len() {
-            return LoadCommand::Unknown { cmd, cmdsize: cmdsize as u32 };
+            return LoadCommand::Unknown {
+                cmd,
+                cmdsize: cmdsize as u32,
+            };
         }
         let vmaddr = read_u32(offset + 24) as u64;
         let vmsize = read_u32(offset + 28) as u64;
@@ -911,7 +1024,9 @@ fn parse_segment(
                 Some(v) => v,
                 None => break,
             };
-            if sect_off + 68 > data.len() { break; }
+            if sect_off + 68 > data.len() {
+                break;
+            }
             let sect_name = read_fixed_cstring(&data[sect_off..sect_off + 16]);
             let seg_name = read_fixed_cstring(&data[sect_off + 16..sect_off + 32]);
             let addr = read_u32(sect_off + 32) as u64;
@@ -946,7 +1061,12 @@ fn parse_segment(
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 fn read_u32_at(data: &[u8], offset: usize, is_swapped: bool) -> u32 {
-    let bytes = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
+    let bytes = [
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ];
     if is_swapped {
         u32::from_be_bytes(bytes)
     } else {
@@ -1020,7 +1140,9 @@ pub fn parse_fat_header(data: &[u8]) -> Result<Vec<FatArch>, MachoError> {
         // fat_arch_64: 32 bytes each
         for i in 0..nfat_arch as usize {
             let base = 8 + i * 32;
-            if base + 32 > data.len() { break; }
+            if base + 32 > data.len() {
+                break;
+            }
             archs.push(FatArch {
                 cpu_type: CpuType::from_raw(read_u32_at(data, base, is_swapped)),
                 cpu_subtype: read_u32_at(data, base + 4, is_swapped),
@@ -1033,7 +1155,9 @@ pub fn parse_fat_header(data: &[u8]) -> Result<Vec<FatArch>, MachoError> {
         // fat_arch: 20 bytes each
         for i in 0..nfat_arch as usize {
             let base = 8 + i * 20;
-            if base + 20 > data.len() { break; }
+            if base + 20 > data.len() {
+                break;
+            }
             archs.push(FatArch {
                 cpu_type: CpuType::from_raw(read_u32_at(data, base, is_swapped)),
                 cpu_subtype: read_u32_at(data, base + 4, is_swapped),
@@ -1064,7 +1188,10 @@ pub enum MachoObject<'a> {
 pub fn parse_any(data: &[u8]) -> Result<MachoObject<'_>, MachoError> {
     if data.len() >= 4 {
         let magic_be = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-        if matches!(magic_be, FAT_MAGIC | FAT_CIGAM | FAT_MAGIC_64 | FAT_CIGAM_64) {
+        if matches!(
+            magic_be,
+            FAT_MAGIC | FAT_CIGAM | FAT_MAGIC_64 | FAT_CIGAM_64
+        ) {
             return parse_fat_header(data).map(MachoObject::Fat);
         }
     }
@@ -1077,28 +1204,43 @@ mod tests {
 
     #[test]
     fn test_too_small() {
-        assert!(matches!(MachoFile::parse(&[0u8; 4]), Err(MachoError::TooSmall(_))));
+        assert!(matches!(
+            MachoFile::parse(&[0u8; 4]),
+            Err(MachoError::TooSmall(_))
+        ));
     }
 
     #[test]
     fn test_bad_magic() {
         let data = vec![0u8; 64];
-        assert!(matches!(MachoFile::parse(&data), Err(MachoError::BadMagic(_))));
+        assert!(matches!(
+            MachoFile::parse(&data),
+            Err(MachoError::BadMagic(_))
+        ));
     }
 
     #[test]
     fn test_valid_64bit_header() {
         let mut data = vec![0u8; 128];
         // MH_MAGIC_64 = 0xFEEDFACF (little-endian: CF FA ED FE)
-        data[0] = 0xCF; data[1] = 0xFA; data[2] = 0xED; data[3] = 0xFE;
+        data[0] = 0xCF;
+        data[1] = 0xFA;
+        data[2] = 0xED;
+        data[3] = 0xFE;
         // CPU_TYPE_X86_64 = 0x01000007 (LE: 07 00 00 01)
-        data[4] = 0x07; data[5] = 0x00; data[6] = 0x00; data[7] = 0x01;
+        data[4] = 0x07;
+        data[5] = 0x00;
+        data[6] = 0x00;
+        data[7] = 0x01;
         // file_type = MH_EXECUTE = 2
         data[12] = 0x02;
         // ncmds = 0
         data[16] = 0;
         // flags = MH_PIE
-        data[24] = 0x00; data[25] = 0x00; data[26] = 0x20; data[27] = 0x00;
+        data[24] = 0x00;
+        data[25] = 0x00;
+        data[26] = 0x20;
+        data[27] = 0x00;
 
         let macho = MachoFile::parse(&data).unwrap();
         assert_eq!(macho.cpu_type, CpuType::X86_64);
@@ -1118,19 +1260,40 @@ mod tests {
     fn test_fat_header() {
         let mut data = vec![0u8; 64];
         // FAT_MAGIC = 0xCAFEBABE (big-endian)
-        data[0] = 0xCA; data[1] = 0xFE; data[2] = 0xBA; data[3] = 0xBE;
+        data[0] = 0xCA;
+        data[1] = 0xFE;
+        data[2] = 0xBA;
+        data[3] = 0xBE;
         // nfat_arch = 1 (big-endian)
-        data[4] = 0; data[5] = 0; data[6] = 0; data[7] = 1;
+        data[4] = 0;
+        data[5] = 0;
+        data[6] = 0;
+        data[7] = 1;
         // fat_arch entry: cpu_type = CPU_TYPE_X86_64
-        data[8] = 0x01; data[9] = 0x00; data[10] = 0x00; data[11] = 0x07;
+        data[8] = 0x01;
+        data[9] = 0x00;
+        data[10] = 0x00;
+        data[11] = 0x07;
         // cpu_subtype = 3
-        data[12] = 0; data[13] = 0; data[14] = 0; data[15] = 3;
+        data[12] = 0;
+        data[13] = 0;
+        data[14] = 0;
+        data[15] = 3;
         // offset = 0x1000
-        data[16] = 0; data[17] = 0; data[18] = 0x10; data[19] = 0x00;
+        data[16] = 0;
+        data[17] = 0;
+        data[18] = 0x10;
+        data[19] = 0x00;
         // size = 0x2000
-        data[20] = 0; data[21] = 0; data[22] = 0x20; data[23] = 0x00;
+        data[20] = 0;
+        data[21] = 0;
+        data[22] = 0x20;
+        data[23] = 0x00;
         // align = 12 (2^12 = 4096)
-        data[24] = 0; data[25] = 0; data[26] = 0; data[27] = 12;
+        data[24] = 0;
+        data[25] = 0;
+        data[26] = 0;
+        data[27] = 12;
 
         let archs = parse_fat_header(&data).unwrap();
         assert_eq!(archs.len(), 1);
@@ -1143,9 +1306,15 @@ mod tests {
     fn test_rwx_segment_warning() {
         let mut data = vec![0u8; 256];
         // MH_MAGIC_64
-        data[0] = 0xCF; data[1] = 0xFA; data[2] = 0xED; data[3] = 0xFE;
+        data[0] = 0xCF;
+        data[1] = 0xFA;
+        data[2] = 0xED;
+        data[3] = 0xFE;
         // CPU_TYPE_ARM64
-        data[4] = 0x0C; data[5] = 0x00; data[6] = 0x00; data[7] = 0x01;
+        data[4] = 0x0C;
+        data[5] = 0x00;
+        data[6] = 0x00;
+        data[7] = 0x01;
         // MH_EXECUTE
         data[12] = 0x02;
         // ncmds = 1
@@ -1153,7 +1322,10 @@ mod tests {
         // sizeofcmds = 72 (one segment_64 with 0 sections)
         data[20] = 72;
         // flags = MH_PIE
-        data[24] = 0x00; data[25] = 0x00; data[26] = 0x20; data[27] = 0x00;
+        data[24] = 0x00;
+        data[25] = 0x00;
+        data[26] = 0x20;
+        data[27] = 0x00;
 
         // LC_SEGMENT_64 at offset 32
         let lc_off = 32;
@@ -1171,22 +1343,33 @@ mod tests {
         data[lc_off + 64] = 0;
 
         let macho = MachoFile::parse(&data).unwrap();
-        assert!(macho.warnings.iter().any(|w| w.kind == WarningKind::RwxSection));
+        assert!(macho
+            .warnings
+            .iter()
+            .any(|w| w.kind == WarningKind::RwxSection));
     }
 
     #[test]
     fn test_fat_cigam_header_little_endian_fields() {
         let mut data = vec![0u8; 64];
         // FAT_CIGAM on disk: fields are little-endian
-        data[0] = 0xBE; data[1] = 0xBA; data[2] = 0xFE; data[3] = 0xCA;
+        data[0] = 0xBE;
+        data[1] = 0xBA;
+        data[2] = 0xFE;
+        data[3] = 0xCA;
         // nfat_arch = 1 (little-endian)
         data[4] = 1;
         // fat_arch entry, all little-endian:
-        data[8] = 0x07; data[9] = 0x00; data[10] = 0x00; data[11] = 0x01;  // CPU_TYPE_X86_64
-        data[12] = 3;                                                       // cpu_subtype = 3
-        data[16] = 0x00; data[17] = 0x10;                                   // offset = 0x1000
-        data[20] = 0x00; data[21] = 0x20;                                   // size = 0x2000
-        data[24] = 12;                                                      // align = 12
+        data[8] = 0x07;
+        data[9] = 0x00;
+        data[10] = 0x00;
+        data[11] = 0x01; // CPU_TYPE_X86_64
+        data[12] = 3; // cpu_subtype = 3
+        data[16] = 0x00;
+        data[17] = 0x10; // offset = 0x1000
+        data[20] = 0x00;
+        data[21] = 0x20; // size = 0x2000
+        data[24] = 12; // align = 12
 
         let archs = parse_fat_header(&data).unwrap();
         assert_eq!(archs.len(), 1);
@@ -1201,14 +1384,22 @@ mod tests {
     fn test_fat_cigam_64_header_little_endian_fields() {
         let mut data = vec![0u8; 64];
         // FAT_CIGAM_64 on disk: fields are little-endian
-        data[0] = 0xBF; data[1] = 0xBA; data[2] = 0xBA; data[3] = 0xFE;
+        data[0] = 0xBF;
+        data[1] = 0xBA;
+        data[2] = 0xBA;
+        data[3] = 0xFE;
         // nfat_arch = 1 (little-endian)
         data[4] = 1;
         // fat_arch_64 entry (32 bytes), all little-endian:
-        data[8] = 0x0C; data[9] = 0x00; data[10] = 0x00; data[11] = 0x01;   // CPU_TYPE_ARM64
-        data[16] = 0x00; data[17] = 0x10;                                   // offset = 0x1000
-        data[24] = 0x00; data[25] = 0x20;                                   // size = 0x2000
-        data[32] = 12;                                                      // align = 12
+        data[8] = 0x0C;
+        data[9] = 0x00;
+        data[10] = 0x00;
+        data[11] = 0x01; // CPU_TYPE_ARM64
+        data[16] = 0x00;
+        data[17] = 0x10; // offset = 0x1000
+        data[24] = 0x00;
+        data[25] = 0x20; // size = 0x2000
+        data[32] = 12; // align = 12
 
         let archs = parse_fat_header(&data).unwrap();
         assert_eq!(archs.len(), 1);
@@ -1223,11 +1414,17 @@ mod tests {
         const N: usize = 9; // 36 overlapping pairs > MAX_OVERLAP_WARNINGS
         let mut data = vec![0u8; 4096];
         // MH_MAGIC_64, CPU_TYPE_X86_64, MH_EXECUTE
-        data[0] = 0xCF; data[1] = 0xFA; data[2] = 0xED; data[3] = 0xFE;
-        data[4] = 0x07; data[5] = 0x00; data[6] = 0x00; data[7] = 0x01;
+        data[0] = 0xCF;
+        data[1] = 0xFA;
+        data[2] = 0xED;
+        data[3] = 0xFE;
+        data[4] = 0x07;
+        data[5] = 0x00;
+        data[6] = 0x00;
+        data[7] = 0x01;
         data[12] = 0x02;
         data[16..20].copy_from_slice(&(N as u32).to_le_bytes()); // ncmds
-        data[24..28].copy_from_slice(&MH_PIE.to_le_bytes());     // flags
+        data[24..28].copy_from_slice(&MH_PIE.to_le_bytes()); // flags
 
         for i in 0..N {
             let lc = 32 + i * 72;
@@ -1243,12 +1440,12 @@ mod tests {
         }
 
         let macho = MachoFile::parse(&data).unwrap();
-        let overlaps = macho.warnings.iter()
+        let overlaps = macho
+            .warnings
+            .iter()
             .filter(|w| w.kind == WarningKind::OverlappingSegments)
             .count();
         assert!(overlaps > 0);
         assert!(overlaps <= MAX_OVERLAP_WARNINGS);
     }
 }
-
-

@@ -24,22 +24,25 @@
 //! entry carries at least 8 bytes / 4 fixed bytes to keep false positives
 //! near zero on real code.
 //!
-//! The machine-harvested `db/generated.fsig` (~180k Windows-API patterns
-//! from `tools/fsig-gen`) is deliberately NOT embedded — a 27 MB blob
-//! inside binaries trips antivirus heuristics — and loads at runtime via
-//! [`db::load_overlay_file`] / [`db::auto_load_overlay`]. Applications
+//! The machine-harvested `db/generated-*.fsig` (~1.5M Windows-API patterns
+//! from `tools/fsig-gen`: entry prefixes plus interior anchors) is
+//! deliberately NOT embedded — a ~230 MB blob inside binaries trips
+//! antivirus heuristics — and loads at runtime via
+//! [`db::load_overlay_dir`] / [`db::auto_load_overlay`]. Applications
 //! should call `auto_load_overlay()` once at startup; matching transparently
 //! covers both databases afterwards.
 
 pub mod db;
+pub mod fdb;
 
 use serde::Serialize;
 use std::collections::HashMap;
 
 pub use db::{
     auto_load_overlay, db_entries, db_libraries, db_load_errors, db_signature_count,
-    find_overlay_file, load_overlay_file, load_overlay_text, overlay_signature_count, resolve_hit,
-    validation_fills,
+    find_overlay_dir, load_overlay_dir, load_overlay_file, load_overlay_text,
+    overlay_memory_stats, overlay_signature_count, resolve_hit, resolve_metadata,
+    scan_db_for_arch, validation_fills, DbMemoryStats,
 };
 
 // ─── Types ────────────────────────────────────────────────────────────
@@ -68,6 +71,10 @@ pub struct SignatureMatch {
     pub signature: FunctionSignature,
     /// Confidence score [0.0 – 1.0].
     pub confidence: f64,
+    pub semantic_role: &'static str,
+    pub calling_convention: &'static str,
+    pub sources: Vec<&'static str>,
+    pub sinks: Vec<&'static str>,
 }
 
 impl std::fmt::Display for SignatureMatch {
@@ -103,6 +110,19 @@ pub struct SignatureScanResult {
     pub compiler_info: Option<CompilerInfo>,
     /// Libraries identified in the binary.
     pub libraries_found: Vec<String>,
+}
+
+impl SignatureScanResult {
+    /// Return semantic source/sink tags collected from PE signatures. This is
+    /// intentionally separate from `libraries_found`: a library name is not
+    /// evidence of behavior, while an explicit signature tag is.
+    pub fn semantic_sources(&self) -> Vec<&'static str> {
+        self.matches.iter().flat_map(|m| m.sources.iter().copied()).collect()
+    }
+
+    pub fn semantic_sinks(&self) -> Vec<&'static str> {
+        self.matches.iter().flat_map(|m| m.sinks.iter().copied()).collect()
+    }
 }
 
 // ─── CRC32 Implementation (no external deps) ────────────────────────
@@ -167,7 +187,6 @@ const SIGNATURES: &[FunctionSignature] = &[
         function_name: "_free",
         min_func_len: 32,
     },
-
     // ─── MSVC CRT (x64) ─────────────────────────────────────────────
     FunctionSignature {
         crc32: 0x705D5233, // sub rsp,0x38; mov rax,[rip]; xor rax,rsp
@@ -176,7 +195,6 @@ const SIGNATURES: &[FunctionSignature] = &[
         function_name: "mainCRTStartup_x64",
         min_func_len: 48,
     },
-
     // ─── GCC / MinGW (x86) ───────────────────────────────────────────
     FunctionSignature {
         crc32: 0x127C37BF, // push ebp; mov ebp,esp; sub esp,0x18; mov dword [esp],1; call
@@ -185,7 +203,6 @@ const SIGNATURES: &[FunctionSignature] = &[
         function_name: "__mingw_CRTStartup",
         min_func_len: 48,
     },
-
     // ─── MinGW (x64) ────────────────────────────────────────────────
     FunctionSignature {
         crc32: 0x7B81C2EE, // sub rsp,0x28; mov dword [rsp+0x20],1; call
@@ -194,7 +211,6 @@ const SIGNATURES: &[FunctionSignature] = &[
         function_name: "__mingw_CRTStartup_x64",
         min_func_len: 32,
     },
-
     // ─── OpenSSL (x86) ──────────────────────────────────────────────
     FunctionSignature {
         crc32: 0xAAF13C2E, // push ebp; push edi; push esi; push ebx; sub esp,0x3c
@@ -210,7 +226,6 @@ const SIGNATURES: &[FunctionSignature] = &[
         function_name: "SSL_connect",
         min_func_len: 96,
     },
-
     // ─── zlib (x86) ─────────────────────────────────────────────────
     FunctionSignature {
         crc32: 0xA81E6706, // push ebp; mov ebp,esp; sub esp,0x28; mov [ebp-0x0c],ebx
@@ -226,7 +241,6 @@ const SIGNATURES: &[FunctionSignature] = &[
         function_name: "deflate",
         min_func_len: 128,
     },
-
     // ─── libcurl (x86) ──────────────────────────────────────────────
     FunctionSignature {
         crc32: 0x8B8A817A, // push ebp; mov ebp,esp; push ebx; sub esp,0x14; call; call
@@ -351,8 +365,24 @@ impl Default for SigScanConfig {
 }
 
 /// Scan a code region for known function signatures.
-pub fn scan_signatures(code: &[u8], base_offset: usize, config: &SigScanConfig) -> SignatureScanResult {
-    scan_signatures_with(code, base_offset, config, SIGNATURES)
+pub fn scan_signatures(
+    code: &[u8],
+    base_offset: usize,
+    config: &SigScanConfig,
+) -> SignatureScanResult {
+    scan_signatures_with_arch(code, base_offset, config, SIGNATURES, None)
+}
+
+/// Scan signatures while restricting the masked database to `arch`.
+/// Legacy CRC signatures remain available because they predate architecture
+/// metadata; callers should use this API when scanning a known PE machine.
+pub fn scan_signatures_for_arch(
+    code: &[u8],
+    base_offset: usize,
+    config: &SigScanConfig,
+    arch: &str,
+) -> SignatureScanResult {
+    scan_signatures_with_arch(code, base_offset, config, SIGNATURES, Some(arch))
 }
 
 fn scan_signatures_with(
@@ -360,6 +390,16 @@ fn scan_signatures_with(
     base_offset: usize,
     config: &SigScanConfig,
     signatures: &[FunctionSignature],
+) -> SignatureScanResult {
+    scan_signatures_with_arch(code, base_offset, config, signatures, None)
+}
+
+fn scan_signatures_with_arch(
+    code: &[u8],
+    base_offset: usize,
+    config: &SigScanConfig,
+    signatures: &[FunctionSignature],
+    arch: Option<&str>,
 ) -> SignatureScanResult {
     let mut matches = Vec::new();
     let mut libraries_found: Vec<String> = Vec::new();
@@ -372,8 +412,19 @@ fn scan_signatures_with(
     // `step` keeps its meaning; hits convert to SignatureMatch with the
     // entry's own confidence.
     if !code.is_empty() {
-        for hit in db::scan_db(code, base_offset, step, config.max_matches.saturating_sub(matches.len())) {
-            let (library, name, pattern_len, min_len, confidence) = db::resolve_hit(&hit);
+        // Family database phase first: tiny table, exhaustive scan, and the
+        // dedicated engine reports malware-family hits in addition to
+        // library-level matches from the main overlay below.
+        for hit in db::scan_families_for_arch(
+            code,
+            base_offset,
+            config.max_matches.saturating_sub(matches.len()),
+            arch,
+        ) {
+            let (library, name, pattern_len, min_len, confidence) =
+                db::resolve_family_hit(&hit);
+            let (semantic_role, calling_convention, sources, sinks) =
+                db::resolve_family_metadata(&hit);
             let remaining = code.len() - (hit.offset - base_offset);
             if remaining >= min_len {
                 matches.push(SignatureMatch {
@@ -386,6 +437,45 @@ fn scan_signatures_with(
                         min_func_len: min_len,
                     },
                     confidence,
+                    semantic_role,
+                    calling_convention,
+                    sources,
+                    sinks,
+                });
+                if !libraries_found.contains(&library.to_string()) {
+                    libraries_found.push(library.to_string());
+                }
+            }
+            if matches.len() >= config.max_matches {
+                break;
+            }
+        }
+
+        for hit in db::scan_db_for_arch(
+            code,
+            base_offset,
+            step,
+            config.max_matches.saturating_sub(matches.len()),
+            arch,
+        ) {
+            let (library, name, pattern_len, min_len, confidence) = db::resolve_hit(&hit);
+            let (semantic_role, calling_convention, sources, sinks) = db::resolve_metadata(&hit);
+            let remaining = code.len() - (hit.offset - base_offset);
+            if remaining >= min_len {
+                matches.push(SignatureMatch {
+                    offset: hit.offset,
+                    signature: FunctionSignature {
+                        crc32: 0,
+                        pattern_len,
+                        library,
+                        function_name: name,
+                        min_func_len: min_len,
+                    },
+                    confidence,
+                    semantic_role,
+                    calling_convention,
+                    sources,
+                    sinks,
                 });
                 if !libraries_found.contains(&library.to_string()) {
                     libraries_found.push(library.to_string());
@@ -419,6 +509,10 @@ fn scan_signatures_with(
                         offset: base_offset + offset,
                         signature: sig.clone(),
                         confidence: 0.85, // Base confidence; could be refined
+                        semantic_role: "",
+                        calling_convention: "",
+                        sources: Vec::new(),
+                        sinks: Vec::new(),
                     });
 
                     if !libraries_found.contains(&sig.library.to_string()) {
@@ -575,7 +669,11 @@ mod tests {
             min_func_len: usize::MAX,
         };
 
-        let config = SigScanConfig { step: 1, max_matches: 100, detect_compiler: false };
+        let config = SigScanConfig {
+            step: 1,
+            max_matches: 100,
+            detect_compiler: false,
+        };
         let result = scan_signatures_with(&code, 0x1000, &config, &[short_sig, long_dummy]);
 
         assert_eq!(result.matches.len(), 1, "tail-window match was missed");
@@ -588,7 +686,11 @@ mod tests {
         // step == 0 previously made the slide loop spin forever when no match
         // ever fired; it must be clamped so the scan terminates.
         let code = vec![0x90u8; 64];
-        let config = SigScanConfig { step: 0, max_matches: 100, detect_compiler: false };
+        let config = SigScanConfig {
+            step: 0,
+            max_matches: 100,
+            detect_compiler: false,
+        };
         let result = scan_signatures(&code, 0, &config);
         assert!(result.matches.is_empty());
     }
@@ -624,5 +726,3 @@ mod tests {
         assert_eq!(libs.len(), unique.len());
     }
 }
-
-

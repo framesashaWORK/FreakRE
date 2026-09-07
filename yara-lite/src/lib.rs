@@ -42,6 +42,4 @@ pub mod scanner;
 // Re-exports for convenience
 pub use compiler::{compile_rule, CompiledRule};
 pub use parser::{parse_rule, parse_rules};
-pub use scanner::{Match, MAX_COLLECTED_MATCHES, ScanResult, Scanner};
-
-
+pub use scanner::{Match, ScanResult, Scanner, MAX_COLLECTED_MATCHES};

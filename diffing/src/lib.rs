@@ -44,11 +44,11 @@
 
 mod callgraph;
 
-use project_db::{ProjectDatabase, FunctionEntry};
-use thiserror::Error;
+use project_db::{FunctionEntry, ProjectDatabase};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
+use thiserror::Error;
 
 use crate::callgraph::CallGraph;
 
@@ -97,7 +97,7 @@ pub struct FunctionMatch {
     pub address_b: u64,
     pub name_a: String,
     pub name_b: String,
-    pub similarity: f64,  // 0.0 - 1.0
+    pub similarity: f64, // 0.0 - 1.0
     pub match_type: MatchType,
     pub details: MatchDetails,
 }
@@ -274,10 +274,16 @@ impl BinaryDiffer {
     /// phase sees callee-less graphs here; use [`BinaryDiffer::diff_functions`]
     /// with populated [`DiffFunction::callees`] to enable structural matching.
     pub fn diff(&self, db_a: &ProjectDatabase, db_b: &ProjectDatabase) -> Result<DiffResult> {
-        let funcs_a: Vec<DiffFunction> =
-            db_a.list_functions()?.iter().map(DiffFunction::from).collect();
-        let funcs_b: Vec<DiffFunction> =
-            db_b.list_functions()?.iter().map(DiffFunction::from).collect();
+        let funcs_a: Vec<DiffFunction> = db_a
+            .list_functions()?
+            .iter()
+            .map(DiffFunction::from)
+            .collect();
+        let funcs_b: Vec<DiffFunction> = db_b
+            .list_functions()?
+            .iter()
+            .map(DiffFunction::from)
+            .collect();
         self.diff_functions(&funcs_a, &funcs_b)
     }
 
@@ -323,10 +329,12 @@ impl BinaryDiffer {
 
         // Phase 2: Size-based matching (for unmatched functions)
         if self.use_size_matching {
-            let unmatched_a: Vec<_> = funcs_a.iter()
+            let unmatched_a: Vec<_> = funcs_a
+                .iter()
                 .filter(|f| !matched_a.contains(&f.address))
                 .collect();
-            let unmatched_b: Vec<_> = funcs_b.iter()
+            let unmatched_b: Vec<_> = funcs_b
+                .iter()
                 .filter(|f| !matched_b.contains(&f.address))
                 .collect();
 
@@ -342,10 +350,12 @@ impl BinaryDiffer {
 
         // Phase 3: Mnemonic-based matching
         if self.use_mnemonic_matching {
-            let unmatched_a: Vec<_> = funcs_a.iter()
+            let unmatched_a: Vec<_> = funcs_a
+                .iter()
                 .filter(|f| !matched_a.contains(&f.address))
                 .collect();
-            let unmatched_b: Vec<_> = funcs_b.iter()
+            let unmatched_b: Vec<_> = funcs_b
+                .iter()
                 .filter(|f| !matched_b.contains(&f.address))
                 .collect();
 
@@ -390,21 +400,15 @@ impl BinaryDiffer {
                 .collect();
 
             self.match_by_structure(
-                &funcs_a,
-                &funcs_b,
-                &cg_a,
-                &cg_b,
-                &matched_a,
-                &matched_b,
-                &pinned,
-                deadline,
+                &funcs_a, &funcs_b, &cg_a, &cg_b, &matched_a, &matched_b, &pinned, deadline,
             )?
         } else {
             Vec::new()
         };
 
         // Collect unmatched functions
-        let unmatched_a: Vec<_> = funcs_a.iter()
+        let unmatched_a: Vec<_> = funcs_a
+            .iter()
             .filter(|f| !matched_a.contains(&f.address))
             .map(|f| UnmatchedFunction {
                 address: f.address,
@@ -414,7 +418,8 @@ impl BinaryDiffer {
             })
             .collect();
 
-        let unmatched_b: Vec<_> = funcs_b.iter()
+        let unmatched_b: Vec<_> = funcs_b
+            .iter()
             .filter(|f| !matched_b.contains(&f.address))
             .map(|f| UnmatchedFunction {
                 address: f.address,
@@ -428,7 +433,8 @@ impl BinaryDiffer {
         // averages and perfect-match counts below: equal-size functions are
         // frequently unrelated, so their similarity is weak evidence and
         // must not inflate confidence stats.
-        let confidently_scored: Vec<_> = matches.iter()
+        let confidently_scored: Vec<_> = matches
+            .iter()
             .filter(|m| m.match_type != MatchType::SizeMatch)
             .collect();
         let avg_similarity = if confidently_scored.is_empty() {
@@ -438,7 +444,8 @@ impl BinaryDiffer {
                 / confidently_scored.len() as f64
         };
 
-        let perfect_matches = matches.iter()
+        let perfect_matches = matches
+            .iter()
             .filter(|m| m.similarity >= 0.99 && m.match_type != MatchType::SizeMatch)
             .count();
 
@@ -476,7 +483,11 @@ impl BinaryDiffer {
     /// (ties broken by lowest B then A address), so duplicate names on
     /// either side resolve deterministically instead of first-come or
     /// last-write-wins.
-    fn match_by_name(&self, funcs_a: &[DiffFunction], funcs_b: &[DiffFunction]) -> Vec<FunctionMatch> {
+    fn match_by_name(
+        &self,
+        funcs_a: &[DiffFunction],
+        funcs_b: &[DiffFunction],
+    ) -> Vec<FunctionMatch> {
         let mut b_by_name: HashMap<&str, Vec<&DiffFunction>> = HashMap::new();
 
         for f in funcs_b {
@@ -491,9 +502,7 @@ impl BinaryDiffer {
                 }
             }
         }
-        pairs.sort_by_key(|(size_dist, addr_b, addr_a, _, _)| {
-            (*size_dist, *addr_b, *addr_a)
-        });
+        pairs.sort_by_key(|(size_dist, addr_b, addr_a, _, _)| (*size_dist, *addr_b, *addr_a));
 
         let mut used_a: HashSet<u64> = HashSet::new();
         let mut used_b: HashSet<u64> = HashSet::new();
@@ -548,9 +557,10 @@ impl BinaryDiffer {
 
                 let similarity = self.size_similarity(fa.size, fb.size);
                 if similarity >= self.similarity_threshold
-                    && best_match.map(|(_, s)| similarity > s).unwrap_or(true) {
-                        best_match = Some((fb, similarity));
-                    }
+                    && best_match.map(|(_, s)| similarity > s).unwrap_or(true)
+                {
+                    best_match = Some((fb, similarity));
+                }
             }
 
             if let Some((fb, similarity)) = best_match {
@@ -623,32 +633,23 @@ impl BinaryDiffer {
 
                 let (combined, mnemonic_score, matched_i, total_a, total_b) =
                     if let Some((a, b)) = pair {
-                        let (matched_i, mnemonic_score) =
-                            Self::mnemonic_overlap(a, b);
-                        let combined =
-                            mnemonic_score * 0.5 + size_sim * 0.3 + name_sim * 0.2;
+                        let (matched_i, mnemonic_score) = Self::mnemonic_overlap(a, b);
+                        let combined = mnemonic_score * 0.5 + size_sim * 0.3 + name_sim * 0.2;
                         (combined, mnemonic_score, matched_i, a.len(), b.len())
                     } else {
-                        (
-                            size_sim * 0.7 + name_sim * 0.3,
-                            0.0,
-                            0,
-                            0,
-                            0,
-                        )
+                        (size_sim * 0.7 + name_sim * 0.3, 0.0, 0, 0, 0)
                     };
 
                 if combined >= self.similarity_threshold
                     && best_match
                         .map(|(_, s, _, _, _, _)| combined > s)
                         .unwrap_or(true)
-                    {
-                        best_match = Some((fb, combined, mnemonic_score, matched_i, total_a, total_b));
-                    }
+                {
+                    best_match = Some((fb, combined, mnemonic_score, matched_i, total_a, total_b));
+                }
             }
 
-            if let Some((fb, similarity, mnemonic_score, matched_i, total_a, total_b)) =
-                best_match
+            if let Some((fb, similarity, mnemonic_score, matched_i, total_a, total_b)) = best_match
             {
                 matched_b.insert(fb.address);
                 let has_mnemonic_data = matches!(
@@ -722,8 +723,7 @@ impl BinaryDiffer {
                     // pinned agreements are anchors.
                     let content = self.size_similarity(fa.size, fb.size)
                         * STRUCTURAL_CONTENT_SIZE_WEIGHT
-                        + self.name_similarity(&fa.name, &fb.name)
-                            * STRUCTURAL_CONTENT_NAME_WEIGHT;
+                        + self.name_similarity(&fa.name, &fb.name) * STRUCTURAL_CONTENT_NAME_WEIGHT;
                     content * STRUCTURAL_PRIOR_DAMPING
                 };
             }
@@ -738,11 +738,8 @@ impl BinaryDiffer {
                     next[i][j] = if let Some(s) = pinned.get(&(i, j)) {
                         *s
                     } else {
-                        let neighbor_term = Self::neighbor_affinity(
-                            &sim,
-                            &cg_a.neighbors[i],
-                            &cg_b.neighbors[j],
-                        );
+                        let neighbor_term =
+                            Self::neighbor_affinity(&sim, &cg_a.neighbors[i], &cg_b.neighbors[j]);
                         (1.0 - STRUCTURAL_NEIGHBOR_WEIGHT) * sim[i][j]
                             + STRUCTURAL_NEIGHBOR_WEIGHT * neighbor_term
                     };
@@ -832,7 +829,10 @@ impl BinaryDiffer {
             total += s.min(1.0);
         }
 
-        let denom = ni.len().max(nj.len()).clamp(1, MAX_NEIGHBOR_PAIRS_PER_COMPARISON);
+        let denom = ni
+            .len()
+            .max(nj.len())
+            .clamp(1, MAX_NEIGHBOR_PAIRS_PER_COMPARISON);
         (total / denom as f64).clamp(0.0, 1.0)
     }
 
@@ -953,7 +953,7 @@ impl BinaryDiffer {
 
         let len_a = name_a.len();
         let len_b = name_b.len();
-        
+
         if len_a == 0 || len_b == 0 {
             return 0.0;
         }
@@ -1033,17 +1033,36 @@ pub fn generate_report(result: &DiffResult) -> String {
     let mut report = String::new();
 
     report.push_str("=== Binary Diff Report ===\n\n");
-    
-    report.push_str(&format!("Binary A: {} functions\n", result.stats.total_functions_a));
-    report.push_str(&format!("Binary B: {} functions\n", result.stats.total_functions_b));
-    report.push_str(&format!("Matched: {} ({:.1}%)\n", 
+
+    report.push_str(&format!(
+        "Binary A: {} functions\n",
+        result.stats.total_functions_a
+    ));
+    report.push_str(&format!(
+        "Binary B: {} functions\n",
+        result.stats.total_functions_b
+    ));
+    report.push_str(&format!(
+        "Matched: {} ({:.1}%)\n",
         result.stats.matched_count,
         result.stats.matched_count as f64 / result.stats.total_functions_a.max(1) as f64 * 100.0
     ));
-    report.push_str(&format!("Unmatched in A: {}\n", result.stats.unmatched_a_count));
-    report.push_str(&format!("Unmatched in B: {}\n", result.stats.unmatched_b_count));
-    report.push_str(&format!("Average similarity: {:.1}%\n", result.stats.average_similarity * 100.0));
-    report.push_str(&format!("Perfect matches: {}\n", result.stats.perfect_matches));
+    report.push_str(&format!(
+        "Unmatched in A: {}\n",
+        result.stats.unmatched_a_count
+    ));
+    report.push_str(&format!(
+        "Unmatched in B: {}\n",
+        result.stats.unmatched_b_count
+    ));
+    report.push_str(&format!(
+        "Average similarity: {:.1}%\n",
+        result.stats.average_similarity * 100.0
+    ));
+    report.push_str(&format!(
+        "Perfect matches: {}\n",
+        result.stats.perfect_matches
+    ));
     report.push_str(&format!(
         "Structural (topology) matches: {} (avg {:.1}%)\n\n",
         result.stats.matched_by_structure,
@@ -1054,8 +1073,10 @@ pub fn generate_report(result: &DiffResult) -> String {
     for m in &result.matches {
         report.push_str(&format!(
             "  0x{:X} ({}) <-> 0x{:X} ({}) [{:.1}%] ({:?})\n",
-            m.address_a, m.name_a,
-            m.address_b, m.name_b,
+            m.address_a,
+            m.name_a,
+            m.address_b,
+            m.name_b,
             m.similarity * 100.0,
             m.match_type
         ));
@@ -1066,8 +1087,10 @@ pub fn generate_report(result: &DiffResult) -> String {
         for m in &result.structural_matches {
             report.push_str(&format!(
                 "  0x{:X} ({}) <-> 0x{:X} ({}) [{:.1}%]\n",
-                m.address_a, m.name_a,
-                m.address_b, m.name_b,
+                m.address_a,
+                m.name_a,
+                m.address_b,
+                m.name_b,
                 m.similarity * 100.0
             ));
         }
@@ -1076,14 +1099,20 @@ pub fn generate_report(result: &DiffResult) -> String {
     if !result.unmatched_a.is_empty() {
         report.push_str("\n=== Unmatched in Binary A ===\n");
         for f in &result.unmatched_a {
-            report.push_str(&format!("  0x{:X} {} ({} bytes)\n", f.address, f.name, f.size));
+            report.push_str(&format!(
+                "  0x{:X} {} ({} bytes)\n",
+                f.address, f.name, f.size
+            ));
         }
     }
 
     if !result.unmatched_b.is_empty() {
         report.push_str("\n=== Unmatched in Binary B ===\n");
         for f in &result.unmatched_b {
-            report.push_str(&format!("  0x{:X} {} ({} bytes)\n", f.address, f.name, f.size));
+            report.push_str(&format!(
+                "  0x{:X} {} ({} bytes)\n",
+                f.address, f.name, f.size
+            ));
         }
     }
 
@@ -1251,7 +1280,9 @@ mod tests {
             .disable_mnemonic_matching();
         let result = differ.diff(&db_a, &db_b).unwrap();
 
-        let name_matches: Vec<_> = result.matches.iter()
+        let name_matches: Vec<_> = result
+            .matches
+            .iter()
             .filter(|m| m.match_type == MatchType::NameMatch)
             .collect();
         assert_eq!(name_matches.len(), 1);
@@ -1281,7 +1312,9 @@ mod tests {
             .disable_mnemonic_matching();
         let result = differ.diff(&db_a, &db_b).unwrap();
 
-        let name_matches: Vec<_> = result.matches.iter()
+        let name_matches: Vec<_> = result
+            .matches
+            .iter()
             .filter(|m| m.match_type == MatchType::NameMatch)
             .collect();
         assert_eq!(name_matches.len(), 1);
@@ -1465,11 +1498,10 @@ mod tests {
         // All names are distinct across sides, so no content phase can
         // pre-match anything; the bounded timeout proves termination of the
         // fixed-round refinement on a cyclic, high-fan-out graph.
-        let differ =
-            BinaryDiffer::new()
-                .disable_size_matching()
-                .disable_mnemonic_matching()
-                .with_timeout(Duration::from_secs(30));
+        let differ = BinaryDiffer::new()
+            .disable_size_matching()
+            .disable_mnemonic_matching()
+            .with_timeout(Duration::from_secs(30));
 
         let first = differ.diff_functions(&funcs_a, &funcs_b).unwrap();
         let second = differ.diff_functions(&funcs_a, &funcs_b).unwrap();
@@ -1562,5 +1594,3 @@ mod tests {
         assert_eq!(legacy.callees, None);
     }
 }
-
-

@@ -15,6 +15,10 @@ pub struct AppSettings {
     pub output_panel_height: f32,
     pub recent_files: Vec<String>,
     pub max_recent_files: usize,
+    #[serde(default)]
+    pub suppressed_rules: Vec<String>,
+    #[serde(default)]
+    pub baseline_hashes: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -28,6 +32,8 @@ impl Default for AppSettings {
             output_panel_height: 150.0,
             recent_files: Vec::new(),
             max_recent_files: 20,
+            suppressed_rules: Vec::new(),
+            baseline_hashes: Vec::new(),
         }
     }
 }
@@ -77,13 +83,13 @@ impl AppSettings {
 #[derive(Debug, Clone)]
 pub struct ThemeColors {
     // Backgrounds
-    pub bg_main: egui::Color32,       // #1e1e1e — editor/disasm area
-    pub bg_panel: egui::Color32,      // #252526 — side panels, toolbars
-    pub bg_frame: egui::Color32,      // #2d2d2d — input fields, frames
-    pub bg_hover: egui::Color32,      // #3e3e40 — hover state
-    pub bg_selection: egui::Color32,  // #264f78 — selection highlight
-    pub bg_statusbar: egui::Color32,  // #007acc — status bar (IDA blue)
-    pub bg_tab_active: egui::Color32, // #1e1e1e — active tab matches editor
+    pub bg_main: egui::Color32,         // #1e1e1e — editor/disasm area
+    pub bg_panel: egui::Color32,        // #252526 — side panels, toolbars
+    pub bg_frame: egui::Color32,        // #2d2d2d — input fields, frames
+    pub bg_hover: egui::Color32,        // #3e3e40 — hover state
+    pub bg_selection: egui::Color32,    // #264f78 — selection highlight
+    pub bg_statusbar: egui::Color32,    // #007acc — status bar (IDA blue)
+    pub bg_tab_active: egui::Color32,   // #1e1e1e — active tab matches editor
     pub bg_tab_inactive: egui::Color32, // #2d2d2d — inactive tab
 
     // Text
@@ -92,65 +98,65 @@ pub struct ThemeColors {
     pub text_white: egui::Color32,     // #ffffff — emphasis
 
     // Disassembly token colors (IDA-style)
-    pub addr_color: egui::Color32,     // #dcdcaa — addresses (yellow-ish)
+    pub addr_color: egui::Color32, // #dcdcaa — addresses (yellow-ish)
     pub mnemonic_color: egui::Color32, // #569cd6 — instructions (blue)
-    pub operand_color: egui::Color32,  // #9cdcfe — registers/operands (light blue)
-    pub string_color: egui::Color32,   // #ce9178 — string literals (orange)
-    pub comment_color: egui::Color32,  // #6a9955 — comments (green)
-    pub type_color: egui::Color32,     // #c586c0 — types/keywords (purple)
-    pub func_color: egui::Color32,     // #4ec9b0 — function names (teal)
-    pub number_color: egui::Color32,   // #b5cea8 — numeric constants (light green)
-    pub label_color: egui::Color32,    // #d7ba7d — labels (gold)
+    pub operand_color: egui::Color32, // #9cdcfe — registers/operands (light blue)
+    pub string_color: egui::Color32, // #ce9178 — string literals (orange)
+    pub comment_color: egui::Color32, // #6a9955 — comments (green)
+    pub type_color: egui::Color32, // #c586c0 — types/keywords (purple)
+    pub func_color: egui::Color32, // #4ec9b0 — function names (teal)
+    pub number_color: egui::Color32, // #b5cea8 — numeric constants (light green)
+    pub label_color: egui::Color32, // #d7ba7d — labels (gold)
 
     // Severity / verdict
-    pub danger: egui::Color32,  // #f44747
-    pub warn: egui::Color32,    // #cca700
-    pub safe: egui::Color32,    // #4caf50
-    pub info: egui::Color32,    // #3794ff
+    pub danger: egui::Color32, // #f44747
+    pub warn: egui::Color32,   // #cca700
+    pub safe: egui::Color32,   // #4caf50
+    pub info: egui::Color32,   // #3794ff
 
     // Borders & misc
-    pub border: egui::Color32,         // #3e3e40 — thin panel borders
-    pub border_light: egui::Color32,   // #4e4e50 — lighter separator
-    pub scrollbar_bg: egui::Color32,   // #1e1e1e
-    pub scrollbar_fg: egui::Color32,   // #424242
+    pub border: egui::Color32,       // #3e3e40 — thin panel borders
+    pub border_light: egui::Color32, // #4e4e50 — lighter separator
+    pub scrollbar_bg: egui::Color32, // #1e1e1e
+    pub scrollbar_fg: egui::Color32, // #424242
 }
 
 impl ThemeColors {
     /// Single IDA Pro dark theme. No variants.
     pub fn ida_dark() -> Self {
         Self {
-            bg_main:          egui::Color32::from_rgb(30, 30, 30),
-            bg_panel:         egui::Color32::from_rgb(37, 37, 38),
-            bg_frame:         egui::Color32::from_rgb(45, 45, 45),
-            bg_hover:         egui::Color32::from_rgb(62, 62, 64),
-            bg_selection:     egui::Color32::from_rgb(38, 79, 120),
-            bg_statusbar:     egui::Color32::from_rgb(0, 122, 204),
-            bg_tab_active:    egui::Color32::from_rgb(30, 30, 30),
-            bg_tab_inactive:  egui::Color32::from_rgb(45, 45, 45),
+            bg_main: egui::Color32::from_rgb(30, 30, 30),
+            bg_panel: egui::Color32::from_rgb(37, 37, 38),
+            bg_frame: egui::Color32::from_rgb(45, 45, 45),
+            bg_hover: egui::Color32::from_rgb(62, 62, 64),
+            bg_selection: egui::Color32::from_rgb(38, 79, 120),
+            bg_statusbar: egui::Color32::from_rgb(0, 122, 204),
+            bg_tab_active: egui::Color32::from_rgb(30, 30, 30),
+            bg_tab_inactive: egui::Color32::from_rgb(45, 45, 45),
 
-            text_primary:     egui::Color32::from_rgb(204, 204, 204),
-            text_secondary:   egui::Color32::from_rgb(133, 133, 133),
-            text_white:       egui::Color32::WHITE,
+            text_primary: egui::Color32::from_rgb(204, 204, 204),
+            text_secondary: egui::Color32::from_rgb(133, 133, 133),
+            text_white: egui::Color32::WHITE,
 
-            addr_color:       egui::Color32::from_rgb(220, 220, 170),
-            mnemonic_color:   egui::Color32::from_rgb(86, 156, 214),
-            operand_color:    egui::Color32::from_rgb(156, 220, 254),
-            string_color:     egui::Color32::from_rgb(206, 145, 120),
-            comment_color:    egui::Color32::from_rgb(106, 153, 85),
-            type_color:       egui::Color32::from_rgb(197, 134, 192),
-            func_color:       egui::Color32::from_rgb(78, 201, 176),
-            number_color:     egui::Color32::from_rgb(181, 206, 168),
-            label_color:      egui::Color32::from_rgb(215, 186, 125),
+            addr_color: egui::Color32::from_rgb(220, 220, 170),
+            mnemonic_color: egui::Color32::from_rgb(86, 156, 214),
+            operand_color: egui::Color32::from_rgb(156, 220, 254),
+            string_color: egui::Color32::from_rgb(206, 145, 120),
+            comment_color: egui::Color32::from_rgb(106, 153, 85),
+            type_color: egui::Color32::from_rgb(197, 134, 192),
+            func_color: egui::Color32::from_rgb(78, 201, 176),
+            number_color: egui::Color32::from_rgb(181, 206, 168),
+            label_color: egui::Color32::from_rgb(215, 186, 125),
 
-            danger:           egui::Color32::from_rgb(244, 71, 71),
-            warn:             egui::Color32::from_rgb(204, 167, 0),
-            safe:             egui::Color32::from_rgb(76, 175, 80),
-            info:             egui::Color32::from_rgb(55, 148, 255),
+            danger: egui::Color32::from_rgb(244, 71, 71),
+            warn: egui::Color32::from_rgb(204, 167, 0),
+            safe: egui::Color32::from_rgb(76, 175, 80),
+            info: egui::Color32::from_rgb(55, 148, 255),
 
-            border:           egui::Color32::from_rgb(62, 62, 64),
-            border_light:     egui::Color32::from_rgb(78, 78, 80),
-            scrollbar_bg:     egui::Color32::from_rgb(30, 30, 30),
-            scrollbar_fg:     egui::Color32::from_rgb(66, 66, 66),
+            border: egui::Color32::from_rgb(62, 62, 64),
+            border_light: egui::Color32::from_rgb(78, 78, 80),
+            scrollbar_bg: egui::Color32::from_rgb(30, 30, 30),
+            scrollbar_fg: egui::Color32::from_rgb(66, 66, 66),
         }
     }
 }
@@ -342,7 +348,10 @@ impl ToastManager {
 
         let viewport = ctx.screen_rect();
         let toast_area = egui::Area::new(egui::Id::new("toast_area"))
-            .fixed_pos(egui::pos2(viewport.right() - 300.0, viewport.bottom() - 50.0))
+            .fixed_pos(egui::pos2(
+                viewport.right() - 300.0,
+                viewport.bottom() - 50.0,
+            ))
             .order(egui::Order::Foreground)
             .interactable(false);
 

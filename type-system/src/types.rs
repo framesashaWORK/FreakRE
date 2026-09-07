@@ -67,35 +67,59 @@ impl Type {
     }
 
     pub fn i8() -> Self {
-        Type::Int { bits: 8, signed: true }
+        Type::Int {
+            bits: 8,
+            signed: true,
+        }
     }
 
     pub fn u8() -> Self {
-        Type::Int { bits: 8, signed: false }
+        Type::Int {
+            bits: 8,
+            signed: false,
+        }
     }
 
     pub fn i16() -> Self {
-        Type::Int { bits: 16, signed: true }
+        Type::Int {
+            bits: 16,
+            signed: true,
+        }
     }
 
     pub fn u16() -> Self {
-        Type::Int { bits: 16, signed: false }
+        Type::Int {
+            bits: 16,
+            signed: false,
+        }
     }
 
     pub fn i32() -> Self {
-        Type::Int { bits: 32, signed: true }
+        Type::Int {
+            bits: 32,
+            signed: true,
+        }
     }
 
     pub fn u32() -> Self {
-        Type::Int { bits: 32, signed: false }
+        Type::Int {
+            bits: 32,
+            signed: false,
+        }
     }
 
     pub fn i64() -> Self {
-        Type::Int { bits: 64, signed: true }
+        Type::Int {
+            bits: 64,
+            signed: true,
+        }
     }
 
     pub fn u64() -> Self {
-        Type::Int { bits: 64, signed: false }
+        Type::Int {
+            bits: 64,
+            signed: false,
+        }
     }
 
     pub fn f32() -> Self {

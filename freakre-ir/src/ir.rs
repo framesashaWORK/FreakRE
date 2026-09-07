@@ -1,7 +1,7 @@
 //! Core IR types: values, instructions, blocks, functions, and programs.
 
 use crate::types::Ty;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
 // ─── Values ──────────────────────────────────────────────────────────
@@ -13,15 +13,9 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Value {
     /// SSA variable (e.g., v42 of type i64).
-    Var {
-        id: u32,
-        ty: Ty,
-    },
+    Var { id: u32, ty: Ty },
     /// Architectural register (e.g., "rax", "eip").
-    Register {
-        name: String,
-        ty: Ty,
-    },
+    Register { name: String, ty: Ty },
     /// Immediate constant.
     Const(i64),
     /// Wide constant (for values > 64 bits).
@@ -57,7 +51,12 @@ impl Value {
             Value::Var { ty, .. } => ty.clone(),
             Value::Register { ty, .. } => ty.clone(),
             Value::Const(_) => Ty::i64(),
-            Value::WideConst(b) => Ty::UInt(b.len() as u32 * 8),
+            // saturating: a hostile multi-GB WideConst must clamp, not panic.
+            Value::WideConst(b) => Ty::UInt(
+                (b.len() as u64)
+                    .saturating_mul(8)
+                    .min(u32::MAX as u64) as u32,
+            ),
             Value::StringRef(_) => Ty::Ptr(Box::new(Ty::u8())),
             Value::Symbol(_) => Ty::Ptr(Box::new(Ty::u8())),
         }
@@ -154,27 +153,27 @@ pub enum OpCode {
     Xor,
     Not,
     Shl,
-    Shr,       // Logical shift right
-    Sar,       // Arithmetic shift right
-    Ror,       // Rotate right
-    Rol,       // Rotate left
+    Shr, // Logical shift right
+    Sar, // Arithmetic shift right
+    Ror, // Rotate right
+    Rol, // Rotate left
 
     // ─── Comparison ──────────────────────────────
     Eq,
     Ne,
-    LtU,       // Unsigned less-than
-    LeU,       // Unsigned less-or-equal
-    GtU,       // Unsigned greater-than
-    GeU,       // Unsigned greater-or-equal
-    LtS,       // Signed less-than
-    LeS,       // Signed less-or-equal
-    GtS,       // Signed greater-than
-    GeS,       // Signed greater-or-equal
+    LtU, // Unsigned less-than
+    LeU, // Unsigned less-or-equal
+    GtU, // Unsigned greater-than
+    GeU, // Unsigned greater-or-equal
+    LtS, // Signed less-than
+    LeS, // Signed less-or-equal
+    GtS, // Signed greater-than
+    GeS, // Signed greater-or-equal
 
     // ─── Type conversions ────────────────────────
-    Zext,      // Zero-extend
-    Sext,      // Sign-extend
-    Trunc,     // Truncate
+    Zext,  // Zero-extend
+    Sext,  // Sign-extend
+    Trunc, // Truncate
     FloatToFloat,
     IntToFloat,
     FloatToInt,
@@ -189,50 +188,86 @@ pub enum OpCode {
     FloatSqrt,
 
     // ─── Special ─────────────────────────────────
-    Copy,      // Simple assignment
-    Phi,       // SSA phi node (for block merging)
+    Copy, // Simple assignment
+    Phi,  // SSA phi node (for block merging)
 }
 
 impl OpCode {
     /// Whether this is a binary operation (takes 2 operands).
     pub fn is_binary(&self) -> bool {
-        matches!(self,
-            Self::Add | Self::Sub | Self::Mul | Self::Div | Self::Mod |
-            Self::And | Self::Or | Self::Xor |
-            Self::Shl | Self::Shr | Self::Sar | Self::Ror | Self::Rol |
-            Self::Eq | Self::Ne |
-            Self::LtU | Self::LeU | Self::GtU | Self::GeU |
-            Self::LtS | Self::LeS | Self::GtS | Self::GeS |
-            Self::FloatAdd | Self::FloatSub | Self::FloatMul | Self::FloatDiv
+        matches!(
+            self,
+            Self::Add
+                | Self::Sub
+                | Self::Mul
+                | Self::Div
+                | Self::Mod
+                | Self::And
+                | Self::Or
+                | Self::Xor
+                | Self::Shl
+                | Self::Shr
+                | Self::Sar
+                | Self::Ror
+                | Self::Rol
+                | Self::Eq
+                | Self::Ne
+                | Self::LtU
+                | Self::LeU
+                | Self::GtU
+                | Self::GeU
+                | Self::LtS
+                | Self::LeS
+                | Self::GtS
+                | Self::GeS
+                | Self::FloatAdd
+                | Self::FloatSub
+                | Self::FloatMul
+                | Self::FloatDiv
         )
     }
 
     /// Whether this is a unary operation.
     pub fn is_unary(&self) -> bool {
-        matches!(self,
-            Self::Neg | Self::Not |
-            Self::Zext | Self::Sext | Self::Trunc |
-            Self::FloatToFloat | Self::IntToFloat | Self::FloatToInt |
-            Self::FloatNeg | Self::FloatAbs | Self::FloatSqrt |
-            Self::Copy
+        matches!(
+            self,
+            Self::Neg
+                | Self::Not
+                | Self::Zext
+                | Self::Sext
+                | Self::Trunc
+                | Self::FloatToFloat
+                | Self::IntToFloat
+                | Self::FloatToInt
+                | Self::FloatNeg
+                | Self::FloatAbs
+                | Self::FloatSqrt
+                | Self::Copy
         )
     }
 
     /// Whether this is a comparison operation.
     pub fn is_comparison(&self) -> bool {
-        matches!(self,
-            Self::Eq | Self::Ne |
-            Self::LtU | Self::LeU | Self::GtU | Self::GeU |
-            Self::LtS | Self::LeS | Self::GtS | Self::GeS
+        matches!(
+            self,
+            Self::Eq
+                | Self::Ne
+                | Self::LtU
+                | Self::LeU
+                | Self::GtU
+                | Self::GeU
+                | Self::LtS
+                | Self::LeS
+                | Self::GtS
+                | Self::GeS
         )
     }
 
     /// Whether this is a commutative operation.
     pub fn is_commutative(&self) -> bool {
-        matches!(self,
-            Self::Add | Self::Mul |
-            Self::And | Self::Or | Self::Xor |
-            Self::Eq | Self::Ne
+        matches!(
+            self,
+            Self::Add | Self::Mul | Self::And | Self::Or | Self::Xor | Self::Eq | Self::Ne
         )
     }
 }
@@ -302,17 +337,9 @@ pub enum IrInst {
         rhs: Value,
     },
     /// dst = OP(src)
-    Unary {
-        dst: Value,
-        op: OpCode,
-        src: Value,
-    },
+    Unary { dst: Value, op: OpCode, src: Value },
     /// dst = LOAD(addr, size)
-    Load {
-        dst: Value,
-        addr: Value,
-        size: u32,
-    },
+    Load { dst: Value, addr: Value, size: u32 },
     /// STORE(addr, value, size)
     Store {
         addr: Value,
@@ -338,9 +365,7 @@ pub enum IrInst {
         carry: Value,
     },
     /// Unconditional branch to a block.
-    Branch {
-        target: BlockId,
-    },
+    Branch { target: BlockId },
     /// Conditional branch: if (cond) goto target_true else goto target_false.
     CBranch {
         cond: Value,
@@ -354,12 +379,19 @@ pub enum IrInst {
         args: Vec<Value>,
     },
     /// Return from function with optional value.
-    Return {
-        value: Option<Value>,
-    },
+    Return { value: Option<Value> },
     /// Indirect branch (jmp reg/mem — target computed at runtime).
-    IndirectBranch {
-        target: Value,
+    IndirectBranch { target: Value },
+    /// Multi-way dispatch over a value: one target block per case value.
+    /// Produced by the jump-table recovery pass; the structurer maps it
+    /// directly to `Stmt::Switch`. A terminator like Branch/CBranch.
+    Switch {
+        /// The switched-on value.
+        index: Value,
+        /// case value → target block, ordered by case value.
+        cases: Vec<(i64, BlockId)>,
+        /// Optional default target (out-of-range / unmatched values).
+        default: Option<BlockId>,
     },
     /// SSA Phi node: dst = PHI((block1: val1), (block2: val2), ...)
     Phi {
@@ -408,6 +440,7 @@ impl IrInst {
             IrInst::Return { value: Some(v) } => vec![v],
             IrInst::Return { value: None } => vec![],
             IrInst::IndirectBranch { target } => vec![target],
+            IrInst::Switch { index, .. } => vec![index],
             IrInst::Phi { incoming, .. } => incoming.iter().map(|(_, v)| v).collect(),
             IrInst::Syscall { number, args } => {
                 let mut v: Vec<&Value> = args.iter().collect();
@@ -422,11 +455,13 @@ impl IrInst {
 
     /// Whether this instruction is a terminator (ends a block).
     pub fn is_terminator(&self) -> bool {
-        matches!(self,
-            IrInst::Branch { .. } |
-            IrInst::CBranch { .. } |
-            IrInst::Return { .. } |
-            IrInst::IndirectBranch { .. }
+        matches!(
+            self,
+            IrInst::Branch { .. }
+                | IrInst::CBranch { .. }
+                | IrInst::Return { .. }
+                | IrInst::IndirectBranch { .. }
+                | IrInst::Switch { .. }
         )
     }
 
@@ -460,7 +495,11 @@ impl IrInst {
             IrInst::Branch { target } => {
                 format!("BRANCH {}", target)
             }
-            IrInst::CBranch { cond, target_true, target_false } => {
+            IrInst::CBranch {
+                cond,
+                target_true,
+                target_false,
+            } => {
                 format!("CBRANCH {} ? {} : {}", cond, target_true, target_false)
             }
             IrInst::Call { dst, target, args } => {
@@ -473,8 +512,16 @@ impl IrInst {
             IrInst::Return { value: Some(v) } => format!("RETURN {}", v),
             IrInst::Return { value: None } => "RETURN".to_string(),
             IrInst::IndirectBranch { target } => format!("IBRANCH {}", target),
+            IrInst::Switch { index, cases, default } => {
+                let cs: Vec<String> = cases.iter().map(|(v, b)| format!("{}=>bb{}", v, b.0)).collect();
+                match default {
+                    Some(d) => format!("SWITCH {} {{ {} default=>bb{} }}", index, cs.join(", "), d.0),
+                    None => format!("SWITCH {} {{ {} }}", index, cs.join(", ")),
+                }
+            }
             IrInst::Phi { dst, incoming } => {
-                let inc: Vec<String> = incoming.iter()
+                let inc: Vec<String> = incoming
+                    .iter()
                     .map(|(b, v)| format!("{}:{}", b, v))
                     .collect();
                 format!("{} = PHI({})", dst, inc.join(", "))
@@ -538,7 +585,7 @@ impl IrBlock {
 }
 
 /// A function in the IR.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IrFunction {
     /// Function name (from symbol table or auto-generated).
     pub name: String,
@@ -557,6 +604,41 @@ pub struct IrFunction {
     next_block_id: u32,
     /// Function-level metadata.
     pub metadata: FunctionMetadata,
+}
+
+/// Deserialization helper for [`IrFunction`]. `block_index` is derived from
+/// `blocks` and is intentionally not serialized, so it must be rebuilt when a
+/// function is loaded from JSON or another serde format.
+#[derive(Deserialize)]
+struct IrFunctionData {
+    name: String,
+    entry_address: u64,
+    blocks: Vec<IrBlock>,
+    entry_block: BlockId,
+    next_var_id: u32,
+    next_block_id: u32,
+    metadata: FunctionMetadata,
+}
+
+impl<'de> Deserialize<'de> for IrFunction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let data = IrFunctionData::deserialize(deserializer)?;
+        let mut func = Self {
+            name: data.name,
+            entry_address: data.entry_address,
+            blocks: data.blocks,
+            block_index: HashMap::new(),
+            entry_block: data.entry_block,
+            next_var_id: data.next_var_id,
+            next_block_id: data.next_block_id,
+            metadata: data.metadata,
+        };
+        func.rebuild_index();
+        Ok(func)
+    }
 }
 
 /// Metadata about a function.
@@ -606,16 +688,20 @@ impl IrFunction {
     }
 
     /// Allocate a new SSA variable.
+    ///
+    /// Uses saturating arithmetic: the counters are deserializer-controlled,
+    /// so a hostile `next_var_id = u32::MAX` degrades to id reuse instead of
+    /// a debug overflow panic.
     pub fn alloc_var(&mut self, ty: Ty) -> Value {
         let id = self.next_var_id;
-        self.next_var_id += 1;
+        self.next_var_id = self.next_var_id.saturating_add(1);
         Value::Var { id, ty }
     }
 
     /// Add a new basic block.
     pub fn add_block(&mut self, label: &str) -> BlockId {
         let id = BlockId(self.next_block_id);
-        self.next_block_id += 1;
+        self.next_block_id = self.next_block_id.saturating_add(1);
         let idx = self.blocks.len();
         self.blocks.push(IrBlock {
             id,
@@ -662,14 +748,32 @@ impl IrFunction {
         }
 
         // Collect edges
-        let edges: Vec<(BlockId, BlockId)> = self.blocks.iter()
+        let edges: Vec<(BlockId, BlockId)> = self
+            .blocks
+            .iter()
             .flat_map(|b| {
                 let mut succs = Vec::new();
                 match b.terminator() {
                     Some(IrInst::Branch { target }) => succs.push(*target),
-                    Some(IrInst::CBranch { target_true, target_false, .. }) => {
+                    Some(IrInst::CBranch {
+                        target_true,
+                        target_false,
+                        ..
+                    }) => {
                         succs.push(*target_true);
                         succs.push(*target_false);
+                    }
+                    Some(IrInst::Switch {
+                        cases,
+                        default,
+                        ..
+                    }) => {
+                        for (_, t) in cases {
+                            succs.push(*t);
+                        }
+                        if let Some(d) = default {
+                            succs.push(*d);
+                        }
                     }
                     _ => {}
                 }
@@ -720,12 +824,39 @@ impl IrFunction {
         for (i, b) in self.blocks.iter().enumerate() {
             self.block_index.insert(b.id, i);
         }
+
+        let next_block = self
+            .blocks
+            .iter()
+            .map(|b| b.id.0)
+            .max()
+            .and_then(|id| id.checked_add(1))
+            .unwrap_or(0);
+        self.next_block_id = self.next_block_id.max(next_block);
+
+        let max_var = self
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .flat_map(|inst| {
+                inst.dst()
+                    .into_iter()
+                    .chain(inst.sources())
+                    .filter_map(|value| value.var_id())
+            })
+            .max();
+        if let Some(next_var) = max_var.and_then(|id| id.checked_add(1)) {
+            self.next_var_id = self.next_var_id.max(next_var);
+        }
     }
 
     /// Print the IR in human-readable format.
     pub fn display(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("function {} @ 0x{:X}:\n", self.name, self.entry_address));
+        out.push_str(&format!(
+            "function {} @ 0x{:X}:\n",
+            self.name, self.entry_address
+        ));
 
         for block in &self.blocks {
             out.push_str(&format!("  {} ({})\n", block.label, block.id));
@@ -759,10 +890,7 @@ impl IrFunction {
 /// Intended to be invoked by arch-specific lifters after block creation;
 /// kept here until a lifter wires it in.
 #[allow(dead_code)]
-pub(crate) fn repair_block_graph(
-    func: &mut IrFunction,
-    parse_label: fn(&str, u64) -> Option<u64>,
-) {
+pub(crate) fn repair_block_graph(func: &mut IrFunction, parse_label: fn(&str, u64) -> Option<u64>) {
     let base = func.entry_address;
     // (address, rank, block) — rank 0 = bb_ chunk, 1 = entry block.
     let mut code_starts: Vec<(u64, u8, BlockId)> = Vec::new();
@@ -789,7 +917,10 @@ pub(crate) fn repair_block_graph(
     let resolve = |id: BlockId| -> Option<BlockId> {
         let &(_, addr) = label_addrs.iter().find(|(bid, _)| *bid == id)?;
         let idx = code_starts.partition_point(|&(a, _, _)| a < addr);
-        code_starts.get(idx).filter(|&&(a, _, _)| a - addr <= 15).map(|&(_, _, b)| b)
+        code_starts
+            .get(idx)
+            .filter(|&&(a, _, _)| a - addr <= 15)
+            .map(|&(_, _, b)| b)
     };
 
     if std::env::var("REPAIR_DEBUG").is_ok() {
@@ -801,14 +932,20 @@ pub(crate) fn repair_block_graph(
     }
 
     for b in func.blocks.iter_mut() {
-        let Some(last) = b.insts.last_mut() else { continue };
+        let Some(last) = b.insts.last_mut() else {
+            continue;
+        };
         match last {
             IrInst::Branch { target } => {
                 if let Some(new) = resolve(*target) {
                     *target = new;
                 }
             }
-            IrInst::CBranch { target_true, target_false, .. } => {
+            IrInst::CBranch {
+                target_true,
+                target_false,
+                ..
+            } => {
                 if let Some(new) = resolve(*target_true) {
                     *target_true = new;
                 }
@@ -816,8 +953,66 @@ pub(crate) fn repair_block_graph(
                     *target_false = new;
                 }
             }
+            IrInst::Switch { cases, default, .. } => {
+                for (_, t) in cases.iter_mut() {
+                    if let Some(new) = resolve(*t) {
+                        *t = new;
+                    }
+                }
+                if let Some(d) = default {
+                    if let Some(new) = resolve(*d) {
+                        *d = new;
+                    }
+                }
+            }
             _ => {}
         }
+    }
+}
+
+impl IrFunction {
+    /// CFG successors of a block's terminator (empty for Return/IBranch).
+    pub fn successors(&self, id: BlockId) -> Vec<BlockId> {
+        match self.block(id).and_then(|b| b.terminator()) {
+            Some(IrInst::Branch { target }) => vec![*target],
+            Some(IrInst::CBranch { target_true, target_false, .. }) => {
+                vec![*target_true, *target_false]
+            }
+            Some(IrInst::Switch { cases, default, .. }) => {
+                let mut v: Vec<BlockId> = cases.iter().map(|(_, t)| *t).collect();
+                if let Some(d) = default {
+                    v.push(*d);
+                }
+                v
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Drop blocks unreachable from the entry block (junk the linear decoder
+    /// produced past terminators, replaced code regions). Only edges from the
+    /// terminator graph count, so this is exactly the set [`crate::ssa`]'s
+    /// conversion would reject.
+    pub fn prune_unreachable(&mut self) {
+        let entry = self.entry_block;
+        let mut reach = vec![false; self.blocks.len()];
+        let mut stack = vec![entry];
+        while let Some(b) = stack.pop() {
+            let i = b.0 as usize;
+            if i >= reach.len() || reach[i] {
+                continue;
+            }
+            reach[i] = true;
+            for s in self.successors(b) {
+                stack.push(s);
+            }
+        }
+        self.blocks.retain(|b| reach[b.id.0 as usize]);
+        // Retaining shifts vector positions: rebuild the index from scratch
+        // instead of filtering stale `BlockId → old position` entries.
+        self.rebuild_index();
+        // Recompute preds/succs so they reference surviving blocks only.
+        self.build_cfg();
     }
 }
 
@@ -931,15 +1126,16 @@ mod tests {
         let v1 = func.alloc_var(Ty::i64());
         let v2 = func.alloc_var(Ty::i64());
 
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v2.clone(),
-            op: OpCode::Add,
-            lhs: v0.clone(),
-            rhs: v1.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Return {
-            value: Some(v2),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v2.clone(),
+                op: OpCode::Add,
+                lhs: v0.clone(),
+                rhs: v1.clone(),
+            },
+        );
+        func.push_inst(func.entry_block, IrInst::Return { value: Some(v2) });
 
         assert_eq!(func.total_instructions(), 2);
         assert!(func.block(func.entry_block).unwrap().is_return_block());
@@ -952,11 +1148,14 @@ mod tests {
         let bb1 = func.add_block("then");
         let bb2 = func.add_block("else");
 
-        func.push_inst(func.entry_block, IrInst::CBranch {
-            cond: cond.clone(),
-            target_true: bb1,
-            target_false: bb2,
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: cond.clone(),
+                target_true: bb1,
+                target_false: bb2,
+            },
+        );
         func.push_inst(bb1, IrInst::Branch { target: bb2 });
         func.push_inst(bb2, IrInst::Return { value: None });
 
@@ -1002,6 +1201,9 @@ mod tests {
         let restored = IrProgram::from_json(&json).unwrap();
         assert_eq!(restored.num_functions(), 1);
         assert_eq!(restored.functions[0].name, "main");
+        assert!(restored.functions[0]
+            .block(restored.functions[0].entry_block)
+            .is_some());
     }
 
     #[test]

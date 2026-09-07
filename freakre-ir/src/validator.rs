@@ -34,20 +34,28 @@ pub fn validate_function(func: &IrFunction) -> Result<(), Vec<ValidationError>> 
     // 3. Check each block
     for block in &func.blocks {
         // a) terminator must be last (if present), only one terminator
-        let term_count = block.insts.iter().filter(|i| i.is_terminator()).count();
+        let term_positions: Vec<usize> = block
+            .insts
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, inst)| inst.is_terminator().then_some(idx))
+            .collect();
+        let term_count = term_positions.len();
         if term_count > 1 {
             errors.push(ValidationError(format!(
                 "{} has {} terminators (expected 0 or 1)",
                 block.id, term_count
             )));
         }
-        if let Some(term) = block.terminator() {
-            if !block.insts.last().map(|i| i.is_terminator()).unwrap_or(false) {
+        if let Some(&term_idx) = term_positions.first() {
+            if term_idx + 1 != block.insts.len() {
                 errors.push(ValidationError(format!(
                     "{} terminator is not last instruction",
                     block.id
                 )));
             }
+        }
+        if let Some(term) = block.terminator() {
             // b) branch targets must exist
             match term {
                 IrInst::Branch { target } => {
@@ -85,7 +93,10 @@ pub fn validate_function(func: &IrFunction) -> Result<(), Vec<ValidationError>> 
         for inst in &block.insts {
             if let IrInst::Phi { dst: _, incoming } = inst {
                 if incoming.is_empty() {
-                    errors.push(ValidationError(format!("{} Phi with no incoming edges", block.id)));
+                    errors.push(ValidationError(format!(
+                        "{} Phi with no incoming edges",
+                        block.id
+                    )));
                 }
                 for (pred, _) in incoming {
                     if !block_ids.contains(pred) {
@@ -192,20 +203,32 @@ pub fn validate_program(prog: &crate::ir::IrProgram) -> Result<(), Vec<Validatio
             }
         }
     }
-    if all.is_empty() { Ok(()) } else { Err(all) }
+    if all.is_empty() {
+        Ok(())
+    } else {
+        Err(all)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{IrInst, IrFunction, BlockId, Value, OpCode};
+    use crate::ir::{BlockId, IrFunction, IrInst, OpCode, Value};
     use crate::types::Ty;
 
     #[test]
     fn test_valid_function() {
         let mut f = IrFunction::new("ok", 0x1000);
         let v0 = f.alloc_var(Ty::i64());
-        f.push_inst(f.entry_block, IrInst::Binary { dst: v0.clone(), op: OpCode::Add, lhs: Value::int(1), rhs: Value::int(2) });
+        f.push_inst(
+            f.entry_block,
+            IrInst::Binary {
+                dst: v0.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(1),
+                rhs: Value::int(2),
+            },
+        );
         f.push_inst(f.entry_block, IrInst::Return { value: Some(v0) });
         f.build_cfg();
         assert!(validate_function(&f).is_ok());
@@ -214,7 +237,12 @@ mod tests {
     #[test]
     fn test_invalid_branch_target() {
         let mut f = IrFunction::new("bad", 0x1000);
-        f.push_inst(f.entry_block, IrInst::Branch { target: BlockId(99) });
+        f.push_inst(
+            f.entry_block,
+            IrInst::Branch {
+                target: BlockId(99),
+            },
+        );
         // Do not call build_cfg in debug (it debug_asserts on unknown targets);
         // validator must catch it directly via terminator scan.
         let err = validate_function(&f).unwrap_err();
@@ -240,5 +268,15 @@ mod tests {
         f.blocks[0].insts.push(IrInst::Branch { target: b1 });
         let err = validate_function(&f).unwrap_err();
         assert!(err.iter().any(|e| e.0.contains("terminators")));
+    }
+
+    #[test]
+    fn test_terminator_in_middle_detected() {
+        let mut f = IrFunction::new("middle_term", 0x1000);
+        let target = f.add_block("target");
+        f.push_inst(f.entry_block, IrInst::Branch { target });
+        f.blocks[0].insts.push(IrInst::Nop);
+        let err = validate_function(&f).unwrap_err();
+        assert!(err.iter().any(|e| e.0.contains("not last instruction")));
     }
 }

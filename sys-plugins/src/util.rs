@@ -91,12 +91,23 @@ mod tests {
         assert_eq!(db.get_label(0x1000).unwrap().unwrap(), "my_func");
 
         // Free slot gets written.
-        assert!(set_label_if_free(&mut db, 0x2000, "sha256_h (SHA-256 Init)".into()));
-        assert_eq!(db.get_label(0x2000).unwrap().unwrap(), "sha256_h (SHA-256 Init)");
+        assert!(set_label_if_free(
+            &mut db,
+            0x2000,
+            "sha256_h (SHA-256 Init)".into()
+        ));
+        assert_eq!(
+            db.get_label(0x2000).unwrap().unwrap(),
+            "sha256_h (SHA-256 Init)"
+        );
 
         // Default sub_ name is treated as free.
         db.set_label(0x3000, "sub_3000".into()).unwrap();
-        assert!(set_label_if_free(&mut db, 0x3000, "md5_init (MD5 IV)".into()));
+        assert!(set_label_if_free(
+            &mut db,
+            0x3000,
+            "md5_init (MD5 IV)".into()
+        ));
         assert_eq!(db.get_label(0x3000).unwrap().unwrap(), "md5_init (MD5 IV)");
     }
 
@@ -105,13 +116,23 @@ mod tests {
         let mut db = temp_db("comment");
         db.set_comment(0x1000, "user note".into()).unwrap();
 
-        upsert_tagged_comment(&mut db, 0x1000, "[ENTROPY]", "[ENTROPY] High entropy region");
+        upsert_tagged_comment(
+            &mut db,
+            0x1000,
+            "[ENTROPY]",
+            "[ENTROPY] High entropy region",
+        );
         let c = db.get_comment(0x1000).unwrap().unwrap();
         assert!(c.contains("user note"));
         assert!(c.contains("[ENTROPY] High entropy region"));
 
         // Refreshing our own tag replaces only our line.
-        upsert_tagged_comment(&mut db, 0x1000, "[ENTROPY]", "[ENTROPY] Low entropy/padding");
+        upsert_tagged_comment(
+            &mut db,
+            0x1000,
+            "[ENTROPY]",
+            "[ENTROPY] Low entropy/padding",
+        );
         let c = db.get_comment(0x1000).unwrap().unwrap();
         assert!(c.contains("user note"));
         assert!(!c.contains("High entropy"));

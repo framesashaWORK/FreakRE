@@ -3,11 +3,15 @@
 //! Advanced string analysis: extracts strings, classifies them (URLs, IPs,
 //! file paths, registry keys, crypto hashes, emails), and creates xrefs.
 
-use plugins::{Plugin, PluginContext, PluginMetadata, MenuItem};
 use crate::util;
+use plugins::{MenuItem, Plugin, PluginContext, PluginMetadata};
 
 pub struct StringAnalyzerPlugin;
-impl Default for StringAnalyzerPlugin { fn default() -> Self { Self } }
+impl Default for StringAnalyzerPlugin {
+    fn default() -> Self {
+        Self
+    }
+}
 
 const INTERESTING_PATTERNS: &[(&str, &str)] = &[
     ("http://", "URL"),
@@ -52,7 +56,8 @@ impl Plugin for StringAnalyzerPlugin {
             name: "String Analyzer".into(),
             version: "1.0.0".into(),
             author: Some("FreakRE Team".into()),
-            description: "Extracts and classifies strings (URLs, IPs, paths, APIs, crypto material).".into(),
+            description:
+                "Extracts and classifies strings (URLs, IPs, paths, APIs, crypto material).".into(),
             license: Some("MIT".into()),
             homepage: None,
         }
@@ -61,13 +66,19 @@ impl Plugin for StringAnalyzerPlugin {
         vec![MenuItem::new("Analyze/Strings", "Analyze Strings").with_shortcut("Ctrl+Shift+S")]
     }
     fn on_menu_item(&mut self, ctx: &mut PluginContext, path: &str) {
-        if path == "Analyze/Strings" { self.analyze(ctx); }
+        if path == "Analyze/Strings" {
+            self.analyze(ctx);
+        }
     }
     fn analyze(&mut self, ctx: &mut PluginContext) {
         ctx.println("[StringAnalyzer] Analyzing extracted strings...");
 
         let functions = match ctx.db.list_functions() {
-            Ok(f) => f, Err(e) => { ctx.println(&format!("Error: {}", e)); return; }
+            Ok(f) => f,
+            Err(e) => {
+                ctx.println(&format!("Error: {}", e));
+                return;
+            }
         };
 
         let mut url_count = 0usize;
@@ -77,7 +88,10 @@ impl Plugin for StringAnalyzerPlugin {
         let mut other_interesting = 0usize;
 
         for func in &functions {
-            let code = match &func.code_bytes { Some(b) => b.as_slice(), None => continue };
+            let code = match &func.code_bytes {
+                Some(b) => b.as_slice(),
+                None => continue,
+            };
 
             // Extract ASCII strings (min length 4)
             let strings = extract_ascii_strings(code, 4);
@@ -99,7 +113,8 @@ impl Plugin for StringAnalyzerPlugin {
                         match *category {
                             "URL" | "WebSocket URL" => url_count += 1,
                             c if c.ends_with("API") => api_count += 1,
-                            "RSA Private Key" | "X.509 Certificate" | "Public Key" | "SSH RSA Key" => crypto_count += 1,
+                            "RSA Private Key" | "X.509 Certificate" | "Public Key"
+                            | "SSH RSA Key" => crypto_count += 1,
                             "UNC Path" | "Registry Path" | "Registry Key" => path_count += 1,
                             _ => other_interesting += 1,
                         }
@@ -110,7 +125,12 @@ impl Plugin for StringAnalyzerPlugin {
 
                 // Check for IP addresses
                 if !classified && looks_like_ip(s) {
-                    util::upsert_tagged_comment(&mut ctx.db, func.address, "[IP]", &format!("[IP] {}", s));
+                    util::upsert_tagged_comment(
+                        &mut ctx.db,
+                        func.address,
+                        "[IP]",
+                        &format!("[IP] {}", s),
+                    );
                     other_interesting += 1;
                 }
             }
@@ -145,10 +165,16 @@ fn extract_ascii_strings(data: &[u8], min_len: usize) -> Vec<String> {
 
 fn looks_like_ip(s: &str) -> bool {
     let parts: Vec<&str> = s.split('.').collect();
-    if parts.len() != 4 { return false; }
+    if parts.len() != 4 {
+        return false;
+    }
     parts.iter().all(|p| p.parse::<u8>().is_ok())
 }
 
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max { s.to_string() } else { format!("{}...", &s[..max]) }
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max])
+    }
 }

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 pub struct TypePropagator {
     /// Constraint system
     cs: ConstraintSystem,
-    
+
     /// Type inference result
     inference: Option<TypeInference>,
 }
@@ -25,7 +25,7 @@ impl TypePropagator {
             inference: None,
         }
     }
-    
+
     /// Analyze a function and infer types
     pub fn analyze(&mut self, func: &IrFunction) -> Result<(), InferenceError> {
         // Fresh constraint system per call: without the reset, constraints
@@ -46,7 +46,7 @@ impl TypePropagator {
 
         Ok(())
     }
-    
+
     /// Generate constraints from a single instruction
     fn generate_constraints_from_inst(&mut self, inst: &IrInst) {
         match inst {
@@ -54,9 +54,9 @@ impl TypePropagator {
                 let dst_var = self.cs.var_for_value(dst);
                 let lhs_var = self.cs.var_for_value(lhs);
                 let rhs_var = self.cs.var_for_value(rhs);
-                
+
                 self.cs.generate_from_op(*op, dst_var, &[lhs_var, rhs_var]);
-                
+
                 // Additional constraints based on operation
                 match op {
                     OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod => {
@@ -73,13 +73,13 @@ impl TypePropagator {
                     _ => {}
                 }
             }
-            
+
             IrInst::Unary { dst, op, src } => {
                 let dst_var = self.cs.var_for_value(dst);
                 let src_var = self.cs.var_for_value(src);
-                
+
                 self.cs.generate_from_op(*op, dst_var, &[src_var]);
-                
+
                 match op {
                     OpCode::Zext | OpCode::Sext | OpCode::Trunc => {
                         // Source and dest are integers, but different widths
@@ -94,18 +94,18 @@ impl TypePropagator {
                     _ => {}
                 }
             }
-            
+
             IrInst::Load { dst, addr, size } => {
                 let dst_var = self.cs.var_for_value(dst);
                 let addr_var = self.cs.var_for_value(addr);
-                
+
                 // Address must be a pointer
                 let inner_var = self.cs.fresh_var();
                 self.cs.add_ptr_to(addr_var, inner_var);
-                
+
                 // Loaded value has the pointed-to type
                 self.cs.add_equal(dst_var, inner_var);
-                
+
                 // Size constraint (width hint). An 8-byte access may still
                 // turn out to be a pointer load; `merge_types` lets a later
                 // PtrTo constraint override the integer hint ("pointer wins").
@@ -117,18 +117,18 @@ impl TypePropagator {
                     _ => {}
                 }
             }
-            
+
             IrInst::Store { addr, value, size } => {
                 let addr_var = self.cs.var_for_value(addr);
                 let value_var = self.cs.var_for_value(value);
-                
+
                 // Address must be a pointer
                 let inner_var = self.cs.fresh_var();
                 self.cs.add_ptr_to(addr_var, inner_var);
-                
+
                 // Stored value has the pointed-to type
                 self.cs.add_equal(value_var, inner_var);
-                
+
                 // Size constraint (width hint); see Load above.
                 match size {
                     1 => self.cs.add_int_width(value_var, 8),
@@ -138,45 +138,49 @@ impl TypePropagator {
                     _ => {}
                 }
             }
-            
-            IrInst::Call { dst, target: _, args } => {
+
+            IrInst::Call {
+                dst,
+                target: _,
+                args,
+            } => {
                 // If we have a return value, it's some type
                 if let Some(dst_val) = dst {
                     let _dst_var = self.cs.var_for_value(dst_val);
                     // Type will be inferred from function signature or usage
                 }
-                
+
                 // Arguments have types based on function signature
                 for arg in args {
                     let _arg_var = self.cs.var_for_value(arg);
                     // Type will be inferred from function signature or usage
                 }
             }
-            
+
             IrInst::Return { value: Some(val) } => {
                 let _val_var = self.cs.var_for_value(val);
                 // Return type will be inferred from usage
             }
-            
+
             IrInst::CBranch { cond, .. } => {
                 let cond_var = self.cs.var_for_value(cond);
                 self.cs.add_must_be(cond_var, Ty::Bool);
             }
-            
+
             IrInst::Phi { dst, incoming } => {
                 let dst_var = self.cs.var_for_value(dst);
-                
+
                 // All incoming values must have the same type as dst
                 for (_, val) in incoming {
                     let val_var = self.cs.var_for_value(val);
                     self.cs.add_equal(dst_var, val_var);
                 }
             }
-            
+
             _ => {}
         }
     }
-    
+
     /// Get the inferred type for a value.
     ///
     /// Lookup uses the canonical value identity (type annotations on SSA
@@ -185,9 +189,10 @@ impl TypePropagator {
     pub fn get_type(&self, value: &Value) -> Option<Ty> {
         let key = ConstraintSystem::canonical_value(value);
         self.inference.as_ref().and_then(|inf| {
-            self.cs.value_to_var.get(&key).and_then(|&var| {
-                inf.get_type(var).cloned()
-            })
+            self.cs
+                .value_to_var
+                .get(&key)
+                .and_then(|&var| inf.get_type(var).cloned())
         })
     }
 
@@ -201,14 +206,14 @@ impl TypePropagator {
             .map(|inf| inf.converged)
             .unwrap_or(false)
     }
-    
+
     /// Get all inferred types.
     ///
     /// Keys are canonicalized values (type annotations stripped), matching
     /// the identity used by [`TypePropagator::get_type`].
     pub fn all_types(&self) -> HashMap<Value, Ty> {
         let mut result = HashMap::new();
-        
+
         if let Some(ref inf) = self.inference {
             for (value, &var) in &self.cs.value_to_var {
                 if let Some(ty) = inf.get_type(var) {
@@ -218,10 +223,10 @@ impl TypePropagator {
                 }
             }
         }
-        
+
         result
     }
-    
+
     /// Get unresolved type variables
     pub fn unresolved_variables(&self) -> Vec<TypeVar> {
         self.inference
@@ -229,17 +234,17 @@ impl TypePropagator {
             .map(|inf| inf.unresolved.clone())
             .unwrap_or_default()
     }
-    
+
     /// Check if all types were successfully inferred
     pub fn is_fully_typed(&self) -> bool {
         self.unresolved_variables().is_empty()
     }
-    
+
     /// Generate a type report
     pub fn report(&self) -> TypeReport {
         let all_types = self.all_types();
         let unresolved = self.unresolved_variables();
-        
+
         TypeReport {
             inferred_types: all_types.len(),
             unresolved_types: unresolved.len(),
@@ -259,10 +264,10 @@ impl Default for TypePropagator {
 pub struct TypeReport {
     /// Number of successfully inferred types
     pub inferred_types: usize,
-    
+
     /// Number of unresolved type variables
     pub unresolved_types: usize,
-    
+
     /// Total number of type variables
     pub total_variables: usize,
 }
@@ -294,44 +299,50 @@ impl std::fmt::Display for TypeReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_simple_propagation() {
         let mut func = IrFunction::new("test", 0x1000);
         let v0 = func.alloc_var(Ty::Unknown);
         let v1 = func.alloc_var(Ty::Unknown);
         let v2 = func.alloc_var(Ty::Unknown);
-        
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v2.clone(),
-            op: OpCode::Add,
-            lhs: v0.clone(),
-            rhs: v1.clone(),
-        });
-        
+
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v2.clone(),
+                op: OpCode::Add,
+                lhs: v0.clone(),
+                rhs: v1.clone(),
+            },
+        );
+
         let mut prop = TypePropagator::new();
         prop.analyze(&func).unwrap();
-        
+
         // All three should have the same type (though we don't know what it is yet)
         let report = prop.report();
         assert!(report.total_variables > 0);
     }
-    
+
     #[test]
     fn test_load_store() {
         let mut func = IrFunction::new("test", 0x1000);
         let addr = Value::reg("rbp", Ty::Unknown);
         let val = func.alloc_var(Ty::Unknown);
-        
-        func.push_inst(func.entry_block, IrInst::Load {
-            dst: val.clone(),
-            addr: addr.clone(),
-            size: 8,
-        });
-        
+
+        func.push_inst(
+            func.entry_block,
+            IrInst::Load {
+                dst: val.clone(),
+                addr: addr.clone(),
+                size: 8,
+            },
+        );
+
         let mut prop = TypePropagator::new();
         prop.analyze(&func).unwrap();
-        
+
         // addr should be inferred as pointer
         let types = prop.all_types();
         assert!(!types.is_empty());
@@ -343,12 +354,15 @@ mod tests {
         let v0 = func.alloc_var(Ty::Unknown);
         let v1 = func.alloc_var(Ty::Unknown);
 
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v1.clone(),
-            op: OpCode::Add,
-            lhs: v0.clone(),
-            rhs: v0.clone(),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v1.clone(),
+                op: OpCode::Add,
+                lhs: v0.clone(),
+                rhs: v0.clone(),
+            },
+        );
 
         let mut prop = TypePropagator::new();
         prop.analyze(&func).unwrap();
@@ -379,16 +393,22 @@ mod tests {
         let rax = Value::reg("rax", Ty::Unknown);
         let rbx = Value::reg("rbx", Ty::Unknown);
 
-        func.push_inst(func.entry_block, IrInst::Load {
-            dst: rax.clone(),
-            addr: rbp.clone(),
-            size: 8,
-        });
-        func.push_inst(func.entry_block, IrInst::Load {
-            dst: rbx.clone(),
-            addr: rax.clone(),
-            size: 8,
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Load {
+                dst: rax.clone(),
+                addr: rbp.clone(),
+                size: 8,
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Load {
+                dst: rbx.clone(),
+                addr: rax.clone(),
+                size: 8,
+            },
+        );
 
         let mut prop = TypePropagator::new();
         prop.analyze(&func)
@@ -414,11 +434,14 @@ mod tests {
         let base_u = Value::var(0, Ty::u64());
         let tmp = Value::var(1, Ty::Unknown);
 
-        func.push_inst(func.entry_block, IrInst::Store {
-            addr: base_u.clone(),
-            value: tmp.clone(),
-            size: 4,
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Store {
+                addr: base_u.clone(),
+                value: tmp.clone(),
+                size: 4,
+            },
+        );
 
         let mut prop = TypePropagator::new();
         prop.analyze(&func).unwrap();

@@ -48,16 +48,16 @@
 //! println!("{}", result.explanation);
 //! ```
 
-pub mod features;
 pub mod classifier;
+pub mod features;
 
-pub use features::{
-    extract_features, FeatureVector, BinaryInfo, StringPatterns,
-    ImportStats, BehavioralStats, NUM_FEATURES,
-};
 pub use classifier::{
-    EnsembleClassifier, ClassificationResult, MalwareClass,
-    ClassProbabilities, TreeScore, FeatureImportance,
+    ClassProbabilities, ClassificationResult, EnsembleClassifier, FeatureImportance, MalwareClass,
+    TreeScore,
+};
+pub use features::{
+    extract_features, BehavioralStats, BinaryInfo, FeatureVector, ImportStats, StringPatterns,
+    NUM_FEATURES,
 };
 
 use thiserror::Error;
@@ -73,5 +73,3 @@ pub enum MlDetectionError {
 }
 
 pub type Result<T> = std::result::Result<T, MlDetectionError>;
-
-

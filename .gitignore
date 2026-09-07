@@ -15,3 +15,11 @@
 .vscode/
 *.swp
 *.swo
+
+# Local scratch and generated multi-GB signature bases
+/tmp/
+func-sigs/db/generated-0*.fsig
+*.fbd
+.cortexkit/
+.freebuff/
+moreabout.bdb/

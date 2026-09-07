@@ -32,14 +32,14 @@
 //! }
 //! ```
 
-use project_db::ProjectDatabase;
-use thiserror::Error;
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::collections::HashMap;
-use std::sync::Arc;
 use core::ffi::c_void;
 use libloading::Library;
+use project_db::ProjectDatabase;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use thiserror::Error;
 
 pub const PLUGIN_ABI_VERSION: u32 = 1;
 
@@ -239,7 +239,11 @@ impl PluginManager {
             match self.load_library(&file_path) {
                 Ok(name) => loaded.push(name),
                 Err(err) => {
-                    eprintln!("[FreakRE] Failed to load plugin '{}': {}", file_path.display(), err);
+                    eprintln!(
+                        "[FreakRE] Failed to load plugin '{}': {}",
+                        file_path.display(),
+                        err
+                    );
                 }
             }
         }
@@ -298,7 +302,8 @@ impl PluginManager {
     /// last `Arc` reference to it dies, so unloading may be deferred until
     /// every outstanding clone of the library handle is gone.
     pub fn unload_plugin(&mut self, name: &str) -> Result<()> {
-        self.plugins.remove(name)
+        self.plugins
+            .remove(name)
             .ok_or_else(|| PluginError::NotFound(name.to_string()))?;
         Ok(())
     }
@@ -328,8 +333,13 @@ impl PluginManager {
         for (name, plugin) in self.plugins.iter_mut() {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 plugin.plugin.on_binary_opened(ctx);
-            })).is_err() {
-                eprintln!("[FreakRE] Plugin '{}' panicked during on_binary_opened()", name);
+            }))
+            .is_err()
+            {
+                eprintln!(
+                    "[FreakRE] Plugin '{}' panicked during on_binary_opened()",
+                    name
+                );
             }
         }
     }
@@ -338,8 +348,13 @@ impl PluginManager {
         for (name, plugin) in self.plugins.iter_mut() {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 plugin.plugin.on_function_selected(ctx, address);
-            })).is_err() {
-                eprintln!("[FreakRE] Plugin '{}' panicked during on_function_selected()", name);
+            }))
+            .is_err()
+            {
+                eprintln!(
+                    "[FreakRE] Plugin '{}' panicked during on_function_selected()",
+                    name
+                );
             }
         }
     }
@@ -348,7 +363,9 @@ impl PluginManager {
         for (name, plugin) in self.plugins.iter_mut() {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 plugin.plugin.on_menu_item(ctx, path);
-            })).is_err() {
+            }))
+            .is_err()
+            {
                 eprintln!("[FreakRE] Plugin '{}' panicked during on_menu_item()", name);
             }
         }
@@ -361,7 +378,9 @@ impl PluginManager {
         for (name, plugin) in self.plugins.iter_mut() {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 plugin.plugin.analyze(ctx);
-            })).is_err() {
+            }))
+            .is_err()
+            {
                 eprintln!("[FreakRE] Plugin '{}' panicked during analyze()", name);
             }
         }
@@ -369,7 +388,8 @@ impl PluginManager {
 
     /// Get all menu items from all plugins
     pub fn all_menu_items(&self) -> Vec<MenuItem> {
-        self.plugins.values()
+        self.plugins
+            .values()
             .flat_map(|p| p.plugin.menu_items())
             .collect()
     }
@@ -601,7 +621,7 @@ mod tests {
     fn test_load_plugin() {
         let mut manager = PluginManager::new();
         let plugin = Box::new(TestPlugin);
-        
+
         assert!(manager.load_plugin(plugin).is_ok());
         assert_eq!(manager.list_plugins().len(), 1);
     }
@@ -609,10 +629,10 @@ mod tests {
     #[test]
     fn test_duplicate_plugin() {
         let mut manager = PluginManager::new();
-        
+
         manager.load_plugin(Box::new(TestPlugin)).unwrap();
         let result = manager.load_plugin(Box::new(TestPlugin));
-        
+
         assert!(result.is_err());
     }
 
@@ -659,8 +679,7 @@ mod tests {
         assert!(!data.is_null());
         assert!(!vtable.is_null());
 
-        let restored: Box<dyn Plugin> =
-            unsafe { core::mem::transmute((data, vtable)) };
+        let restored: Box<dyn Plugin> = unsafe { core::mem::transmute((data, vtable)) };
         assert_eq!(restored.metadata().name, "Test");
     }
 
@@ -707,7 +726,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_windows_world_writable_refuses_temp_dir() {
-        let probe = std::env::temp_dir().join(format!("freakre_rw_probe_{}.dll", std::process::id()));
+        let probe =
+            std::env::temp_dir().join(format!("freakre_rw_probe_{}.dll", std::process::id()));
         std::fs::write(&probe, b"MZ").unwrap();
         assert!(is_world_writable(&probe));
         std::fs::remove_file(&probe).ok();
@@ -736,5 +756,3 @@ mod tests {
         }
     }
 }
-
-

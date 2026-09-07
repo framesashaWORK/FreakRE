@@ -75,18 +75,18 @@
 //! engine can implement it too.
 
 pub mod arch;
+pub mod disassembler;
 pub mod engine;
 pub mod error;
 pub mod instruction;
-pub mod disassembler;
 
 #[cfg(capstone_available)]
 pub mod capstone_bindings;
 
-pub use arch::{Arch, Mode, Endian};
-pub use error::DisasmError;
-pub use instruction::{Instruction, InstructionKind, Operand, RegId, reg_name_to_id};
+pub use arch::{Arch, Endian, Mode};
 pub use disassembler::Disassembler;
+pub use error::DisasmError;
+pub use instruction::{reg_name_to_id, Instruction, InstructionKind, Operand, RegId};
 
 // Engine-neutral precise-disassembly facade.
 #[cfg(capstone_available)]

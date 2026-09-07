@@ -1,14 +1,14 @@
-use serde::{Deserialize, Serialize};
 use crate::types::Type;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub enum FunctionType {
     #[default]
     Normal,
-    Thunk,           // Jump table entry
-    Trampoline,      // Import thunk
-    Library,         // Recognized standard library function
-    UserDefined,     // Manually created by user
+    Thunk,       // Jump table entry
+    Trampoline,  // Import thunk
+    Library,     // Recognized standard library function
+    UserDefined, // Manually created by user
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -27,24 +27,24 @@ pub struct FunctionEntry {
     pub size: usize,
     pub function_type: FunctionType,
     pub analysis_status: AnalysisStatus,
-    
+
     // Function signature
     pub return_type: Option<Type>,
     pub parameters: Vec<FunctionParameter>,
     pub local_variables: Vec<LocalVariable>,
-    
+
     // Analysis results
     pub stack_frame_size: Option<i64>,
     pub has_return: bool,
     pub is_variadic: bool,
-    
+
     // Decompiled code
     pub decompiled_code: Option<String>,
 
     // Raw function bytes (for plugin analysis)
     #[serde(default)]
     pub code_bytes: Option<Vec<u8>>,
-    
+
     // Metadata
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub modified_at: chrono::DateTime<chrono::Utc>,
@@ -60,7 +60,7 @@ pub struct FunctionParameter {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum ParameterLocation {
     Register(String),
-    Stack(i64),  // offset from frame pointer
+    Stack(i64), // offset from frame pointer
     Unknown,
 }
 
@@ -73,7 +73,7 @@ pub struct LocalVariable {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum VariableLocation {
-    Stack(i64),      // offset from frame pointer
+    Stack(i64), // offset from frame pointer
     Register(String),
     Unknown,
 }
@@ -100,11 +100,7 @@ impl FunctionEntry {
         }
     }
 
-    pub fn with_signature(
-        mut self,
-        return_type: Type,
-        parameters: Vec<FunctionParameter>,
-    ) -> Self {
+    pub fn with_signature(mut self, return_type: Type, parameters: Vec<FunctionParameter>) -> Self {
         self.return_type = Some(return_type);
         self.parameters = parameters;
         self
@@ -134,14 +130,18 @@ impl FunctionEntry {
     }
 
     pub fn signature_string(&self, type_db: &crate::TypeDatabase) -> String {
-        let return_ty = self.return_type.as_ref()
+        let return_ty = self
+            .return_type
+            .as_ref()
             .map(|t| t.display(type_db))
             .unwrap_or_else(|| "void".to_string());
-        
-        let params: Vec<String> = self.parameters.iter()
+
+        let params: Vec<String> = self
+            .parameters
+            .iter()
             .map(|p| format!("{} {}", p.param_type.display(type_db), p.name))
             .collect();
-        
+
         format!("{} {}({})", return_ty, self.name, params.join(", "))
     }
 
@@ -153,7 +153,7 @@ impl FunctionEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Type, PrimitiveType};
+    use crate::types::{PrimitiveType, Type};
 
     #[test]
     fn test_function_creation() {
@@ -166,23 +166,22 @@ mod tests {
 
     #[test]
     fn test_function_with_signature() {
-        let func = FunctionEntry::new(0x1000, "add".to_string(), 50)
-            .with_signature(
-                Type::Primitive(PrimitiveType::I32),
-                vec![
-                    FunctionParameter {
-                        name: "a".to_string(),
-                        param_type: Type::Primitive(PrimitiveType::I32),
-                        location: ParameterLocation::Unknown,
-                    },
-                    FunctionParameter {
-                        name: "b".to_string(),
-                        param_type: Type::Primitive(PrimitiveType::I32),
-                        location: ParameterLocation::Unknown,
-                    },
-                ],
-            );
-        
+        let func = FunctionEntry::new(0x1000, "add".to_string(), 50).with_signature(
+            Type::Primitive(PrimitiveType::I32),
+            vec![
+                FunctionParameter {
+                    name: "a".to_string(),
+                    param_type: Type::Primitive(PrimitiveType::I32),
+                    location: ParameterLocation::Unknown,
+                },
+                FunctionParameter {
+                    name: "b".to_string(),
+                    param_type: Type::Primitive(PrimitiveType::I32),
+                    location: ParameterLocation::Unknown,
+                },
+            ],
+        );
+
         assert_eq!(func.parameters.len(), 2);
         assert!(func.return_type.is_some());
     }
@@ -191,8 +190,13 @@ mod tests {
     fn test_bincode_roundtrip() {
         let func = FunctionEntry::new(0x401000, "x".to_string(), 10);
         let bytes = bincode::serialize(&func).unwrap();
-        let back: FunctionEntry = bincode::deserialize(&bytes)
-            .unwrap_or_else(|e| panic!("roundtrip failed: {} (bytes: {:?})", e, &bytes[..bytes.len().min(48)]));
+        let back: FunctionEntry = bincode::deserialize(&bytes).unwrap_or_else(|e| {
+            panic!(
+                "roundtrip failed: {} (bytes: {:?})",
+                e,
+                &bytes[..bytes.len().min(48)]
+            )
+        });
         assert_eq!(back.address, 0x401000);
     }
 }

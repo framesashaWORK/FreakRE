@@ -27,11 +27,20 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Self {
-        Self { input, pos: 0, line: 1, col: 1 }
+        Self {
+            input,
+            pos: 0,
+            line: 1,
+            col: 1,
+        }
     }
 
     fn error(&self, msg: &str) -> ParseError {
-        ParseError { message: msg.to_string(), line: self.line, col: self.col }
+        ParseError {
+            message: msg.to_string(),
+            line: self.line,
+            col: self.col,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -138,7 +147,9 @@ impl<'a> Parser<'a> {
     fn parse_hex4(&mut self) -> Result<u32, ParseError> {
         let mut val = 0u32;
         for _ in 0..4 {
-            let b = self.advance().ok_or_else(|| self.error("unexpected EOF in hex escape"))?;
+            let b = self
+                .advance()
+                .ok_or_else(|| self.error("unexpected EOF in hex escape"))?;
             let digit = match b {
                 b'0'..=b'9' => b - b'0',
                 b'a'..=b'f' => b - b'a' + 10,
@@ -154,11 +165,15 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         let mut is_float = false;
 
-        if self.peek() == Some(b'-') { self.advance(); }
+        if self.peek() == Some(b'-') {
+            self.advance();
+        }
         if self.peek() == Some(b'0') {
             self.advance();
         } else if matches!(self.peek(), Some(b'1'..=b'9')) {
-            while matches!(self.peek(), Some(b'0'..=b'9')) { self.advance(); }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.advance();
+            }
         } else {
             return Err(self.error("invalid number"));
         }
@@ -169,17 +184,23 @@ impl<'a> Parser<'a> {
             if !matches!(self.peek(), Some(b'0'..=b'9')) {
                 return Err(self.error("expected digit after decimal point"));
             }
-            while matches!(self.peek(), Some(b'0'..=b'9')) { self.advance(); }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.advance();
+            }
         }
 
         if matches!(self.peek(), Some(b'e') | Some(b'E')) {
             is_float = true;
             self.advance();
-            if matches!(self.peek(), Some(b'+') | Some(b'-')) { self.advance(); }
+            if matches!(self.peek(), Some(b'+') | Some(b'-')) {
+                self.advance();
+            }
             if !matches!(self.peek(), Some(b'0'..=b'9')) {
                 return Err(self.error("expected digit in exponent"));
             }
-            while matches!(self.peek(), Some(b'0'..=b'9')) { self.advance(); }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.advance();
+            }
         }
 
         let num_str = &self.input[start..self.pos];
@@ -202,10 +223,12 @@ impl<'a> Parser<'a> {
 
     fn parse_bool(&mut self) -> Result<Value, ParseError> {
         if self.input[self.pos..].starts_with("true") {
-            self.pos += 4; self.col += 4;
+            self.pos += 4;
+            self.col += 4;
             Ok(Value::Bool(true))
         } else if self.input[self.pos..].starts_with("false") {
-            self.pos += 5; self.col += 5;
+            self.pos += 5;
+            self.col += 5;
             Ok(Value::Bool(false))
         } else {
             Err(self.error("invalid boolean"))
@@ -214,7 +237,8 @@ impl<'a> Parser<'a> {
 
     fn parse_null(&mut self) -> Result<Value, ParseError> {
         if self.input[self.pos..].starts_with("null") {
-            self.pos += 4; self.col += 4;
+            self.pos += 4;
+            self.col += 4;
             Ok(Value::Null)
         } else {
             Err(self.error("invalid null"))
@@ -233,8 +257,13 @@ impl<'a> Parser<'a> {
             arr.push(self.parse_value(depth + 1)?);
             self.skip_ws();
             match self.peek() {
-                Some(b',') => { self.advance(); }
-                Some(b']') => { self.advance(); return Ok(Value::Array(arr)); }
+                Some(b',') => {
+                    self.advance();
+                }
+                Some(b']') => {
+                    self.advance();
+                    return Ok(Value::Array(arr));
+                }
                 _ => return Err(self.error("expected ',' or ']' in array")),
             }
         }
@@ -259,8 +288,13 @@ impl<'a> Parser<'a> {
             }
             self.skip_ws();
             match self.peek() {
-                Some(b',') => { self.advance(); }
-                Some(b'}') => { self.advance(); return Ok(Value::Object(pairs)); }
+                Some(b',') => {
+                    self.advance();
+                }
+                Some(b'}') => {
+                    self.advance();
+                    return Ok(Value::Object(pairs));
+                }
                 _ => return Err(self.error("expected ',' or '}' in object")),
             }
         }

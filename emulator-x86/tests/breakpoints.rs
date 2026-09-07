@@ -1,6 +1,6 @@
 //! Breakpoints, run-to-address and block coverage.
-use emulator_x86::{block_coverage, Emulator, ExitReason};
 use emulator_x86::env::DefaultEnv;
+use emulator_x86::{block_coverage, Emulator, ExitReason};
 use freakre_ir::lifter::Lifter;
 
 fn lift(code: &[u8], base: u64) -> freakre_ir::IrFunction {
@@ -21,7 +21,10 @@ fn breakpoint_at_entry_stops_before_first_block() {
     assert_eq!(res.steps, 0, "breakpoint fires before any instruction");
     // State is inspectable and execution resumes after removal.
     assert!(emu.remove_breakpoint(0x1000));
-    assert!(!emu.remove_breakpoint(0x1000), "second remove reports absence");
+    assert!(
+        !emu.remove_breakpoint(0x1000),
+        "second remove reports absence"
+    );
     let res = emu.run(&func, 0x1000, 0, 1_000);
     assert_eq!(res.exit_reason, ExitReason::Return);
     assert_eq!(res.registers["rax"], 5);
@@ -68,10 +71,14 @@ fn coverage_marks_executed_blocks() {
     emu.run(&func, 0x4000, 0, 100);
     let cov = block_coverage(&emu.trace());
     assert!(cov.contains(&0x4000), "entry block covered: {cov:X?}");
-    assert_eq!(cov, {
-        let mut v = cov.clone();
-        v.sort_unstable();
-        v.dedup();
-        v
-    }, "coverage is deduplicated");
+    assert_eq!(
+        cov,
+        {
+            let mut v = cov.clone();
+            v.sort_unstable();
+            v.dedup();
+            v
+        },
+        "coverage is deduplicated"
+    );
 }

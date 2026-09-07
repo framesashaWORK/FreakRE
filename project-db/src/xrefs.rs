@@ -67,7 +67,10 @@ impl Xref {
     }
 
     pub fn is_data(&self) -> bool {
-        matches!(self.xref_type, XrefType::DataRead | XrefType::DataWrite | XrefType::Offset)
+        matches!(
+            self.xref_type,
+            XrefType::DataRead | XrefType::DataWrite | XrefType::Offset
+        )
     }
 }
 
@@ -90,18 +93,27 @@ impl XrefIndex {
 
     /// Add a cross-reference
     pub fn add(&mut self, xref: Xref) {
-        self.forward.entry(xref.from).or_default().push(xref.clone());
+        self.forward
+            .entry(xref.from)
+            .or_default()
+            .push(xref.clone());
         self.backward.entry(xref.to).or_default().push(xref);
     }
 
     /// Get all xrefs FROM a given address
     pub fn xrefs_from(&self, address: u64) -> &[Xref] {
-        self.forward.get(&address).map(|v| v.as_slice()).unwrap_or(&[])
+        self.forward
+            .get(&address)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Get all xrefs TO a given address
     pub fn xrefs_to(&self, address: u64) -> &[Xref] {
-        self.backward.get(&address).map(|v| v.as_slice()).unwrap_or(&[])
+        self.backward
+            .get(&address)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Get all addresses that reference the given address
@@ -234,7 +246,7 @@ impl XrefIndex {
     /// Build call graph as adjacency list
     pub fn call_graph(&self) -> HashMap<u64, HashSet<u64>> {
         let mut graph: HashMap<u64, HashSet<u64>> = HashMap::new();
-        
+
         for (from_addr, xrefs) in &self.forward {
             for xref in xrefs {
                 if xref.is_call() {
@@ -246,13 +258,14 @@ impl XrefIndex {
                 }
             }
         }
-        
+
         graph
     }
 
     /// Find functions with no callers (potential entry points or dead code)
     pub fn orphan_functions(&self, all_functions: &[u64]) -> Vec<u64> {
-        all_functions.iter()
+        all_functions
+            .iter()
             .filter(|&&addr| self.xrefs_to(addr).iter().all(|x| !x.is_call()))
             .copied()
             .collect()
@@ -266,11 +279,10 @@ mod tests {
     #[test]
     fn test_xref_add_and_query() {
         let mut index = XrefIndex::new();
-        
-        let xref = Xref::new(0x1000, 0x2000, XrefType::Call)
-            .with_function(0x1000);
+
+        let xref = Xref::new(0x1000, 0x2000, XrefType::Call).with_function(0x1000);
         index.add(xref);
-        
+
         assert_eq!(index.xrefs_from(0x1000).len(), 1);
         assert_eq!(index.xrefs_to(0x2000).len(), 1);
         assert_eq!(index.callers(0x2000), vec![0x1000]);
@@ -279,11 +291,11 @@ mod tests {
     #[test]
     fn test_multiple_xrefs() {
         let mut index = XrefIndex::new();
-        
+
         // Function at 0x1000 calls 0x2000 and 0x3000
         index.add(Xref::new(0x1010, 0x2000, XrefType::Call).with_function(0x1000));
         index.add(Xref::new(0x1020, 0x3000, XrefType::Call).with_function(0x1000));
-        
+
         // Note: callees looks at xrefs_from the function address, not within it
         // We need to check called_functions instead
         let called = index.called_functions(0x1000);
@@ -294,11 +306,11 @@ mod tests {
     #[test]
     fn test_call_graph() {
         let mut index = XrefIndex::new();
-        
+
         // main -> foo -> bar
         index.add(Xref::new(0x1010, 0x2000, XrefType::Call).with_function(0x1000));
         index.add(Xref::new(0x2010, 0x3000, XrefType::Call).with_function(0x2000));
-        
+
         let graph = index.call_graph();
         assert!(graph.get(&0x1000).unwrap().contains(&0x2000));
         assert!(graph.get(&0x2000).unwrap().contains(&0x3000));

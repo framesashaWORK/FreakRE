@@ -3,9 +3,11 @@
 
 use std::fmt;
 use std::sync::OnceLock;
+use serde::{Deserialize, Serialize};
 
 /// Unique identifier for each backdoor detection rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum BackdoorRuleId {
     /// Reverse shell: outbound connection + shell spawn
     ReverseShell,
@@ -69,6 +71,16 @@ pub enum BackdoorRuleId {
     // ─── Byte-level pack ─────────────────────────────────────────────
     /// Direct syscall stubs (mov eax, SSN; syscall; ret)
     DirectSyscalls,
+    /// Credential dumping through process-memory minidumps.
+    CredentialDumping,
+    /// Remote process allocation, write, and thread execution.
+    RemoteThreadInjection,
+    /// Access-token duplication followed by impersonation.
+    TokenImpersonation,
+    /// Scheduled-task persistence indicators.
+    ScheduledTaskPersistence,
+    /// WMI permanent event-subscription persistence indicators.
+    WmiPersistence,
 }
 
 impl fmt::Display for BackdoorRuleId {
@@ -105,6 +117,11 @@ impl fmt::Display for BackdoorRuleId {
             Self::MouseActivityCheck => write!(f, "MOUSE_ACTIVITY_CHECK"),
 
             Self::DirectSyscalls => write!(f, "DIRECT_SYSCALLS"),
+            Self::CredentialDumping => write!(f, "CREDENTIAL_DUMPING"),
+            Self::RemoteThreadInjection => write!(f, "REMOTE_THREAD_INJECTION"),
+            Self::TokenImpersonation => write!(f, "TOKEN_IMPERSONATION"),
+            Self::ScheduledTaskPersistence => write!(f, "SCHEDULED_TASK_PERSISTENCE"),
+            Self::WmiPersistence => write!(f, "WMI_PERSISTENCE"),
         }
     }
 }
@@ -144,6 +161,11 @@ impl BackdoorRuleId {
             Self::MouseActivityCheck => "Human interaction check: cursor position + key state polling (low confidence; games use the same pair)",
 
             Self::DirectSyscalls => "Direct syscall stubs (mov eax, SSN; syscall; ret) bypassing ntdll API hooks",
+            Self::CredentialDumping => "Process-memory minidump chain consistent with credential dumping",
+            Self::RemoteThreadInjection => "Remote process allocation, write, and thread execution chain",
+            Self::TokenImpersonation => "Access-token duplication and impersonation chain",
+            Self::ScheduledTaskPersistence => "Scheduled task creation command with persistence parameters",
+            Self::WmiPersistence => "WMI permanent event subscription persistence chain",
         }
     }
 
@@ -181,6 +203,11 @@ impl BackdoorRuleId {
             Self::MouseActivityCheck => &["T1497.001"],
 
             Self::DirectSyscalls => &["T1106"],
+            Self::CredentialDumping => &["T1003.001"],
+            Self::RemoteThreadInjection => &["T1055.001"],
+            Self::TokenImpersonation => &["T1134.001"],
+            Self::ScheduledTaskPersistence => &["T1053.005"],
+            Self::WmiPersistence => &["T1546.003"],
         }
     }
 }
@@ -218,8 +245,13 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::ReverseShell,
         required_apis: &["WSAStartup", "connect"],
-        optional_apis: &["CreateProcessA", "CreateProcessW",
-                         "ShellExecuteA", "ShellExecuteW", "WinExec"],
+        optional_apis: &[
+            "CreateProcessA",
+            "CreateProcessW",
+            "ShellExecuteA",
+            "ShellExecuteW",
+            "WinExec",
+        ],
         min_optional: 1,
     },
     // Reverse Shell variant: WSAConnect
@@ -242,16 +274,26 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::NamedPipeBackdoor,
         required_apis: &["CreateNamedPipeA"],
-        optional_apis: &["ConnectNamedPipe", "ImpersonateNamedPipeClient",
-                         "TransactNamedPipe", "CreateProcessA", "CreateProcessW"],
+        optional_apis: &[
+            "ConnectNamedPipe",
+            "ImpersonateNamedPipeClient",
+            "TransactNamedPipe",
+            "CreateProcessA",
+            "CreateProcessW",
+        ],
         min_optional: 2,
     },
     // Named Pipe Backdoor (wide-char API variant).
     ImportSignature {
         rule_id: BackdoorRuleId::NamedPipeBackdoor,
         required_apis: &["CreateNamedPipeW"],
-        optional_apis: &["ConnectNamedPipe", "ImpersonateNamedPipeClient",
-                         "TransactNamedPipe", "CreateProcessA", "CreateProcessW"],
+        optional_apis: &[
+            "ConnectNamedPipe",
+            "ImpersonateNamedPipeClient",
+            "TransactNamedPipe",
+            "CreateProcessA",
+            "CreateProcessW",
+        ],
         min_optional: 2,
     },
     // Service Backdoor
@@ -259,29 +301,37 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
         rule_id: BackdoorRuleId::ServiceBackdoor,
         required_apis: &["CreateServiceA"],
         optional_apis: &["StartServiceA", "ChangeServiceConfigA"],
-        min_optional: 0,
+        min_optional: 1,
     },
     // Service Backdoor (wide-char API variant).
     ImportSignature {
         rule_id: BackdoorRuleId::ServiceBackdoor,
         required_apis: &["CreateServiceW"],
         optional_apis: &["StartServiceW", "ChangeServiceConfigW"],
-        min_optional: 0,
+        min_optional: 1,
     },
     // Auth Bypass: credential hooking
     ImportSignature {
         rule_id: BackdoorRuleId::AuthBypass,
         required_apis: &["LogonUserA"],
-        optional_apis: &["CredEnumerateA", "CredReadA", "LsaLogonUser",
-                         "SspiPrepareForCredRead"],
+        optional_apis: &[
+            "CredEnumerateA",
+            "CredReadA",
+            "LsaLogonUser",
+            "SspiPrepareForCredRead",
+        ],
         min_optional: 1,
     },
     // Auth Bypass: credential hooking (wide-char API variant).
     ImportSignature {
         rule_id: BackdoorRuleId::AuthBypass,
         required_apis: &["LogonUserW"],
-        optional_apis: &["CredEnumerateA", "CredReadA", "LsaLogonUser",
-                         "SspiPrepareForCredRead"],
+        optional_apis: &[
+            "CredEnumerateA",
+            "CredReadA",
+            "LsaLogonUser",
+            "SspiPrepareForCredRead",
+        ],
         min_optional: 1,
     },
     // Auth Bypass: SSP injection
@@ -304,8 +354,13 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::C2Beacon,
         required_apis: &["Sleep", "recv", "connect"],
-        optional_apis: &["CryptDecrypt", "BCryptDecrypt", "VirtualProtect",
-                         "VirtualAlloc", "NtUnmapViewOfSection"],
+        optional_apis: &[
+            "CryptDecrypt",
+            "BCryptDecrypt",
+            "VirtualProtect",
+            "VirtualAlloc",
+            "NtUnmapViewOfSection",
+        ],
         min_optional: 1,
     },
     // ─── Common malware pack ─────────────────────────────────────────
@@ -317,8 +372,14 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::Keylogger,
         required_apis: &["SetWindowsHookEx"],
-        optional_apis: &["connect", "socket", "send", "WSAStartup",
-                         "InternetOpenA", "HttpSendRequestA"],
+        optional_apis: &[
+            "connect",
+            "socket",
+            "send",
+            "WSAStartup",
+            "InternetOpenA",
+            "HttpSendRequestA",
+        ],
         min_optional: 1,
     },
     // Keylogger variant: raw async key-state polling loops. Games poll
@@ -327,8 +388,14 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::Keylogger,
         required_apis: &["GetAsyncKeyState"],
-        optional_apis: &["connect", "socket", "send", "WSAStartup",
-                         "InternetOpenA", "HttpSendRequestA"],
+        optional_apis: &[
+            "connect",
+            "socket",
+            "send",
+            "WSAStartup",
+            "InternetOpenA",
+            "HttpSendRequestA",
+        ],
         min_optional: 1,
     },
     // Clipboard hijack: full read-modify-write clipboard chain + network.
@@ -338,8 +405,14 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::ClipboardHijack,
         required_apis: &["OpenClipboard", "GetClipboardData", "SetClipboardData"],
-        optional_apis: &["connect", "socket", "send", "WSAStartup",
-                         "InternetOpenA", "HttpSendRequestA"],
+        optional_apis: &[
+            "connect",
+            "socket",
+            "send",
+            "WSAStartup",
+            "InternetOpenA",
+            "HttpSendRequestA",
+        ],
         min_optional: 1,
     },
     // Screen capture: blit from a screen DC. Every local screenshot utility
@@ -348,8 +421,14 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::ScreenCapture,
         required_apis: &["BitBlt", "GetDC"],
-        optional_apis: &["connect", "socket", "send", "WSAStartup",
-                         "InternetOpenA", "HttpSendRequestA"],
+        optional_apis: &[
+            "connect",
+            "socket",
+            "send",
+            "WSAStartup",
+            "InternetOpenA",
+            "HttpSendRequestA",
+        ],
         min_optional: 1,
     },
     // Screen capture variant: GDI+ encoder fed from a screen DC, again
@@ -366,32 +445,50 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::Cryptominer,
         required_apis: &["CryptAcquireContextA"],
-        optional_apis: &["CryptHashData", "CryptDeriveKey", "CryptCreateHash",
-                         "CryptEncrypt", "CryptDecrypt"],
+        optional_apis: &[
+            "CryptHashData",
+            "CryptDeriveKey",
+            "CryptCreateHash",
+            "CryptEncrypt",
+            "CryptDecrypt",
+        ],
         min_optional: 4,
     },
     // Cryptominer (wide-char CryptoAPI variant).
     ImportSignature {
         rule_id: BackdoorRuleId::Cryptominer,
         required_apis: &["CryptAcquireContextW"],
-        optional_apis: &["CryptHashData", "CryptDeriveKey", "CryptCreateHash",
-                         "CryptEncrypt", "CryptDecrypt"],
+        optional_apis: &[
+            "CryptHashData",
+            "CryptDeriveKey",
+            "CryptCreateHash",
+            "CryptEncrypt",
+            "CryptDecrypt",
+        ],
         min_optional: 4,
     },
     // Ransomware: file iteration + bulk encryption.
     ImportSignature {
         rule_id: BackdoorRuleId::Ransomware,
         required_apis: &["FindFirstFileA", "CryptEncrypt"],
-        optional_apis: &["FindNextFileA", "CryptAcquireContextA",
-                         "DeleteFileA", "WriteFile"],
+        optional_apis: &[
+            "FindNextFileA",
+            "CryptAcquireContextA",
+            "DeleteFileA",
+            "WriteFile",
+        ],
         min_optional: 1,
     },
     // Ransomware (wide-char / CNG variant).
     ImportSignature {
         rule_id: BackdoorRuleId::Ransomware,
         required_apis: &["FindFirstFileW", "BCryptEncrypt"],
-        optional_apis: &["FindNextFileW", "BCryptOpenAlgorithmProvider",
-                         "DeleteFileW", "WriteFile"],
+        optional_apis: &[
+            "FindNextFileW",
+            "BCryptOpenAlgorithmProvider",
+            "DeleteFileW",
+            "WriteFile",
+        ],
         min_optional: 1,
     },
     // ─── Rare TTP pack ───────────────────────────────────────────────
@@ -400,17 +497,28 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::ProcessHollowing,
         required_apis: &["WriteProcessMemory", "SetThreadContext"],
-        optional_apis: &["ResumeThread", "NtUnmapViewOfSection",
-                         "ZwUnmapViewOfSection", "VirtualAllocEx",
-                         "ReadProcessMemory", "CreateProcessA", "CreateProcessW"],
+        optional_apis: &[
+            "ResumeThread",
+            "NtUnmapViewOfSection",
+            "ZwUnmapViewOfSection",
+            "VirtualAllocEx",
+            "ReadProcessMemory",
+            "CreateProcessA",
+            "CreateProcessW",
+        ],
         min_optional: 1,
     },
     // Process hollowing variant: section-mapping injection path.
     ImportSignature {
         rule_id: BackdoorRuleId::ProcessHollowing,
         required_apis: &["NtCreateSection", "NtMapViewOfSection"],
-        optional_apis: &["WriteProcessMemory", "SetThreadContext", "ResumeThread",
-                         "NtCreateThreadEx", "RtlCreateUserThread"],
+        optional_apis: &[
+            "WriteProcessMemory",
+            "SetThreadContext",
+            "ResumeThread",
+            "NtCreateThreadEx",
+            "RtlCreateUserThread",
+        ],
         min_optional: 1,
     },
     // Callback injection: RWX-capable allocation combined with execution via
@@ -419,9 +527,15 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::CallbackInjection,
         required_apis: &["VirtualAlloc", "EnumWindows"],
-        optional_apis: &["SetTimer", "SetWindowsHookExA", "SetWindowsHookExW",
-                         "EnumChildWindows", "CertDuplicateCertificateContext",
-                         "CreateThread", "VirtualProtect"],
+        optional_apis: &[
+            "SetTimer",
+            "SetWindowsHookExA",
+            "SetWindowsHookExW",
+            "EnumChildWindows",
+            "CertDuplicateCertificateContext",
+            "CreateThread",
+            "VirtualProtect",
+        ],
         min_optional: 2,
     },
     // ─── Anti-debug / anti-VM / sandbox-evasion pack ─────────────────
@@ -429,8 +543,12 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::AntiDebug,
         required_apis: &["IsDebuggerPresent"],
-        optional_apis: &["CheckRemoteDebuggerPresent", "NtQueryInformationProcess",
-                         "OutputDebugStringA", "OutputDebugStringW"],
+        optional_apis: &[
+            "CheckRemoteDebuggerPresent",
+            "NtQueryInformationProcess",
+            "OutputDebugStringA",
+            "OutputDebugStringW",
+        ],
         min_optional: 1,
     },
     // Debugger detection: cross-process debug check on its own is already
@@ -447,8 +565,12 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::AntiDebug,
         required_apis: &["NtQueryInformationProcess"],
-        optional_apis: &["OutputDebugStringA", "OutputDebugStringW",
-                         "IsDebuggerPresent", "CheckRemoteDebuggerPresent"],
+        optional_apis: &[
+            "OutputDebugStringA",
+            "OutputDebugStringW",
+            "IsDebuggerPresent",
+            "CheckRemoteDebuggerPresent",
+        ],
         min_optional: 1,
     },
     // Sleep-acceleration / timing-loop evasion: WEAK static proxy. Malware
@@ -461,16 +583,28 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
     ImportSignature {
         rule_id: BackdoorRuleId::SleepEvasion,
         required_apis: &["Sleep", "GetTickCount"],
-        optional_apis: &["connect", "socket", "send", "WSAStartup",
-                         "InternetOpenA", "HttpSendRequestA"],
+        optional_apis: &[
+            "connect",
+            "socket",
+            "send",
+            "WSAStartup",
+            "InternetOpenA",
+            "HttpSendRequestA",
+        ],
         min_optional: 1,
     },
     // Sleep-acceleration variant: high-resolution counter instead of ticks.
     ImportSignature {
         rule_id: BackdoorRuleId::SleepEvasion,
         required_apis: &["Sleep", "QueryPerformanceCounter"],
-        optional_apis: &["connect", "socket", "send", "WSAStartup",
-                         "InternetOpenA", "HttpSendRequestA"],
+        optional_apis: &[
+            "connect",
+            "socket",
+            "send",
+            "WSAStartup",
+            "InternetOpenA",
+            "HttpSendRequestA",
+        ],
         min_optional: 1,
     },
     // Human interaction check: cursor position + key state polling.
@@ -481,6 +615,32 @@ pub const IMPORT_SIGNATURES: &[ImportSignature] = &[
         required_apis: &["GetCursorPos", "GetAsyncKeyState"],
         optional_apis: &[],
         min_optional: 0,
+    },
+    // Credential dumping: a minidump writer plus a process handle is the
+    // narrow core. A lone OpenProcess or ReadProcessMemory is common in
+    // debuggers, installers, and crash reporters and must not fire.
+    ImportSignature {
+        rule_id: BackdoorRuleId::CredentialDumping,
+        required_apis: &["MiniDumpWriteDump", "OpenProcess"],
+        optional_apis: &["ReadProcessMemory", "NtReadVirtualMemory", "LsaOpenPolicy"],
+        min_optional: 0,
+    },
+    // Remote thread injection: require remote allocation and a remote write,
+    // then at least one execution primitive. This excludes benign tools that
+    // only inspect or patch another process.
+    ImportSignature {
+        rule_id: BackdoorRuleId::RemoteThreadInjection,
+        required_apis: &["VirtualAllocEx", "WriteProcessMemory"],
+        optional_apis: &["CreateRemoteThread", "NtCreateThreadEx", "RtlCreateUserThread", "QueueUserAPC"],
+        min_optional: 1,
+    },
+    // Token impersonation: token opening and duplication alone can be normal
+    // service code; require an API that actually applies the impersonation.
+    ImportSignature {
+        rule_id: BackdoorRuleId::TokenImpersonation,
+        required_apis: &["OpenProcessToken", "DuplicateTokenEx"],
+        optional_apis: &["ImpersonateLoggedOnUser", "SetThreadToken", "ImpersonateSelf"],
+        min_optional: 1,
     },
 ];
 
@@ -511,8 +671,13 @@ pub const STRING_SIGNATURES: &[StringSignature] = &[
     // Service Backdoor paths
     StringSignature {
         rule_id: BackdoorRuleId::ServiceBackdoor,
-        patterns: &["\\AppData\\Local\\Temp\\", "\\AppData\\Roaming\\",
-                     "\\ProgramData\\", "svchost", "rundll32"],
+        patterns: &[
+            "\\AppData\\Local\\Temp\\",
+            "\\AppData\\Roaming\\",
+            "\\ProgramData\\",
+            "svchost",
+            "rundll32",
+        ],
         min_matches: 3,
         optional_patterns: &[],
     },
@@ -521,16 +686,29 @@ pub const STRING_SIGNATURES: &[StringSignature] = &[
     // "SECURITY_PROTOCOL" appears in every large Windows binary.
     StringSignature {
         rule_id: BackdoorRuleId::FirmwareIndicator,
-        patterns: &["DXE_CORE", "SMM_HANDLER", "EFI_BOOT_SERVICES",
-                     "FV_MAIN", "PEI_CORE", "EFI_SYSTEM_TABLE"],
+        patterns: &[
+            "DXE_CORE",
+            "SMM_HANDLER",
+            "EFI_BOOT_SERVICES",
+            "FV_MAIN",
+            "PEI_CORE",
+            "EFI_SYSTEM_TABLE",
+        ],
         min_matches: 2,
         optional_patterns: &[],
     },
     // C2 Beacon strings
     StringSignature {
         rule_id: BackdoorRuleId::C2Beacon,
-        patterns: &["beacon", "callback", "checkin", "heartbeat",
-                     "stage", "postback", "sleeptime"],
+        patterns: &[
+            "beacon",
+            "callback",
+            "checkin",
+            "heartbeat",
+            "stage",
+            "postback",
+            "sleeptime",
+        ],
         min_matches: 3,
         optional_patterns: &[],
     },
@@ -539,8 +717,15 @@ pub const STRING_SIGNATURES: &[StringSignature] = &[
     // shell-invocation patterns count as evidence.
     StringSignature {
         rule_id: BackdoorRuleId::ReverseShell,
-        patterns: &["/bin/sh", "/bin/bash", "bash -i", "nc -e ",
-                     "powershell -enc", "cmd.exe /c", "cmd.exe /k"],
+        patterns: &[
+            "/bin/sh",
+            "/bin/bash",
+            "bash -i",
+            "nc -e ",
+            "powershell -enc",
+            "cmd.exe /c",
+            "cmd.exe /k",
+        ],
         min_matches: 2,
         optional_patterns: &[],
     },
@@ -559,8 +744,14 @@ pub const STRING_SIGNATURES: &[StringSignature] = &[
     // Patterns are pairwise non-substring so one token cannot satisfy two.
     StringSignature {
         rule_id: BackdoorRuleId::Cryptominer,
-        patterns: &["stratum+", "mining.subscribe", "mining.authorize",
-                    "xmrig", "cryptonight", "randomx"],
+        patterns: &[
+            "stratum+",
+            "mining.subscribe",
+            "mining.authorize",
+            "xmrig",
+            "cryptonight",
+            "randomx",
+        ],
         min_matches: 2,
         optional_patterns: &[],
     },
@@ -569,10 +760,15 @@ pub const STRING_SIGNATURES: &[StringSignature] = &[
     // single token cannot satisfy two at once.
     StringSignature {
         rule_id: BackdoorRuleId::Ransomware,
-        patterns: &[".encrypted", ".locked",
-                    "vssadmin delete shadows", "wbadmin delete catalog",
-                    "bcdedit /set recoveryenabled",
-                    "how_to_decrypt", "how to restore files"],
+        patterns: &[
+            ".encrypted",
+            ".locked",
+            "vssadmin delete shadows",
+            "wbadmin delete catalog",
+            "bcdedit /set recoveryenabled",
+            "how_to_decrypt",
+            "how to restore files",
+        ],
         min_matches: 2,
         optional_patterns: &[],
     },
@@ -581,8 +777,13 @@ pub const STRING_SIGNATURES: &[StringSignature] = &[
     // generic HKCU registry paths appear in every installer and are excluded.
     StringSignature {
         rule_id: BackdoorRuleId::UacBypass,
-        patterns: &["ICMLuaUtil", "fodhelper", "eventvwr.exe", "ms-settings:",
-                    "Software\\Classes\\exefile\\shell\\open\\command"],
+        patterns: &[
+            "ICMLuaUtil",
+            "fodhelper",
+            "eventvwr.exe",
+            "ms-settings:",
+            "Software\\Classes\\exefile\\shell\\open\\command",
+        ],
         min_matches: 2,
         optional_patterns: &[],
     },
@@ -591,8 +792,14 @@ pub const STRING_SIGNATURES: &[StringSignature] = &[
     // strings in security tooling.
     StringSignature {
         rule_id: BackdoorRuleId::LolbinAbuse,
-        patterns: &["certutil -urlcache", "mshta http", "mshta vbscript",
-                    "regsvr32 /i:http", "bitsadmin /transfer", "bitsadmin /create"],
+        patterns: &[
+            "certutil -urlcache",
+            "mshta http",
+            "mshta vbscript",
+            "regsvr32 /i:http",
+            "bitsadmin /transfer",
+            "bitsadmin /create",
+        ],
         min_matches: 1,
         optional_patterns: &[],
     },
@@ -612,12 +819,22 @@ pub const STRING_SIGNATURES: &[StringSignature] = &[
     StringSignature {
         rule_id: BackdoorRuleId::AntiVm,
         // Home family: VirtualBox guest artifacts.
-        patterns: &["VBoxService", "VBoxTray", "VBoxMiniRdDN",
-                    "Oracle\\VirtualBox Guest Additions"],
+        patterns: &[
+            "VBoxService",
+            "VBoxTray",
+            "VBoxMiniRdDN",
+            "Oracle\\VirtualBox Guest Additions",
+        ],
         min_matches: 1,
         // Foreign families: VMware / Sandboxie / Cuckoo / QEMU.
-        optional_patterns: &["vmware", "vmtoolsd",
-                             "SbieDll.dll", "Sandboxie", "cuckoo", "qemu"],
+        optional_patterns: &[
+            "vmware",
+            "vmtoolsd",
+            "SbieDll.dll",
+            "Sandboxie",
+            "cuckoo",
+            "qemu",
+        ],
     },
     StringSignature {
         rule_id: BackdoorRuleId::AntiVm,
@@ -625,9 +842,15 @@ pub const STRING_SIGNATURES: &[StringSignature] = &[
         patterns: &["vmware", "vmtoolsd", "qemu"],
         min_matches: 1,
         // Foreign families: VirtualBox / Sandboxie / Cuckoo.
-        optional_patterns: &["VBoxService", "VBoxTray", "VBoxMiniRdDN",
-                             "Oracle\\VirtualBox Guest Additions",
-                             "SbieDll.dll", "Sandboxie", "cuckoo"],
+        optional_patterns: &[
+            "VBoxService",
+            "VBoxTray",
+            "VBoxMiniRdDN",
+            "Oracle\\VirtualBox Guest Additions",
+            "SbieDll.dll",
+            "Sandboxie",
+            "cuckoo",
+        ],
     },
     StringSignature {
         rule_id: BackdoorRuleId::AntiVm,
@@ -635,9 +858,32 @@ pub const STRING_SIGNATURES: &[StringSignature] = &[
         patterns: &["SbieDll.dll", "Sandboxie", "cuckoo"],
         min_matches: 1,
         // Foreign families: VirtualBox / VMware / QEMU.
-        optional_patterns: &["VBoxService", "VBoxTray", "VBoxMiniRdDN",
-                             "Oracle\\VirtualBox Guest Additions",
-                             "vmware", "vmtoolsd", "qemu"],
+        optional_patterns: &[
+            "VBoxService",
+            "VBoxTray",
+            "VBoxMiniRdDN",
+            "Oracle\\VirtualBox Guest Additions",
+            "vmware",
+            "vmtoolsd",
+            "qemu",
+        ],
+    },
+    // Scheduled-task persistence: require the task utility plus its creation
+    // verb and a schedule/task-name argument. This avoids firing on help text
+    // or binaries that merely mention schtasks.
+    StringSignature {
+        rule_id: BackdoorRuleId::ScheduledTaskPersistence,
+        patterns: &["schtasks", "schtasks.exe"],
+        min_matches: 1,
+        optional_patterns: &["/create", " /sc ", " /tn "],
+    },
+    // WMI permanent event subscriptions are distinctive only as a chain;
+    // each individual class name is common in administration tooling.
+    StringSignature {
+        rule_id: BackdoorRuleId::WmiPersistence,
+        patterns: &["__eventfilter", "commandlineeventconsumer", "__filtertoconsumerbinding"],
+        min_matches: 2,
+        optional_patterns: &[],
     },
 ];
 

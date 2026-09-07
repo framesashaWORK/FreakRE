@@ -37,22 +37,22 @@
 //! db.add_function(func).unwrap();
 //! ```
 
-pub mod types;
 pub mod functions;
-pub mod xrefs;
+pub mod types;
 pub mod undo;
+pub mod xrefs;
 
-pub use types::*;
 pub use functions::*;
+pub use types::*;
 pub use xrefs::*;
 // undo module provides UndoStack, Action, and extends ProjectDatabase with undo/redo
-pub use undo::{UndoStack, Action, ActionExecutor};
+pub use undo::{Action, ActionExecutor, UndoStack};
 
-use sled::Db;
-use serde::{Deserialize, Serialize};
-use serde::de::DeserializeOwned;
 use bincode::Options;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use sled::transaction::{ConflictableTransactionError, TransactionError};
+use sled::Db;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -288,12 +288,12 @@ impl ProjectDatabase {
         let key = bookmark.address.to_le_bytes();
         let value = bincode::serialize(&bookmark)?;
         self.bookmarks_tree.insert(key, value)?;
-        
+
         self.undo_stack.push(Action::AddBookmark {
             address: bookmark.address,
             bookmark: bookmark.clone(),
         });
-        
+
         self.update_modified();
         Ok(())
     }
@@ -335,12 +335,12 @@ impl ProjectDatabase {
         let key = func.address.to_le_bytes();
         let value = bincode::serialize(&func)?;
         self.functions_tree.insert(key, value)?;
-        
+
         self.undo_stack.push(Action::CreateFunction {
             address: func.address,
             func: func.clone(),
         });
-        
+
         self.update_modified();
         Ok(())
     }
@@ -362,13 +362,13 @@ impl ProjectDatabase {
         let key = address.to_le_bytes();
         let value = bincode::serialize(&func)?;
         self.functions_tree.insert(key, value)?;
-        
+
         self.undo_stack.push(Action::UpdateFunction {
             address,
             old: old_func,
             new: func,
         });
-        
+
         self.update_modified();
         Ok(())
     }
@@ -401,15 +401,15 @@ impl ProjectDatabase {
     pub fn set_label(&mut self, address: u64, label: String) -> Result<()> {
         let key = address.to_le_bytes();
         let old_label = self.get_label(address)?;
-        
+
         self.labels_tree.insert(key, label.as_bytes())?;
-        
+
         self.undo_stack.push(Action::SetLabel {
             address,
             old: old_label,
             new: Some(label),
         });
-        
+
         self.update_modified();
         Ok(())
     }
@@ -456,15 +456,15 @@ impl ProjectDatabase {
     pub fn set_comment(&mut self, address: u64, comment: String) -> Result<()> {
         let key = address.to_le_bytes();
         let old_comment = self.get_comment(address)?;
-        
+
         self.comments_tree.insert(key, comment.as_bytes())?;
-        
+
         self.undo_stack.push(Action::SetComment {
             address,
             old: old_comment,
             new: Some(comment),
         });
-        
+
         self.update_modified();
         Ok(())
     }
@@ -558,7 +558,8 @@ impl ProjectDatabase {
     }
 
     pub fn callers(&self, address: u64) -> Result<Vec<u64>> {
-        Ok(self.get_xrefs_to(address)?
+        Ok(self
+            .get_xrefs_to(address)?
             .iter()
             .filter(|x| x.xref_type == XrefType::Call)
             .map(|x| x.from)
@@ -566,7 +567,8 @@ impl ProjectDatabase {
     }
 
     pub fn callees(&self, address: u64) -> Result<Vec<u64>> {
-        Ok(self.get_xrefs_from(address)?
+        Ok(self
+            .get_xrefs_from(address)?
             .iter()
             .filter(|x| x.xref_type == XrefType::Call)
             .map(|x| x.to)
@@ -580,13 +582,13 @@ impl ProjectDatabase {
         let old_type = self.get_type(address)?;
         let value = bincode::serialize(&ty)?;
         self.types_tree.insert(key, value)?;
-        
+
         self.undo_stack.push(Action::SetType {
             address,
             old_type,
             new_type: Some(ty),
         });
-        
+
         self.update_modified();
         Ok(())
     }
@@ -645,7 +647,7 @@ mod tests {
     fn test_create_and_open() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.bdb");
-        
+
         let metadata = ProjectMetadata {
             id: uuid::Uuid::new_v4(),
             name: "test".to_string(),
@@ -672,7 +674,7 @@ mod tests {
     fn test_stats() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.bdb");
-        
+
         let metadata = ProjectMetadata {
             id: uuid::Uuid::new_v4(),
             name: "test".to_string(),
@@ -762,7 +764,11 @@ mod tests {
         let db_path = temp_dir.path().join("types2.bdb");
         let mut db = ProjectDatabase::open(&db_path, test_metadata("t")).unwrap();
 
-        db.set_type(0x2000, Type::Pointer(Box::new(Type::Primitive(PrimitiveType::U8)))).unwrap();
+        db.set_type(
+            0x2000,
+            Type::Pointer(Box::new(Type::Primitive(PrimitiveType::U8))),
+        )
+        .unwrap();
         db.remove_type(0x2000).unwrap();
         assert_eq!(db.get_type(0x2000).unwrap(), None);
 
@@ -835,11 +841,14 @@ mod tests {
         .unwrap();
 
         // Caller passes a payload whose `address` field disagrees with the key.
-        db.update_function(0x401000, FunctionEntry {
-            address: 0xDEADBEEF,
-            name: "renamed".to_string(),
-            ..Default::default()
-        })
+        db.update_function(
+            0x401000,
+            FunctionEntry {
+                address: 0xDEADBEEF,
+                name: "renamed".to_string(),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
         let stored = db.get_function(0x401000).unwrap().expect("entry at key");
@@ -875,5 +884,3 @@ mod tests {
         assert_eq!(reopened.metadata().modified_at, modified_in_memory);
     }
 }
-
-

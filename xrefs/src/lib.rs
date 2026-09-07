@@ -148,10 +148,7 @@ impl XrefDatabase {
         if !self.seen.insert((xref.source_offset, xref.target.clone())) {
             return;
         }
-        self.by_target
-            .entry(key)
-            .or_default()
-            .push(xref.clone());
+        self.by_target.entry(key).or_default().push(xref.clone());
         self.by_source
             .entry(xref.source_offset)
             .or_default()
@@ -210,10 +207,12 @@ impl XrefDatabase {
         }
 
         // Collect source offsets for each target
-        let mut source_sets: Vec<std::collections::HashSet<usize>> = Vec::with_capacity(target_labels.len());
+        let mut source_sets: Vec<std::collections::HashSet<usize>> =
+            Vec::with_capacity(target_labels.len());
         for label in target_labels {
             let xrefs = self.xrefs_to(label);
-            let set: std::collections::HashSet<usize> = xrefs.iter().map(|x| x.source_offset).collect();
+            let set: std::collections::HashSet<usize> =
+                xrefs.iter().map(|x| x.source_offset).collect();
             source_sets.push(set);
         }
 
@@ -268,10 +267,22 @@ impl XrefDatabase {
         XrefSummary {
             total_xrefs: all_xrefs.len(),
             unique_targets: self.by_target.len(),
-            string_xrefs: all_xrefs.iter().filter(|x| x.target.kind == XrefTargetKind::String).count(),
-            import_xrefs: all_xrefs.iter().filter(|x| x.target.kind == XrefTargetKind::Import).count(),
-            pattern_xrefs: all_xrefs.iter().filter(|x| x.target.kind == XrefTargetKind::Pattern).count(),
-            address_xrefs: all_xrefs.iter().filter(|x| x.target.kind == XrefTargetKind::Address).count(),
+            string_xrefs: all_xrefs
+                .iter()
+                .filter(|x| x.target.kind == XrefTargetKind::String)
+                .count(),
+            import_xrefs: all_xrefs
+                .iter()
+                .filter(|x| x.target.kind == XrefTargetKind::Import)
+                .count(),
+            pattern_xrefs: all_xrefs
+                .iter()
+                .filter(|x| x.target.kind == XrefTargetKind::Pattern)
+                .count(),
+            address_xrefs: all_xrefs
+                .iter()
+                .filter(|x| x.target.kind == XrefTargetKind::Address)
+                .count(),
         }
     }
 
@@ -300,10 +311,7 @@ impl Default for XrefDatabase {
 /// All needles are searched in a single Aho-Corasick pass (O(n + m + z)), so the
 /// cost is independent of how many strings the binary contains — critical for
 /// system libraries that embed thousands of strings.
-pub fn build_string_xrefs(
-    data: &[u8],
-    strings: &[str_extract::ExtractedString<'_>],
-) -> Vec<Xref> {
+pub fn build_string_xrefs(data: &[u8], strings: &[str_extract::ExtractedString<'_>]) -> Vec<Xref> {
     // Collect non-empty needles, dedupe by bytes, and keep a parallel mapping
     // from pattern index -> (original offset, value).
     let mut needles: Vec<&[u8]> = Vec::new();
@@ -451,11 +459,7 @@ pub fn build_import_xrefs(data: &[u8], import_names: &[String]) -> Vec<Xref> {
 /// Build xrefs for a specific byte pattern across the entire binary.
 ///
 /// Uses `memchr::memmem` for efficient substring search.
-pub fn build_pattern_xrefs(
-    data: &[u8],
-    pattern_name: &str,
-    pattern: &[u8],
-) -> Vec<Xref> {
+pub fn build_pattern_xrefs(data: &[u8], pattern_name: &str, pattern: &[u8]) -> Vec<Xref> {
     let mut xrefs = Vec::new();
 
     if pattern.is_empty() || pattern.len() > data.len() {
@@ -749,10 +753,7 @@ mod tests {
 
         let summary = db.summary();
         assert_eq!(summary.total_xrefs, db.len());
-        assert_eq!(
-            summary.string_xrefs,
-            db.xrefs_to("cmd.exe").len()
-        );
+        assert_eq!(summary.string_xrefs, db.xrefs_to("cmd.exe").len());
     }
 
     // ─── Import xref filtering tests ──────────────────────────────────
@@ -797,5 +798,3 @@ mod tests {
         assert!(build_import_xrefs(&data, &names).is_empty());
     }
 }
-
-

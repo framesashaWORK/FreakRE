@@ -20,7 +20,11 @@ impl fmt::Display for ElfError {
         match self {
             Self::TooSmall(size) => write!(f, "File too small for ELF header: {} bytes", size),
             Self::InvalidMagic(m) => {
-                write!(f, "Invalid ELF magic: {:02X} {:02X} {:02X} {:02X}", m[0], m[1], m[2], m[3])
+                write!(
+                    f,
+                    "Invalid ELF magic: {:02X} {:02X} {:02X} {:02X}",
+                    m[0], m[1], m[2], m[3]
+                )
             }
             Self::UnsupportedFormat => write!(f, "Unsupported ELF class/endian combination"),
             Self::InvalidShstrndx(idx, count) => {

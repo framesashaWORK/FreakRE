@@ -56,7 +56,10 @@ impl FlatBinary {
         if end > self.data.len() {
             return None;
         }
-        Some(u16::from_le_bytes([self.data[offset], self.data[offset + 1]]))
+        Some(u16::from_le_bytes([
+            self.data[offset],
+            self.data[offset + 1],
+        ]))
     }
 
     /// Read double word (32-bit LE) at offset
@@ -105,7 +108,8 @@ impl FlatBinary {
         if pattern.is_empty() {
             return Vec::new();
         }
-        self.data.windows(pattern.len())
+        self.data
+            .windows(pattern.len())
             .enumerate()
             .filter_map(|(i, w)| if w == pattern { Some(i) } else { None })
             .collect()
@@ -140,7 +144,9 @@ impl FlatBinary {
         }
 
         // Skip text-like files: if most bytes are printable ASCII, this is not shellcode
-        let printable_count = self.data.iter()
+        let printable_count = self
+            .data
+            .iter()
             .take(256)
             .filter(|&&b| (0x20..=0x7E).contains(&b) || b == 0x09 || b == 0x0A || b == 0x0D)
             .count();
@@ -181,38 +187,66 @@ impl FlatBinary {
     fn has_shellcode_instruction_patterns(&self) -> bool {
         let d = &self.data;
         let len = d.len();
-        if len < 4 { return false; }
+        if len < 4 {
+            return false;
+        }
 
         // x86: INT 0x80 (CD 80) — Linux syscall
-        if d.windows(2).any(|w| w == [0xCD, 0x80]) { return true; }
+        if d.windows(2).any(|w| w == [0xCD, 0x80]) {
+            return true;
+        }
         // x86/x64: SYSCALL (0F 05)
-        if d.windows(2).any(|w| w == [0x0F, 0x05]) { return true; }
+        if d.windows(2).any(|w| w == [0x0F, 0x05]) {
+            return true;
+        }
         // x86: NOP sled (90 90 90 90)
-        if d.windows(4).any(|w| w == [0x90, 0x90, 0x90, 0x90]) { return true; }
+        if d.windows(4).any(|w| w == [0x90, 0x90, 0x90, 0x90]) {
+            return true;
+        }
         // x86: JMP rel8 (EB xx) — multi-byte, more specific than single-byte
-        if d.windows(2).any(|w| w[0] == 0xEB) { return true; }
+        if d.windows(2).any(|w| w[0] == 0xEB) {
+            return true;
+        }
         // x86: CALL rel32 (E8 xx xx xx) — multi-byte, more specific
-        if d.windows(4).any(|w| w[0] == 0xE8) { return true; }
+        if d.windows(4).any(|w| w[0] == 0xE8) {
+            return true;
+        }
 
         // ARM (32-bit, big-endian): B/BL with condition (Ex xx xx xx)
-        if d.windows(4).any(|w| w[3] >= 0xEA && w[3] <= 0xEB) { return true; }
+        if d.windows(4).any(|w| w[3] >= 0xEA && w[3] <= 0xEB) {
+            return true;
+        }
         // ARM: SVC #0 (00 00 00 EF)
-        if d.windows(4).any(|w| w == [0x00, 0x00, 0x00, 0xEF]) { return true; }
+        if d.windows(4).any(|w| w == [0x00, 0x00, 0x00, 0xEF]) {
+            return true;
+        }
 
         // AArch64 (little-endian): B/BL (14/94 xx xx xx in LE → byte[3] is opcode)
-        if d.windows(4).any(|w| w[3] == 0x14 || w[3] == 0x94) { return true; }
+        if d.windows(4).any(|w| w[3] == 0x14 || w[3] == 0x94) {
+            return true;
+        }
         // AArch64: BLR Xn (3F 03 xx F8 in LE)
-        if d.windows(4).any(|w| w == [0x3F, 0x03, 0x00, 0xF8] ||
-                               w == [0x3F, 0x03, 0x01, 0xF8] ||
-                               w == [0x3F, 0x03, 0x02, 0xF8] ||
-                               w == [0x3F, 0x03, 0x03, 0xF8]) { return true; }
+        if d.windows(4).any(|w| {
+            w == [0x3F, 0x03, 0x00, 0xF8]
+                || w == [0x3F, 0x03, 0x01, 0xF8]
+                || w == [0x3F, 0x03, 0x02, 0xF8]
+                || w == [0x3F, 0x03, 0x03, 0xF8]
+        }) {
+            return true;
+        }
         // AArch64: RET (C0 03 5F D6 in LE)
-        if d.windows(4).any(|w| w == [0xC0, 0x03, 0x5F, 0xD6]) { return true; }
+        if d.windows(4).any(|w| w == [0xC0, 0x03, 0x5F, 0xD6]) {
+            return true;
+        }
         // AArch64: SVC #0 (01 00 00 D4)
-        if d.windows(4).any(|w| w == [0x01, 0x00, 0x00, 0xD4]) { return true; }
+        if d.windows(4).any(|w| w == [0x01, 0x00, 0x00, 0xD4]) {
+            return true;
+        }
 
         // MIPS: SYSCALL (0C 00 00 0C) — little-endian
-        if d.windows(4).any(|w| w == [0x0C, 0x00, 0x00, 0x0C]) { return true; }
+        if d.windows(4).any(|w| w == [0x0C, 0x00, 0x00, 0x0C]) {
+            return true;
+        }
 
         false
     }
@@ -287,7 +321,9 @@ impl fmt::Display for FlatBinaryError {
 
 impl std::error::Error for FlatBinaryError {}
 impl From<std::io::Error> for FlatBinaryError {
-    fn from(e: std::io::Error) -> Self { Self::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
 }
 
 /// Load flat binary from file
@@ -372,12 +408,15 @@ impl IntelHex {
                 continue;
             }
 
-            let byte_count = u8::try_from(hex_to_u64(&hex[0..2]).ok_or(FlatBinaryError::OutOfBounds)?)
-                .map_err(|_| FlatBinaryError::OutOfBounds)?;
-            let address = u16::try_from(hex_to_u64(&hex[2..6]).ok_or(FlatBinaryError::OutOfBounds)?)
-                .map_err(|_| FlatBinaryError::OutOfBounds)?;
-            let record_type_byte = u8::try_from(hex_to_u64(&hex[6..8]).ok_or(FlatBinaryError::OutOfBounds)?)
-                .map_err(|_| FlatBinaryError::OutOfBounds)?;
+            let byte_count =
+                u8::try_from(hex_to_u64(&hex[0..2]).ok_or(FlatBinaryError::OutOfBounds)?)
+                    .map_err(|_| FlatBinaryError::OutOfBounds)?;
+            let address =
+                u16::try_from(hex_to_u64(&hex[2..6]).ok_or(FlatBinaryError::OutOfBounds)?)
+                    .map_err(|_| FlatBinaryError::OutOfBounds)?;
+            let record_type_byte =
+                u8::try_from(hex_to_u64(&hex[6..8]).ok_or(FlatBinaryError::OutOfBounds)?)
+                    .map_err(|_| FlatBinaryError::OutOfBounds)?;
 
             let record_type = match record_type_byte {
                 0x00 => IntelHexRecordType::Data,
@@ -400,8 +439,9 @@ impl IntelHex {
 
             let mut record_data = Vec::with_capacity(byte_count as usize);
             for i in (data_start..data_end).step_by(2) {
-                let byte = u8::try_from(hex_to_u64(&hex[i..i+2]).ok_or(FlatBinaryError::OutOfBounds)?)
-                    .map_err(|_| FlatBinaryError::OutOfBounds)?;
+                let byte =
+                    u8::try_from(hex_to_u64(&hex[i..i + 2]).ok_or(FlatBinaryError::OutOfBounds)?)
+                        .map_err(|_| FlatBinaryError::OutOfBounds)?;
                 record_data.push(byte);
             }
 
@@ -414,9 +454,11 @@ impl IntelHex {
 
             match record_type {
                 IntelHexRecordType::Data => {
-                    let addr = base_address.checked_add(address as u32)
+                    let addr = base_address
+                        .checked_add(address as u32)
                         .ok_or(FlatBinaryError::OutOfBounds)?;
-                    let end = (addr as usize).checked_add(record_data.len())
+                    let end = (addr as usize)
+                        .checked_add(record_data.len())
                         .ok_or(FlatBinaryError::OutOfBounds)?;
                     if end > MAX_OUTPUT_SIZE {
                         return Err(FlatBinaryError::OutOfBounds);
@@ -425,11 +467,13 @@ impl IntelHex {
                     if end > data.len() {
                         data.resize(end, 0xFF);
                     }
-                    data[addr as usize..addr as usize + record_data.len()].copy_from_slice(&record_data);
+                    data[addr as usize..addr as usize + record_data.len()]
+                        .copy_from_slice(&record_data);
                 }
                 IntelHexRecordType::ExtendedLinearAddress => {
                     if record_data.len() >= 2 {
-                        base_address = ((record_data[0] as u32) << 24) | ((record_data[1] as u32) << 16);
+                        base_address =
+                            ((record_data[0] as u32) << 24) | ((record_data[1] as u32) << 16);
                     }
                 }
                 IntelHexRecordType::StartLinearAddress => {
@@ -455,7 +499,11 @@ impl IntelHex {
             return Err(FlatBinaryError::OutOfBounds);
         }
 
-        Ok(IntelHex { records, data, start_address })
+        Ok(IntelHex {
+            records,
+            data,
+            start_address,
+        })
     }
 
     /// Convert to FlatBinary
@@ -530,8 +578,9 @@ impl SRecord {
                 }
             };
 
-            let byte_count = u8::try_from(hex_to_u64(&bytes[2..4]).ok_or(FlatBinaryError::OutOfBounds)?)
-                .map_err(|_| FlatBinaryError::OutOfBounds)?;
+            let byte_count =
+                u8::try_from(hex_to_u64(&bytes[2..4]).ok_or(FlatBinaryError::OutOfBounds)?)
+                    .map_err(|_| FlatBinaryError::OutOfBounds)?;
 
             let (addr_len, _data_start) = match record_type {
                 SRecordType::S0 | SRecordType::S1 | SRecordType::S5 | SRecordType::S9 => (2, 4),
@@ -544,8 +593,9 @@ impl SRecord {
                 continue;
             }
 
-            let address = u32::try_from(hex_to_u64(&bytes[4..addr_end]).ok_or(FlatBinaryError::OutOfBounds)?)
-                .map_err(|_| FlatBinaryError::OutOfBounds)?;
+            let address =
+                u32::try_from(hex_to_u64(&bytes[4..addr_end]).ok_or(FlatBinaryError::OutOfBounds)?)
+                    .map_err(|_| FlatBinaryError::OutOfBounds)?;
 
             let data_len = match (byte_count as usize).checked_sub(addr_len + 1) {
                 Some(n) => n * 2,
@@ -558,8 +608,9 @@ impl SRecord {
 
             let mut record_data = Vec::new();
             for i in (addr_end..data_end).step_by(2) {
-                let byte = u8::try_from(hex_to_u64(&bytes[i..i+2]).ok_or(FlatBinaryError::OutOfBounds)?)
-                    .map_err(|_| FlatBinaryError::OutOfBounds)?;
+                let byte =
+                    u8::try_from(hex_to_u64(&bytes[i..i + 2]).ok_or(FlatBinaryError::OutOfBounds)?)
+                        .map_err(|_| FlatBinaryError::OutOfBounds)?;
                 record_data.push(byte);
             }
 
@@ -572,7 +623,8 @@ impl SRecord {
 
             match record_type {
                 SRecordType::S1 | SRecordType::S2 | SRecordType::S3 => {
-                    let end = (address as usize).checked_add(record_data.len())
+                    let end = (address as usize)
+                        .checked_add(record_data.len())
                         .ok_or(FlatBinaryError::OutOfBounds)?;
                     if end > MAX_OUTPUT_SIZE {
                         return Err(FlatBinaryError::OutOfBounds);
@@ -580,7 +632,8 @@ impl SRecord {
                     if end > data.len() {
                         data.resize(end, 0xFF);
                     }
-                    data[address as usize..address as usize + record_data.len()].copy_from_slice(&record_data);
+                    data[address as usize..address as usize + record_data.len()]
+                        .copy_from_slice(&record_data);
                 }
                 SRecordType::S7 | SRecordType::S8 | SRecordType::S9 => {
                     start_address = Some(address);
@@ -595,7 +648,11 @@ impl SRecord {
             return Err(FlatBinaryError::OutOfBounds);
         }
 
-        Ok(SRecord { records, data, start_address })
+        Ok(SRecord {
+            records,
+            data,
+            start_address,
+        })
     }
 
     /// Convert to FlatBinary

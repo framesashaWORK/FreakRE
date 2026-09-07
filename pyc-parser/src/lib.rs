@@ -115,13 +115,19 @@ pub struct PycFinding {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum PycSeverity {
-    Info, Low, Medium, High, Critical,
+    Info,
+    Low,
+    Medium,
+    High,
+    Critical,
 }
 
 /// Top-level entry point. Returns `Some` for both `.pyc` and PyInstaller
 /// bundles; `None` for anything else.
 pub fn analyze_python(data: &[u8]) -> Option<PycReport> {
-    if data.len() < 16 { return None; }
+    if data.len() < 16 {
+        return None;
+    }
 
     // PyInstaller bundle: starts with "MEI\x0C\x0B\x0A\x0B\x0E" (MAGIC).
     // NOTE: no octal-duplicate check here on purpose — Rust has no octal
@@ -131,8 +137,10 @@ pub fn analyze_python(data: &[u8]) -> Option<PycReport> {
     }
     // Python source — only treat as such when nothing else matched.
     if std::str::from_utf8(data).is_ok()
-        && (data.starts_with(b"#!/") || data.starts_with(b"# -*-")
-            || data.starts_with(b"import ") || data.starts_with(b"from "))
+        && (data.starts_with(b"#!/")
+            || data.starts_with(b"# -*-")
+            || data.starts_with(b"import ")
+            || data.starts_with(b"from "))
     {
         return Some(analyze_script(data));
     }
@@ -147,12 +155,19 @@ pub fn analyze_python(data: &[u8]) -> Option<PycReport> {
     // Determine code offset based on Python version.
     // PEP 552 (Python 3.7+) added hash-based validation.
     let code_offset = match python_version {
-        Some(PythonVersion::Py2) | Some(PythonVersion::Py3_0) | Some(PythonVersion::Py3_1)
-        | Some(PythonVersion::Py3_2) | Some(PythonVersion::Py3_3) | Some(PythonVersion::Py3_4)
-        | Some(PythonVersion::Py3_5) | Some(PythonVersion::Py3_6) => 8,
+        Some(PythonVersion::Py2)
+        | Some(PythonVersion::Py3_0)
+        | Some(PythonVersion::Py3_1)
+        | Some(PythonVersion::Py3_2)
+        | Some(PythonVersion::Py3_3)
+        | Some(PythonVersion::Py3_4)
+        | Some(PythonVersion::Py3_5)
+        | Some(PythonVersion::Py3_6) => 8,
         _ => 16, // 3.7+ uses 8-byte header: magic(4) + flags(4) + payload
     };
-    if data.len() < code_offset { return None; }
+    if data.len() < code_offset {
+        return None;
+    }
 
     // Try to read embedded source path (after header in 3.2-)
     let source_path = read_source_path(&data[code_offset..]);
@@ -183,7 +198,10 @@ fn analyze_script(data: &[u8]) -> PycReport {
             offset: 0,
         });
     }
-    if urls.iter().any(|u| u.ends_with(".exe") || u.contains("download")) {
+    if urls
+        .iter()
+        .any(|u| u.ends_with(".exe") || u.contains("download"))
+    {
         findings.push(PycFinding {
             severity: PycSeverity::High,
             rule_id: "PY_DOWNLOAD_URL".to_string(),
@@ -238,14 +256,19 @@ fn analyze_pyinstaller(data: &[u8]) -> PycReport {
         findings.push(PycFinding {
             severity: PycSeverity::High,
             rule_id: "PY_HIGH_RISK_IMPORT".to_string(),
-            description: format!("High-risk imports in PyInstaller bundle: {}",
-                high_risk.join(", ")),
+            description: format!(
+                "High-risk imports in PyInstaller bundle: {}",
+                high_risk.join(", ")
+            ),
             offset: 0,
         });
     }
     // PyInstaller bundles a `Crypto`, `Cryptodome`, `pyaes`, `socket`, `requests`
     // strongly suggest stealers.
-    if imports.iter().any(|i| i == "Crypto" || i == "Cryptodome" || i == "pyaes") {
+    if imports
+        .iter()
+        .any(|i| i == "Crypto" || i == "Cryptodome" || i == "pyaes")
+    {
         findings.push(PycFinding {
             severity: PycSeverity::Medium,
             rule_id: "PY_CRYPTO".to_string(),
@@ -287,12 +310,17 @@ fn parse_pyinstaller_archive(data: &[u8]) -> Option<PyInstScratch> {
         // Look for printable ASCII runs of >=4 chars that end in null
         if data[i].is_ascii_graphic() || data[i] == b' ' {
             let start = i;
-            while i < data.len() && data[i] != 0 { i += 1; }
+            while i < data.len() && data[i] != 0 {
+                i += 1;
+            }
             let len = i - start;
             if (4..256).contains(&len) {
                 if let Ok(s) = std::str::from_utf8(&data[start..start + len]) {
                     if s.contains('/') && !s.contains("..") {
-                        out.entries.push(ArchiveEntry { name: s.to_string(), size: 0 });
+                        out.entries.push(ArchiveEntry {
+                            name: s.to_string(),
+                            size: 0,
+                        });
                     } else if s.contains('.') && !s.contains(' ') {
                         // plausible module or filename
                         if looks_like_module(s) {
@@ -301,7 +329,9 @@ fn parse_pyinstaller_archive(data: &[u8]) -> Option<PyInstScratch> {
                         if s.starts_with("http://") || s.starts_with("https://") {
                             out.urls.push(s.to_string());
                         }
-                        if s.contains("password") || s.contains("exfil") || s.contains("wallet")
+                        if s.contains("password")
+                            || s.contains("exfil")
+                            || s.contains("wallet")
                             || s.contains("miner")
                         {
                             out.suspicious_strings.push(s.to_string());
@@ -315,9 +345,15 @@ fn parse_pyinstaller_archive(data: &[u8]) -> Option<PyInstScratch> {
     Some(out)
 }
 
-fn build_report(kind: PycKind, version: Option<PythonVersion>, source_path: Option<String>,
-                pyinstaller: bool, code_size: Option<usize>, body: &[u8],
-                _extra: &[u8]) -> PycReport {
+fn build_report(
+    kind: PycKind,
+    version: Option<PythonVersion>,
+    source_path: Option<String>,
+    pyinstaller: bool,
+    code_size: Option<usize>,
+    body: &[u8],
+    _extra: &[u8],
+) -> PycReport {
     let text = String::from_utf8_lossy(body);
     let imports = collect_imports(&text);
     let high_risk = filter_high_risk(&imports);
@@ -389,11 +425,15 @@ fn collect_imports(text: &str) -> Vec<String> {
         if let Some(rest) = t.strip_prefix("import ") {
             for tok in rest.split(',') {
                 let tok = tok.split_whitespace().next().unwrap_or("");
-                if !tok.is_empty() { out.push(tok.to_string()); }
+                if !tok.is_empty() {
+                    out.push(tok.to_string());
+                }
             }
         } else if let Some(rest) = t.strip_prefix("from ") {
             if let Some(m) = rest.split_whitespace().next() {
-                if m != "import" { out.push(m.to_string()); }
+                if m != "import" {
+                    out.push(m.to_string());
+                }
             }
         }
     }
@@ -404,16 +444,57 @@ fn collect_imports(text: &str) -> Vec<String> {
 
 fn filter_high_risk(imports: &[String]) -> Vec<String> {
     const HIGH_RISK: &[&str] = &[
-        "os", "subprocess", "sys", "socket", "ctypes", "struct", "win32api",
-        "win32com", "winreg", "_winreg", "requests", "urllib", "urllib2",
-        "http", "httplib", "base64", "marshal", "pickle", "shelve", "shutil",
-        "tempfile", "smtplib", "ftplib", "telnetlib", "ssl", "hashlib",
-        "hmac", "pycryptodome", "Crypto", "Cryptodome", "pyaes", "rsa",
-        "pynput", "keyboard", "pyautogui", "mss", "PIL", "cv2",
-        "browser_cookie3", "sqlite3", "pyperclip", "pyarmor", "psutil",
+        "os",
+        "subprocess",
+        "sys",
+        "socket",
+        "ctypes",
+        "struct",
+        "win32api",
+        "win32com",
+        "winreg",
+        "_winreg",
+        "requests",
+        "urllib",
+        "urllib2",
+        "http",
+        "httplib",
+        "base64",
+        "marshal",
+        "pickle",
+        "shelve",
+        "shutil",
+        "tempfile",
+        "smtplib",
+        "ftplib",
+        "telnetlib",
+        "ssl",
+        "hashlib",
+        "hmac",
+        "pycryptodome",
+        "Crypto",
+        "Cryptodome",
+        "pyaes",
+        "rsa",
+        "pynput",
+        "keyboard",
+        "pyautogui",
+        "mss",
+        "PIL",
+        "cv2",
+        "browser_cookie3",
+        "sqlite3",
+        "pyperclip",
+        "pyarmor",
+        "psutil",
     ];
-    imports.iter()
-        .filter(|m| HIGH_RISK.iter().any(|h| m == h || m.starts_with(&format!("{}.", h))))
+    imports
+        .iter()
+        .filter(|m| {
+            HIGH_RISK
+                .iter()
+                .any(|h| m == h || m.starts_with(&format!("{}.", h)))
+        })
         .cloned()
         .collect()
 }
@@ -425,8 +506,8 @@ fn collect_urls(text: &str) -> Vec<String> {
         let mut start = 0;
         while let Some(rel) = lower[start..].find(proto) {
             let s = start + rel;
-            let end = lower[s..].find(|c: char| c.is_whitespace()
-                || c == '"' || c == '\'' || c == ')')
+            let end = lower[s..]
+                .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ')')
                 .unwrap_or(lower.len() - s);
             out.push(text[s..s + end].to_string());
             start = s + end;
@@ -474,7 +555,9 @@ fn looks_like_module(s: &str) -> bool {
         return false;
     }
     for p in parts {
-        if p.is_empty() { return false; }
+        if p.is_empty() {
+            return false;
+        }
     }
     true
 }
@@ -513,7 +596,11 @@ mod tests {
 
     #[test]
     fn test_filter_high_risk() {
-        let im = vec!["os".to_string(), "json".to_string(), "subprocess".to_string()];
+        let im = vec![
+            "os".to_string(),
+            "json".to_string(),
+            "subprocess".to_string(),
+        ];
         let hr = filter_high_risk(&im);
         assert!(hr.contains(&"os".to_string()));
         assert!(hr.contains(&"subprocess".to_string()));
@@ -531,4 +618,3 @@ mod tests {
         assert!(r.findings.iter().any(|f| f.rule_id == "PY_PYINSTALLER"));
     }
 }
-

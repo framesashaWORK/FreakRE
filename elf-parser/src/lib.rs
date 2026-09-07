@@ -5,18 +5,18 @@
 //! Zero-copy, no unsafe, validates all offsets before access.
 //! Reports structural anomalies relevant to Linux/IoT malware detection.
 
-mod header;
-mod sections;
-mod program;
-mod symbols;
 mod anomalies;
 mod error;
+mod header;
+mod program;
+mod sections;
+mod symbols;
 
-pub use error::{ElfError, ElfWarning, ElfWarningKind, ElfParseResult};
-pub use header::{ElfClass, ElfEndian, ElfMachine, ElfType, ElfIdent};
-pub use sections::{SectionHeader, SectionFlags};
-pub use program::{ProgramHeader, ProgramType, ProgramFlags};
-pub use symbols::{SymbolEntry, SymbolBinding, SymbolType as SymType};
+pub use error::{ElfError, ElfParseResult, ElfWarning, ElfWarningKind};
+pub use header::{ElfClass, ElfEndian, ElfIdent, ElfMachine, ElfType};
+pub use program::{ProgramFlags, ProgramHeader, ProgramType};
+pub use sections::{SectionFlags, SectionHeader};
+pub use symbols::{SymbolBinding, SymbolEntry, SymbolType as SymType};
 // ElfAnomaly re-export removed — anomalies module uses ElfWarning directly
 
 /// Parsed ELF file with all extracted metadata and warnings.
@@ -63,15 +63,11 @@ impl<'a> ElfFile<'a> {
             (ElfClass::Elf64, ElfEndian::Little) => {
                 Self::parse_elf64::<false>(data, ident, warnings)
             }
-            (ElfClass::Elf64, ElfEndian::Big) => {
-                Self::parse_elf64::<true>(data, ident, warnings)
-            }
+            (ElfClass::Elf64, ElfEndian::Big) => Self::parse_elf64::<true>(data, ident, warnings),
             (ElfClass::Elf32, ElfEndian::Little) => {
                 Self::parse_elf32::<false>(data, ident, warnings)
             }
-            (ElfClass::Elf32, ElfEndian::Big) => {
-                Self::parse_elf32::<true>(data, ident, warnings)
-            }
+            (ElfClass::Elf32, ElfEndian::Big) => Self::parse_elf32::<true>(data, ident, warnings),
         }
     }
 
@@ -100,13 +96,15 @@ impl<'a> ElfFile<'a> {
 
     /// Check if the ELF is statically linked (no INTERP segment).
     pub fn is_statically_linked(&self) -> bool {
-        !self.program_headers.iter().any(|p| p.p_type == ProgramType::Interp)
+        !self
+            .program_headers
+            .iter()
+            .any(|p| p.p_type == ProgramType::Interp)
     }
 
     /// Check if the ELF is stripped (no symbol table).
     pub fn is_stripped(&self) -> bool {
-        self.symbols.is_empty()
-            && !self.section_headers.iter().any(|s| s.name == ".symtab")
+        self.symbols.is_empty() && !self.section_headers.iter().any(|s| s.name == ".symtab")
     }
 
     /// Get imported function names from dynamic symbols.
@@ -149,12 +147,21 @@ impl<'a> ElfFile<'a> {
 
         // Parse program headers
         let program_headers = program::parse_program_headers_64::<BE>(
-            data, e_phoff, e_phentsize, e_phnum, &mut warnings,
+            data,
+            e_phoff,
+            e_phentsize,
+            e_phnum,
+            &mut warnings,
         );
 
         // Parse section headers
         let section_headers = sections::parse_section_headers_64::<BE>(
-            data, e_shoff, e_shentsize, e_shnum, e_shstrndx, &mut warnings,
+            data,
+            e_shoff,
+            e_shentsize,
+            e_shnum,
+            e_shstrndx,
+            &mut warnings,
         );
 
         // Parse symbol tables
@@ -163,7 +170,11 @@ impl<'a> ElfFile<'a> {
 
         // Run anomaly detection
         anomalies::detect_anomalies_elf64(
-            data, &program_headers, &section_headers, &ident, &mut warnings,
+            data,
+            &program_headers,
+            &section_headers,
+            &ident,
+            &mut warnings,
         );
 
         Ok(Self {
@@ -206,18 +217,31 @@ impl<'a> ElfFile<'a> {
         let machine = ElfMachine::from_raw(e_machine);
 
         let program_headers = program::parse_program_headers_32::<BE>(
-            data, e_phoff, e_phentsize, e_phnum, &mut warnings,
+            data,
+            e_phoff,
+            e_phentsize,
+            e_phnum,
+            &mut warnings,
         );
 
         let section_headers = sections::parse_section_headers_32::<BE>(
-            data, e_shoff, e_shentsize, e_shnum, e_shstrndx, &mut warnings,
+            data,
+            e_shoff,
+            e_shentsize,
+            e_shnum,
+            e_shstrndx,
+            &mut warnings,
         );
 
         let (symbols, dyn_symbols) =
             symbols::parse_all_symbols_32::<BE>(data, &section_headers, &mut warnings);
 
         anomalies::detect_anomalies_elf32(
-            data, &program_headers, &section_headers, &ident, &mut warnings,
+            data,
+            &program_headers,
+            &section_headers,
+            &ident,
+            &mut warnings,
         );
 
         Ok(Self {
@@ -282,5 +306,3 @@ mod tests {
         assert_eq!(elf.machine, ElfMachine::X86_64);
     }
 }
-
-

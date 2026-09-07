@@ -1,7 +1,7 @@
 //! Type layout calculations (size, alignment, field offsets)
 
+use crate::database::{Result, TypeError};
 use crate::{Type, TypeDatabase};
-use crate::database::{TypeError, Result};
 
 /// Calculate the size of a type in bytes
 pub fn size_of(db: &TypeDatabase, ty: &Type) -> Result<usize> {
@@ -81,7 +81,9 @@ fn size_of_inner(db: &TypeDatabase, ty: &Type, depth: usize) -> Result<usize> {
             }
         }
         Type::Function(_) => Ok(8), // Function pointers are pointer-sized
-        Type::Unknown => Err(TypeError::Invalid("Cannot calculate size of unknown type".into())),
+        Type::Unknown => Err(TypeError::Invalid(
+            "Cannot calculate size of unknown type".into(),
+        )),
     }
 }
 
@@ -150,7 +152,9 @@ fn align_of_inner(db: &TypeDatabase, ty: &Type, depth: usize) -> Result<usize> {
             }
         }
         Type::Function(_) => Ok(8),
-        Type::Unknown => Err(TypeError::Invalid("Cannot calculate alignment of unknown type".into())),
+        Type::Unknown => Err(TypeError::Invalid(
+            "Cannot calculate alignment of unknown type".into(),
+        )),
     }
 }
 
@@ -164,8 +168,13 @@ fn align_up(offset: usize, align: usize) -> usize {
 }
 
 /// Calculate field offsets for a struct
-pub fn calculate_field_offsets(db: &TypeDatabase, struct_name: &str) -> Result<Vec<(String, usize, usize)>> {
-    let s = db.get_struct(struct_name).ok_or_else(|| TypeError::NotFound(struct_name.to_string()))?;
+pub fn calculate_field_offsets(
+    db: &TypeDatabase,
+    struct_name: &str,
+) -> Result<Vec<(String, usize, usize)>> {
+    let s = db
+        .get_struct(struct_name)
+        .ok_or_else(|| TypeError::NotFound(struct_name.to_string()))?;
 
     let mut result = Vec::new();
     let mut offset = 0;

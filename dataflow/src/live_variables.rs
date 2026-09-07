@@ -117,7 +117,9 @@ impl LiveVariables {
 
         let mut solver = WorklistSolver::new(framework, func.blocks.len(), deps);
         if !solver.solve() {
-            eprintln!("warning: live variables analysis did not converge; returning partial results");
+            eprintln!(
+                "warning: live variables analysis did not converge; returning partial results"
+            );
         }
 
         // Convert results back to BlockId-indexed maps
@@ -129,10 +131,7 @@ impl LiveVariables {
             out_sets.insert(block.id, solver.out_fact(idx).clone());
         }
 
-        LiveVariables {
-            in_sets,
-            out_sets,
-        }
+        LiveVariables { in_sets, out_sets }
     }
 
     /// Check if a variable is live at block entry
@@ -180,11 +179,10 @@ impl LiveVariables {
                                 found_this_inst = true;
                                 continue;
                             }
-                            if found_this_inst
-                                && other_inst.sources().contains(&dst) {
-                                    used_later = true;
-                                    break;
-                                }
+                            if found_this_inst && other_inst.sources().contains(&dst) {
+                                used_later = true;
+                                break;
+                            }
                         }
 
                         if !used_later {
@@ -217,21 +215,30 @@ mod tests {
         let v2 = Value::reg("v2", Ty::i32());
         let v3 = func.alloc_var(Ty::i32());
 
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v0.clone(),
-            op: OpCode::Add,
-            lhs: v1.clone(),
-            rhs: v2.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v3.clone(),
-            op: OpCode::Add,
-            lhs: v0.clone(),
-            rhs: v1.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Return {
-            value: Some(v3.clone()),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v0.clone(),
+                op: OpCode::Add,
+                lhs: v1.clone(),
+                rhs: v2.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v3.clone(),
+                op: OpCode::Add,
+                lhs: v0.clone(),
+                rhs: v1.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Return {
+                value: Some(v3.clone()),
+            },
+        );
 
         let lv = LiveVariables::analyze(&func);
 
@@ -257,21 +264,30 @@ mod tests {
         let v2 = Value::reg("v2", Ty::i32());
         let v3 = func.alloc_var(Ty::i32());
 
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v0.clone(),
-            op: OpCode::Add,
-            lhs: v1.clone(),
-            rhs: v2.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v3.clone(),
-            op: OpCode::Add,
-            lhs: v1.clone(),
-            rhs: v2.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Return {
-            value: Some(v3.clone()),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v0.clone(),
+                op: OpCode::Add,
+                lhs: v1.clone(),
+                rhs: v2.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v3.clone(),
+                op: OpCode::Add,
+                lhs: v1.clone(),
+                rhs: v2.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Return {
+                value: Some(v3.clone()),
+            },
+        );
 
         let lv = LiveVariables::analyze(&func);
         let dead = lv.dead_variables(&func);

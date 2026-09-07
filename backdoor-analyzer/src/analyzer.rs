@@ -33,22 +33,23 @@ const CORROBORATION_REQUIRED: &[BackdoorRuleId] = &[
 /// * `data` - Raw file bytes (used for entropy/structural checks)
 /// * `import_names` - List of imported function names (case-insensitive matching)
 /// * `strings` - Extracted strings from the binary
-pub fn analyze_backdoors(
-    data: &[u8],
-    import_names: &[String],
-    strings: &[&str],
-) -> BackdoorReport {
+pub fn analyze_backdoors(data: &[u8], import_names: &[String], strings: &[&str]) -> BackdoorReport {
     let mut findings = Vec::new();
 
     // Normalize imports to lowercase for case-insensitive matching.
     // Use Cow to avoid allocating when the string is already lowercase.
-    let imports_lower: Vec<String> = import_names.iter().map(|s| {
-        if s.chars().all(|c| c.is_ascii_lowercase() || !c.is_ascii_alphabetic()) {
-            s.clone()
-        } else {
-            s.to_lowercase()
-        }
-    }).collect();
+    let imports_lower: Vec<String> = import_names
+        .iter()
+        .map(|s| {
+            if s.chars()
+                .all(|c| c.is_ascii_lowercase() || !c.is_ascii_alphabetic())
+            {
+                s.clone()
+            } else {
+                s.to_lowercase()
+            }
+        })
+        .collect();
 
     // Whole-name lookup set, built once: turns every per-signature API check
     // from an O(n) linear scan into O(1) hashing (with A/W suffix variants).
@@ -88,7 +89,8 @@ fn downgrade_uncorroborated(
         if CORROBORATION_REQUIRED.contains(&f.rule_id) && !import_backed.contains(&f.rule_id) {
             f.severity = downgrade_one(f.severity);
             f.confidence = (f.confidence * 0.5).min(0.5);
-            f.evidence.push("strings-only heuristic (no corroborating imports)".to_string());
+            f.evidence
+                .push("strings-only heuristic (no corroborating imports)".to_string());
         }
     }
 }
@@ -106,7 +108,10 @@ fn downgrade_uncorroborated(
 /// paths agree.
 #[cfg(test)]
 fn import_matches(import_lower: &str, api_lower: &str) -> bool {
-    matches!(import_lower.strip_prefix(api_lower), Some("") | Some("a") | Some("w"))
+    matches!(
+        import_lower.strip_prefix(api_lower),
+        Some("") | Some("a") | Some("w")
+    )
 }
 
 /// O(1) set membership equivalent to scanning for any import that
@@ -117,11 +122,7 @@ fn import_matches(import_lower: &str, api_lower: &str) -> bool {
 /// accepted, so results are identical — just without touching every import.
 /// `scratch` is reused across calls to avoid repeated allocation.
 #[inline]
-fn set_has_api(
-    import_set: &HashSet<&str>,
-    api_lower: &str,
-    scratch: &mut String,
-) -> bool {
+fn set_has_api(import_set: &HashSet<&str>, api_lower: &str, scratch: &mut String) -> bool {
     if import_set.contains(api_lower) {
         return true;
     }
@@ -220,18 +221,14 @@ fn check_string_signatures(strings: &[&str], findings: &mut Vec<BackdoorFinding>
             .patterns_orig
             .iter()
             .zip(sig.patterns_lower.iter())
-            .filter(|(_, pattern_lower)| {
-                lowered.iter().any(|s| s.contains(*pattern_lower))
-            })
+            .filter(|(_, pattern_lower)| lowered.iter().any(|s| s.contains(*pattern_lower)))
             .map(|(orig, _)| orig.to_string())
             .collect();
         let matched_optional: Vec<String> = sig
             .optional_patterns_orig
             .iter()
             .zip(sig.optional_patterns_lower.iter())
-            .filter(|(_, pattern_lower)| {
-                lowered.iter().any(|s| s.contains(*pattern_lower))
-            })
+            .filter(|(_, pattern_lower)| lowered.iter().any(|s| s.contains(*pattern_lower)))
             .map(|(orig, _)| orig.to_string())
             .collect();
 
@@ -269,7 +266,11 @@ fn check_structural_heuristics(
     // whole import name (so `SendMessageW` does NOT match `send`), and the
     // distinctive winsock/WinHTTP/Internet prefixes are safe substrings.
     let has_net_imports = imports_lower.iter().any(|i| {
-        i == "connect" || i == "recv" || i == "send" || i == "sendto" || i == "recvfrom"
+        i == "connect"
+            || i == "recv"
+            || i == "send"
+            || i == "sendto"
+            || i == "recvfrom"
             || i.starts_with("wsa")
             || i.starts_with("winhttp")
             || i.starts_with("internet")
@@ -297,8 +298,13 @@ fn check_structural_heuristics(
                 rule_id: BackdoorRuleId::EncryptedConfig,
                 severity: BackdoorSeverity::Medium,
                 confidence: BackdoorRuleId::EncryptedConfig.default_confidence(),
-                description: "High-entropy encrypted config block detected near network API imports".to_string(),
-                evidence: vec![format!("{} high-entropy regions found", high_entropy_regions)],
+                description:
+                    "High-entropy encrypted config block detected near network API imports"
+                        .to_string(),
+                evidence: vec![format!(
+                    "{} high-entropy regions found",
+                    high_entropy_regions
+                )],
                 mitre_ids: BackdoorRuleId::EncryptedConfig
                     .mitre_ids()
                     .iter()
@@ -446,23 +452,29 @@ fn count_direct_syscall_stubs(data: &[u8]) -> usize {
 fn deduplicate_findings(findings: &mut Vec<BackdoorFinding>) {
     use std::collections::HashMap;
 
-    let mut best: HashMap<BackdoorRuleId, usize> = HashMap::new();
-
-    for (idx, f) in findings.iter().enumerate() {
-        best.entry(f.rule_id)
-            .and_modify(|existing| {
-                if f.severity > findings[*existing].severity {
-                    *existing = idx;
-                }
-            })
-            .or_insert(idx);
+    let mut merged: HashMap<BackdoorRuleId, BackdoorFinding> = HashMap::new();
+    for finding in findings.drain(..) {
+        let entry = merged
+            .entry(finding.rule_id)
+            .or_insert_with(|| finding.clone());
+        if finding.severity > entry.severity {
+            entry.severity = finding.severity;
+        }
+        if finding.confidence.is_finite() {
+            entry.confidence = entry.confidence.max(finding.confidence);
+        }
+        for evidence in finding.evidence {
+            if !entry.evidence.contains(&evidence) {
+                entry.evidence.push(evidence);
+            }
+        }
+        for mitre_id in finding.mitre_ids {
+            if !entry.mitre_ids.contains(&mitre_id) {
+                entry.mitre_ids.push(mitre_id);
+            }
+        }
     }
-
-    let keep_indices: Vec<usize> = best.into_values().collect();
-    let mut deduped: Vec<BackdoorFinding> = Vec::with_capacity(keep_indices.len());
-    for idx in keep_indices {
-        deduped.push(findings[idx].clone());
-    }
+    let mut deduped: Vec<BackdoorFinding> = merged.into_values().collect();
 
     // Sort by severity descending; ties broken by rule id so the output
     // order never depends on HashMap iteration order.
@@ -494,14 +506,24 @@ mod tests {
         ];
         let strings = vec!["cmd.exe", "whoami"];
         let report = analyze_backdoors(&[0u8; 64], &imports, &strings);
-        assert!(report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::ReverseShell));
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.rule_id == BackdoorRuleId::ReverseShell));
     }
 
     #[test]
     fn test_webshell_detection() {
-        let strings = vec!["eval($_POST['cmd'])", "base64_decode($input)", "shell_exec('ls')"];
+        let strings = vec![
+            "eval($_POST['cmd'])",
+            "base64_decode($input)",
+            "shell_exec('ls')",
+        ];
         let report = analyze_backdoors(&[0u8; 64], &[], &strings);
-        assert!(report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::WebShellIndicator));
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.rule_id == BackdoorRuleId::WebShellIndicator));
     }
 
     // ── False-positive regressions (large legitimate binaries) ───────
@@ -510,12 +532,18 @@ mod tests {
     fn electron_style_js_strings_do_not_fire_webshell() {
         // eval(/exec(/system( are ubiquitous in embedded JS runtimes.
         let strings = vec![
-            "eval(function(){})", "exec(cmd)", "system('pause')",
-            "child_process.exec", "Function('return this')()",
+            "eval(function(){})",
+            "exec(cmd)",
+            "system('pause')",
+            "child_process.exec",
+            "Function('return this')()",
         ];
         let report = analyze_backdoors(&[0u8; 64], &[], &strings);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::WebShellIndicator),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::WebShellIndicator),
             "generic JS/PHP tokens must not trigger WebShellIndicator"
         );
     }
@@ -525,7 +553,10 @@ mod tests {
         let strings = vec!["cmd.exe", "powershell.exe", "whoami", "ipconfig"];
         let report = analyze_backdoors(&[0u8; 64], &[], &strings);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::ReverseShell),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::ReverseShell),
             "bare interpreter names must not trigger ReverseShell"
         );
     }
@@ -540,16 +571,27 @@ mod tests {
             .iter()
             .find(|f| f.rule_id == BackdoorRuleId::ReverseShell)
             .expect("distinctive shell strings should still fire");
-        assert_ne!(f.severity, BackdoorSeverity::Critical, "strings-only hit must be downgraded");
+        assert_ne!(
+            f.severity,
+            BackdoorSeverity::Critical,
+            "strings-only hit must be downgraded"
+        );
         assert!(f.confidence <= 0.5);
     }
 
     #[test]
     fn sleep_recv_without_connect_is_not_a_beacon() {
-        let imports = vec!["Sleep".to_string(), "recv".to_string(), "VirtualAlloc".to_string()];
+        let imports = vec![
+            "Sleep".to_string(),
+            "recv".to_string(),
+            "VirtualAlloc".to_string(),
+        ];
         let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::C2Beacon),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::C2Beacon),
             "Sleep+recv without outbound connect is every networked app"
         );
     }
@@ -563,7 +605,10 @@ mod tests {
         ];
         let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::NamedPipeBackdoor),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::NamedPipeBackdoor),
             "ReadFile/WriteFile carry no signal"
         );
     }
@@ -573,7 +618,10 @@ mod tests {
         let imports = vec!["LoadLibraryA".to_string(), "LoadLibraryExW".to_string()];
         let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::DllHijacking),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::DllHijacking),
             "LoadLibrary* is ubiquitous and must not trigger on its own"
         );
     }
@@ -615,7 +663,79 @@ mod tests {
             .iter()
             .filter(|f| f.rule_id == BackdoorRuleId::ReverseShell)
             .count();
-        assert_eq!(rev_shell_count, 1, "Should deduplicate to single finding per rule");
+        assert_eq!(
+            rev_shell_count, 1,
+            "Should deduplicate to single finding per rule"
+        );
+    }
+
+    #[test]
+    fn deduplication_preserves_evidence_from_all_sources() {
+        let mut findings = vec![
+            BackdoorFinding {
+                rule_id: BackdoorRuleId::ReverseShell,
+                severity: BackdoorSeverity::Critical,
+                confidence: 0.7,
+                description: "import evidence".into(),
+                evidence: vec!["connect".into()],
+                mitre_ids: vec!["T1071".into()],
+            },
+            BackdoorFinding {
+                rule_id: BackdoorRuleId::ReverseShell,
+                severity: BackdoorSeverity::High,
+                confidence: 0.9,
+                description: "string evidence".into(),
+                evidence: vec!["/bin/sh".into(), "bash -i".into()],
+                mitre_ids: vec!["T1059".into()],
+            },
+        ];
+        deduplicate_findings(&mut findings);
+        let finding = &findings[0];
+        assert!(finding.evidence.iter().any(|e| e == "connect"));
+        assert!(
+            finding.evidence.iter().any(|e| e == "/bin/sh"),
+            "merged evidence: {:?}",
+            finding.evidence
+        );
+        assert!(
+            finding.evidence.iter().any(|e| e == "bash -i"),
+            "merged evidence: {:?}",
+            finding.evidence
+        );
+    }
+
+    #[test]
+    fn scheduled_task_requires_creation_context() {
+        let report = analyze_backdoors(
+            &[0u8; 64],
+            &[],
+            &["schtasks.exe /create /sc daily /tn updater"],
+        );
+        let f = finding(&report, BackdoorRuleId::ScheduledTaskPersistence);
+        assert_eq!(f.severity, BackdoorSeverity::Low);
+
+        let report = analyze_backdoors(&[0u8; 64], &[], &["schtasks.exe", "schtasks help"]);
+        assert!(!report
+            .findings
+            .iter()
+            .any(|f| f.rule_id == BackdoorRuleId::ScheduledTaskPersistence));
+    }
+
+    #[test]
+    fn wmi_persistence_requires_two_subscription_components() {
+        let report = analyze_backdoors(
+            &[0u8; 64],
+            &[],
+            &["__EventFilter", "CommandLineEventConsumer"],
+        );
+        let f = finding(&report, BackdoorRuleId::WmiPersistence);
+        assert_eq!(f.severity, BackdoorSeverity::Low);
+
+        let report = analyze_backdoors(&[0u8; 64], &[], &["__EventFilter"]);
+        assert!(!report
+            .findings
+            .iter()
+            .any(|f| f.rule_id == BackdoorRuleId::WmiPersistence));
     }
 
     // ── Whole-name import matching (A/W suffix tolerance) ─────────────
@@ -641,7 +761,10 @@ mod tests {
         ];
         let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::ReverseShell),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::ReverseShell),
             "InternetConnectW is a plain wininet API and must not satisfy `connect`"
         );
     }
@@ -656,7 +779,10 @@ mod tests {
         ];
         let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::BindShell),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::BindShell),
             "AcceptSecurityContext must not satisfy `accept`"
         );
     }
@@ -665,10 +791,7 @@ mod tests {
 
     #[test]
     fn create_service_w_fires_service_backdoor() {
-        let imports = vec![
-            "CreateServiceW".to_string(),
-            "StartServiceW".to_string(),
-        ];
+        let imports = vec!["CreateServiceW".to_string(), "StartServiceW".to_string()];
         let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
         let f = report
             .findings
@@ -676,9 +799,24 @@ mod tests {
             .find(|f| f.rule_id == BackdoorRuleId::ServiceBackdoor)
             .expect("CreateServiceW variant must fire ServiceBackdoor");
         assert!(
-            f.evidence.iter().any(|e| e.eq_ignore_ascii_case("CreateServiceW")),
+            f.evidence
+                .iter()
+                .any(|e| e.eq_ignore_ascii_case("CreateServiceW")),
             "evidence must cite the actually-imported API, got {:?}",
             f.evidence
+        );
+    }
+
+    #[test]
+    fn create_service_alone_does_not_fire_service_backdoor() {
+        let imports = vec!["CreateServiceW".to_string()];
+        let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::ServiceBackdoor),
+            "service creation without start/reconfiguration is common installer behavior"
         );
     }
 
@@ -691,14 +829,18 @@ mod tests {
         ];
         let r1 = analyze_backdoors(&[0u8; 64], &pipe_imports, &[]);
         assert!(
-            r1.findings.iter().any(|f| f.rule_id == BackdoorRuleId::NamedPipeBackdoor),
+            r1.findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::NamedPipeBackdoor),
             "CreateNamedPipeW variant must fire NamedPipeBackdoor"
         );
 
         let logon_imports = vec!["LogonUserW".to_string(), "CredReadA".to_string()];
         let r2 = analyze_backdoors(&[0u8; 64], &logon_imports, &[]);
         assert!(
-            r2.findings.iter().any(|f| f.rule_id == BackdoorRuleId::AuthBypass),
+            r2.findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::AuthBypass),
             "LogonUserW variant must fire AuthBypass"
         );
     }
@@ -717,23 +859,46 @@ mod tests {
     fn set_lookup_equals_linear_scan_reference() {
         // Universe mixing exact names, A/W variants, near misses and noise.
         let universe: &[&str] = &[
-            "WSAStartup", "connect", "connecta", "connectw", "connectex",
-            "InternetConnectW", "accept", "AcceptSecurityContext", "bind",
-            "listen", "CreateProcessA", "CreateProcessW", "WinExec",
-            "ShellExecuteA", "Sleep", "recv", "recvfrom", "sendto",
-            "CreateNamedPipeW", "ConnectNamedPipe", "ImpersonateNamedPipeClient",
-            "CreateServiceA", "LogonUserW", "CredReadA", "NetUserAdd",
-            "CryptDecrypt", "VirtualAlloc", "LoadLibraryExW", "TransactNamedPipe",
-            "StartServiceW", "wsarecvfrom", "WSAConnect", "LsaLogonUser",
+            "WSAStartup",
+            "connect",
+            "connecta",
+            "connectw",
+            "connectex",
+            "InternetConnectW",
+            "accept",
+            "AcceptSecurityContext",
+            "bind",
+            "listen",
+            "CreateProcessA",
+            "CreateProcessW",
+            "WinExec",
+            "ShellExecuteA",
+            "Sleep",
+            "recv",
+            "recvfrom",
+            "sendto",
+            "CreateNamedPipeW",
+            "ConnectNamedPipe",
+            "ImpersonateNamedPipeClient",
+            "CreateServiceA",
+            "LogonUserW",
+            "CredReadA",
+            "NetUserAdd",
+            "CryptDecrypt",
+            "VirtualAlloc",
+            "LoadLibraryExW",
+            "TransactNamedPipe",
+            "StartServiceW",
+            "wsarecvfrom",
+            "WSAConnect",
+            "LsaLogonUser",
         ];
 
         // Reference implementation of the pre-HashSet semantics: O(n*m)
         // whole-name linear scan with A/W suffix tolerance.
         let linear_contains = |imports_lower: &[String], api: &str| -> bool {
             let api_lower = api.to_lowercase();
-            imports_lower
-                .iter()
-                .any(|i| import_matches(i, &api_lower))
+            imports_lower.iter().any(|i| import_matches(i, &api_lower))
         };
 
         let mut state: u64 = 0xDEADBEEF_CAFEF00D;
@@ -749,7 +914,9 @@ mod tests {
                 let imports_lower: Vec<String> = imports
                     .iter()
                     .map(|s| {
-                        if s.chars().all(|c| c.is_ascii_lowercase() || !c.is_ascii_alphabetic()) {
+                        if s.chars()
+                            .all(|c| c.is_ascii_lowercase() || !c.is_ascii_alphabetic())
+                        {
                             s.clone()
                         } else {
                             s.to_lowercase()
@@ -858,6 +1025,7 @@ mod tests {
             "LogonUserA".to_string(),
             "CredEnumerateA".to_string(), // AuthBypass (critical)
             "CreateServiceA".to_string(), // ServiceBackdoor (critical)
+            "StartServiceA".to_string(),
         ];
         let expected: Vec<String> = ["AUTH_BYPASS", "REVERSE_SHELL", "SERVICE_BACKDOOR"]
             .iter()
@@ -866,9 +1034,15 @@ mod tests {
 
         for _ in 0..8 {
             let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
-            let ids: Vec<String> =
-                report.findings.iter().map(|f| f.rule_id.to_string()).collect();
-            assert_eq!(ids, expected, "equal-severity findings must have stable order");
+            let ids: Vec<String> = report
+                .findings
+                .iter()
+                .map(|f| f.rule_id.to_string())
+                .collect();
+            assert_eq!(
+                ids, expected,
+                "equal-severity findings must have stable order"
+            );
         }
     }
 
@@ -905,7 +1079,10 @@ mod tests {
         ];
         let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::Keylogger),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::Keylogger),
             "offline key polling is ordinary game/IME behavior"
         );
     }
@@ -924,13 +1101,12 @@ mod tests {
         assert_eq!(f.mitre_ids, vec!["T1115"]);
 
         // Read-only pair without SetClipboardData/network → clipboard manager.
-        let reader = vec![
-            "OpenClipboard".to_string(),
-            "GetClipboardData".to_string(),
-        ];
+        let reader = vec!["OpenClipboard".to_string(), "GetClipboardData".to_string()];
         let r2 = analyze_backdoors(&[0u8; 64], &reader, &[]);
         assert!(
-            !r2.findings.iter().any(|f| f.rule_id == BackdoorRuleId::ClipboardHijack),
+            !r2.findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::ClipboardHijack),
             "clipboard read without replacement/outlet is benign"
         );
     }
@@ -965,7 +1141,9 @@ mod tests {
         ];
         let r3 = analyze_backdoors(&[0u8; 64], &local, &[]);
         assert!(
-            !r3.findings.iter().any(|f| f.rule_id == BackdoorRuleId::ScreenCapture),
+            !r3.findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::ScreenCapture),
             "screen capture without any network capability must not fire"
         );
     }
@@ -1006,7 +1184,9 @@ mod tests {
         ];
         let r2 = analyze_backdoors(&[0u8; 64], &ordinary, &[]);
         assert!(
-            !r2.findings.iter().any(|f| f.rule_id == BackdoorRuleId::Cryptominer),
+            !r2.findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::Cryptominer),
             "single CryptoAPI use must not look like mining"
         );
     }
@@ -1021,7 +1201,11 @@ mod tests {
         ];
         let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
         let f = finding(&report, BackdoorRuleId::Ransomware);
-        assert_eq!(f.severity, BackdoorSeverity::Critical, "import-backed hit stays critical");
+        assert_eq!(
+            f.severity,
+            BackdoorSeverity::Critical,
+            "import-backed hit stays critical"
+        );
         assert!(f.mitre_ids.contains(&"T1486".to_string()));
     }
 
@@ -1031,7 +1215,8 @@ mod tests {
         let report = analyze_backdoors(&[0u8; 64], &[], &strings);
         let f = finding(&report, BackdoorRuleId::Ransomware);
         assert_ne!(
-            f.severity, BackdoorSeverity::Critical,
+            f.severity,
+            BackdoorSeverity::Critical,
             "strings-only ransomware evidence must be downgraded"
         );
         assert!(f.confidence <= 0.5);
@@ -1073,7 +1258,10 @@ mod tests {
         ];
         let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::ProcessHollowing),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::ProcessHollowing),
             "section manipulation without an execution primitive is not hollowing"
         );
     }
@@ -1087,7 +1275,10 @@ mod tests {
         ];
         let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::ProcessHollowing),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::ProcessHollowing),
             "remote memory write alone is not hollowing"
         );
     }
@@ -1107,7 +1298,9 @@ mod tests {
         let gui = vec!["VirtualAlloc".to_string(), "EnumWindows".to_string()];
         let r2 = analyze_backdoors(&[0u8; 64], &gui, &[]);
         assert!(
-            !r2.findings.iter().any(|f| f.rule_id == BackdoorRuleId::CallbackInjection),
+            !r2.findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::CallbackInjection),
             "bare VirtualAlloc+EnumWindows is every windowed app"
         );
     }
@@ -1130,7 +1323,10 @@ mod tests {
         // One handler token alone is documentation noise.
         let single = analyze_backdoors(&[0u8; 64], &[], &["eventvwr.exe"]);
         assert!(
-            !single.findings.iter().any(|f| f.rule_id == BackdoorRuleId::UacBypass),
+            !single
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::UacBypass),
             "a single auto-elevate token must not fire"
         );
     }
@@ -1150,7 +1346,10 @@ mod tests {
 
         let benign_docs = analyze_backdoors(&[0u8; 64], &[], &["regsvr32"]);
         assert!(
-            !benign_docs.findings.iter().any(|f| f.rule_id == BackdoorRuleId::LolbinAbuse),
+            !benign_docs
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::LolbinAbuse),
             "bare tool names are not abuse command lines"
         );
     }
@@ -1172,7 +1371,9 @@ mod tests {
         ];
         let r2 = analyze_backdoors(&[0u8; 64], &with_net, &[]);
         assert!(
-            !r2.findings.iter().any(|f| f.rule_id == BackdoorRuleId::DnsC2Anomaly),
+            !r2.findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::DnsC2Anomaly),
             "resolver + HTTP stack is an ordinary networked app"
         );
     }
@@ -1210,7 +1411,9 @@ mod tests {
         ] {
             let r = analyze_backdoors(&[0u8; 64], &solo, &[]);
             assert!(
-                !r.findings.iter().any(|f| f.rule_id == BackdoorRuleId::AntiDebug),
+                !r.findings
+                    .iter()
+                    .any(|f| f.rule_id == BackdoorRuleId::AntiDebug),
                 "single ambiguous debugger API must not fire ({:?})",
                 solo
             );
@@ -1245,7 +1448,10 @@ mod tests {
         ];
         let report = analyze_backdoors(&[0u8; 64], &[], &strings);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::AntiVm),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::AntiVm),
             "same-family vendor markers must never trigger AntiVm"
         );
     }
@@ -1254,7 +1460,10 @@ mod tests {
     fn single_foreign_vm_marker_does_not_fire() {
         let report = analyze_backdoors(&[0u8; 64], &[], &["cuckoo"]);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::AntiVm),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::AntiVm),
             "one foreign-family mention (e.g. security docs) is not a probe"
         );
     }
@@ -1285,7 +1494,9 @@ mod tests {
         let offline_timer = vec!["Sleep".to_string(), "GetTickCount".to_string()];
         let r3 = analyze_backdoors(&[0u8; 64], &offline_timer, &[]);
         assert!(
-            !r3.findings.iter().any(|f| f.rule_id == BackdoorRuleId::SleepEvasion),
+            !r3.findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::SleepEvasion),
             "timing APIs without network capability are ubiquitous"
         );
     }
@@ -1298,6 +1509,74 @@ mod tests {
         assert_eq!(f.severity, BackdoorSeverity::Medium);
         assert_eq!(f.confidence, 0.4);
         assert!(f.mitre_ids.contains(&"T1497.001".to_string()));
+    }
+
+    #[test]
+    fn credential_dumping_requires_minidump_and_process_access() {
+        let imports = vec![
+            "MiniDumpWriteDump".to_string(),
+            "OpenProcess".to_string(),
+            "ReadProcessMemory".to_string(),
+        ];
+        let report = analyze_backdoors(&[0u8; 64], &imports, &[]);
+        let f = finding(&report, BackdoorRuleId::CredentialDumping);
+        assert_eq!(f.severity, BackdoorSeverity::Medium);
+        assert_eq!(f.confidence, 0.5);
+
+        for partial in [
+            vec!["MiniDumpWriteDump".to_string()],
+            vec!["OpenProcess".to_string(), "ReadProcessMemory".to_string()],
+        ] {
+            let report = analyze_backdoors(&[0u8; 64], &partial, &[]);
+            assert!(
+                !report
+                    .findings
+                    .iter()
+                    .any(|f| f.rule_id == BackdoorRuleId::CredentialDumping),
+                "incomplete dump tooling must not fire: {:?}",
+                partial
+            );
+        }
+    }
+
+    #[test]
+    fn remote_thread_injection_requires_execution_primitive() {
+        let imports = vec![
+            "VirtualAllocEx".to_string(),
+            "WriteProcessMemory".to_string(),
+            "CreateRemoteThread".to_string(),
+        ];
+        finding(
+            &analyze_backdoors(&[0u8; 64], &imports, &[]),
+            BackdoorRuleId::RemoteThreadInjection,
+        );
+
+        let partial = vec!["VirtualAllocEx".to_string(), "WriteProcessMemory".to_string()];
+        let report = analyze_backdoors(&[0u8; 64], &partial, &[]);
+        assert!(!report
+            .findings
+            .iter()
+            .any(|f| f.rule_id == BackdoorRuleId::RemoteThreadInjection));
+    }
+
+    #[test]
+    fn token_impersonation_requires_apply_step() {
+        let imports = vec![
+            "OpenProcessToken".to_string(),
+            "DuplicateTokenEx".to_string(),
+            "SetThreadToken".to_string(),
+        ];
+        finding(
+            &analyze_backdoors(&[0u8; 64], &imports, &[]),
+            BackdoorRuleId::TokenImpersonation,
+        );
+
+        let partial = vec!["OpenProcessToken".to_string(), "DuplicateTokenEx".to_string()];
+        let report = analyze_backdoors(&[0u8; 64], &partial, &[]);
+        assert!(!report
+            .findings
+            .iter()
+            .any(|f| f.rule_id == BackdoorRuleId::TokenImpersonation));
     }
 
     // ── Byte-level pack: direct syscall stubs ────────────────────────
@@ -1316,7 +1595,10 @@ mod tests {
         let report = analyze_backdoors(&data, &[], &[]);
         let f = finding(&report, BackdoorRuleId::DirectSyscalls);
         assert_eq!(f.mitre_ids, vec!["T1106"]);
-        assert!(f.evidence[0].starts_with("2 "), "evidence should count stubs");
+        assert!(
+            f.evidence[0].starts_with("2 "),
+            "evidence should count stubs"
+        );
     }
 
     #[test]
@@ -1327,7 +1609,10 @@ mod tests {
 
         let report = analyze_backdoors(&data, &[], &[]);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::DirectSyscalls),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::DirectSyscalls),
             "one stub can occur in ordinary low-level code"
         );
     }
@@ -1350,7 +1635,10 @@ mod tests {
 
         let report = analyze_backdoors(&data, &[], &[]);
         assert!(
-            !report.findings.iter().any(|f| f.rule_id == BackdoorRuleId::DirectSyscalls),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == BackdoorRuleId::DirectSyscalls),
             "packed-looking regions must not produce syscall-stub matches"
         );
     }

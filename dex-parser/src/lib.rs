@@ -208,7 +208,8 @@ impl DexFile {
 
     /// Get all method names
     pub fn all_method_names(&self) -> Vec<String> {
-        self.method_ids.iter()
+        self.method_ids
+            .iter()
             .filter_map(|m| self.get_method_name(m))
             .map(|s| s.to_string())
             .collect()
@@ -258,7 +259,10 @@ pub fn demangle_type(descriptor: &str) -> String {
         'L' => {
             // Object type: "Ljava/lang/Object;"
             let start = i + 1;
-            let end = chars.iter().skip(start).position(|&c| c == ';')
+            let end = chars
+                .iter()
+                .skip(start)
+                .position(|&c| c == ';')
                 .map(|p| start + p)
                 .unwrap_or(chars.len());
             let class_name: String = chars[start..end].iter().collect();
@@ -313,19 +317,30 @@ impl fmt::Display for DexError {
 
 impl std::error::Error for DexError {}
 impl From<std::io::Error> for DexError {
-    fn from(e: std::io::Error) -> Self { Self::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
 }
 
 fn read_u16_le(data: &[u8], offset: usize) -> Option<u16> {
     let remaining = data.len().checked_sub(offset)?;
-    if remaining < 2 { return None; }
+    if remaining < 2 {
+        return None;
+    }
     Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
 }
 
 fn read_u32_le(data: &[u8], offset: usize) -> Option<u32> {
     let remaining = data.len().checked_sub(offset)?;
-    if remaining < 4 { return None; }
-    Some(u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]))
+    if remaining < 4 {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]))
 }
 
 /// Read ULEB128 (unsigned LEB128)
@@ -333,13 +348,19 @@ fn read_uleb128(data: &[u8], offset: &mut usize) -> Result<u32, DexError> {
     let mut result: u64 = 0;
     let mut shift = 0u32;
     loop {
-        if *offset >= data.len() { return Err(DexError::TruncatedData); }
+        if *offset >= data.len() {
+            return Err(DexError::TruncatedData);
+        }
         let byte = data[*offset];
         *offset += 1;
-        if shift >= 35 { return Err(DexError::InvalidUleb); }
+        if shift >= 35 {
+            return Err(DexError::InvalidUleb);
+        }
         result |= ((byte & 0x7F) as u64) << shift;
         if byte & 0x80 == 0 {
-            if result > u32::MAX as u64 { return Err(DexError::InvalidUleb); }
+            if result > u32::MAX as u64 {
+                return Err(DexError::InvalidUleb);
+            }
             return Ok(result as u32);
         }
         shift += 7;
@@ -352,14 +373,14 @@ fn read_uleb128(data: &[u8], offset: &mut usize) -> Result<u32, DexError> {
 /// without cutting mid-character; surrogate pairs are joined into
 /// real characters (CESU-8 style supplementary encoding).
 fn read_mutf8_string(data: &[u8], offset: usize, utf16_len: usize) -> Option<String> {
-    if offset > data.len() { return None; }
+    if offset > data.len() {
+        return None;
+    }
     // utf16_len comes from ULEB128 and can claim up to u32::MAX; never
     // pre-allocate more than the remaining input bytes could yield
     // (each unit decodes from >=1 byte), capped at a sane maximum.
     const MAX_PREALLOC_UNITS: usize = 16 * 1024 * 1024;
-    let capacity = utf16_len
-        .min(data.len() - offset)
-        .min(MAX_PREALLOC_UNITS);
+    let capacity = utf16_len.min(data.len() - offset).min(MAX_PREALLOC_UNITS);
     let mut units: Vec<u16> = Vec::with_capacity(capacity);
     let mut pos = offset;
 
@@ -417,7 +438,9 @@ pub fn parse_dex(data: &[u8]) -> Result<DexFile, DexError> {
     let header = DexHeader {
         magic,
         checksum: read_u32_le(data, 8).ok_or(DexError::InvalidHeader)?,
-        signature: data[12..32].try_into().map_err(|_| DexError::InvalidHeader)?,
+        signature: data[12..32]
+            .try_into()
+            .map_err(|_| DexError::InvalidHeader)?,
         file_size: read_u32_le(data, 32).ok_or(DexError::InvalidHeader)?,
         header_size: read_u32_le(data, 36).ok_or(DexError::InvalidHeader)?,
         endian_tag: read_u32_le(data, 40).ok_or(DexError::InvalidHeader)?,
@@ -471,7 +494,9 @@ pub fn parse_dex(data: &[u8]) -> Result<DexFile, DexError> {
     // Parse strings
     let mut strings = Vec::with_capacity(header.string_ids_size.min(1_000_000) as usize);
     for i in 0..header.string_ids_size {
-        let base = header.string_ids_offset.checked_add(i.checked_mul(4).ok_or(DexError::TruncatedData)?)
+        let base = header
+            .string_ids_offset
+            .checked_add(i.checked_mul(4).ok_or(DexError::TruncatedData)?)
             .ok_or(DexError::TruncatedData)? as usize;
         let str_data_offset = read_u32_le(data, base).ok_or(DexError::TruncatedData)? as usize;
 
@@ -488,7 +513,9 @@ pub fn parse_dex(data: &[u8]) -> Result<DexFile, DexError> {
     // Parse type IDs
     let mut type_ids = Vec::with_capacity(header.type_ids_size.min(1_000_000) as usize);
     for i in 0..header.type_ids_size {
-        let base = header.type_ids_offset.checked_add(i.checked_mul(4).ok_or(DexError::TruncatedData)?)
+        let base = header
+            .type_ids_offset
+            .checked_add(i.checked_mul(4).ok_or(DexError::TruncatedData)?)
             .ok_or(DexError::TruncatedData)? as usize;
         let descriptor_idx = read_u32_le(data, base).ok_or(DexError::TruncatedData)?;
         type_ids.push(TypeId { descriptor_idx });
@@ -497,40 +524,60 @@ pub fn parse_dex(data: &[u8]) -> Result<DexFile, DexError> {
     // Parse proto IDs
     let mut proto_ids = Vec::with_capacity(header.proto_ids_size.min(1_000_000) as usize);
     for i in 0..header.proto_ids_size {
-        let base = header.proto_ids_offset.checked_add(i.checked_mul(12).ok_or(DexError::TruncatedData)?)
+        let base = header
+            .proto_ids_offset
+            .checked_add(i.checked_mul(12).ok_or(DexError::TruncatedData)?)
             .ok_or(DexError::TruncatedData)? as usize;
         let shorty_idx = read_u32_le(data, base).ok_or(DexError::TruncatedData)?;
         let return_type_idx = read_u32_le(data, base + 4).ok_or(DexError::TruncatedData)?;
         let parameters_offset = read_u32_le(data, base + 8).ok_or(DexError::TruncatedData)?;
-        proto_ids.push(ProtoId { shorty_idx, return_type_idx, parameters_offset });
+        proto_ids.push(ProtoId {
+            shorty_idx,
+            return_type_idx,
+            parameters_offset,
+        });
     }
 
     // Parse field IDs
     let mut field_ids = Vec::with_capacity(header.field_ids_size.min(1_000_000) as usize);
     for i in 0..header.field_ids_size {
-        let base = header.field_ids_offset.checked_add(i.checked_mul(8).ok_or(DexError::TruncatedData)?)
+        let base = header
+            .field_ids_offset
+            .checked_add(i.checked_mul(8).ok_or(DexError::TruncatedData)?)
             .ok_or(DexError::TruncatedData)? as usize;
         let class_idx = read_u16_le(data, base).ok_or(DexError::TruncatedData)?;
         let type_idx = read_u16_le(data, base + 2).ok_or(DexError::TruncatedData)?;
         let name_idx = read_u32_le(data, base + 4).ok_or(DexError::TruncatedData)?;
-        field_ids.push(FieldId { class_idx, type_idx, name_idx });
+        field_ids.push(FieldId {
+            class_idx,
+            type_idx,
+            name_idx,
+        });
     }
 
     // Parse method IDs
     let mut method_ids = Vec::with_capacity(header.method_ids_size.min(1_000_000) as usize);
     for i in 0..header.method_ids_size {
-        let base = header.method_ids_offset.checked_add(i.checked_mul(8).ok_or(DexError::TruncatedData)?)
+        let base = header
+            .method_ids_offset
+            .checked_add(i.checked_mul(8).ok_or(DexError::TruncatedData)?)
             .ok_or(DexError::TruncatedData)? as usize;
         let class_idx = read_u16_le(data, base).ok_or(DexError::TruncatedData)?;
         let proto_idx = read_u16_le(data, base + 2).ok_or(DexError::TruncatedData)?;
         let name_idx = read_u32_le(data, base + 4).ok_or(DexError::TruncatedData)?;
-        method_ids.push(MethodId { class_idx, proto_idx, name_idx });
+        method_ids.push(MethodId {
+            class_idx,
+            proto_idx,
+            name_idx,
+        });
     }
 
     // Parse class definitions
     let mut class_defs = Vec::with_capacity(header.class_defs_size.min(1_000_000) as usize);
     for i in 0..header.class_defs_size {
-        let base = header.class_defs_offset.checked_add(i.checked_mul(32).ok_or(DexError::TruncatedData)?)
+        let base = header
+            .class_defs_offset
+            .checked_add(i.checked_mul(32).ok_or(DexError::TruncatedData)?)
             .ok_or(DexError::TruncatedData)? as usize;
         let class_idx = read_u32_le(data, base).ok_or(DexError::TruncatedData)?;
         let access_flags = read_u32_le(data, base + 4).ok_or(DexError::TruncatedData)?;
@@ -611,7 +658,7 @@ mod tests {
             annotations_offset: 0,
             class_data_offset: 0,
             static_values_offset: 0,
-    };
+        };
 
         assert!(cd.is_public());
         assert!(cd.is_final());

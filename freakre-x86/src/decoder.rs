@@ -1,4 +1,4 @@
-﻿//! Full x86/x64/x16 instruction decoder.
+//! Full x86/x64/x16 instruction decoder.
 
 use crate::simd;
 use crate::types::*;
@@ -20,7 +20,12 @@ pub(crate) struct Ctx {
 
 /// 64-bit context for VEX/EVEX helpers (only reachable in long mode).
 fn ctx64() -> Ctx {
-    Ctx { is_64: true, is_16: false, addr16: false, op16: false }
+    Ctx {
+        is_64: true,
+        is_16: false,
+        addr16: false,
+        op16: false,
+    }
 }
 
 /// Decode a single instruction from bytes at the given address.
@@ -39,19 +44,54 @@ pub fn decode(code: &[u8], address: u64, mode: Mode) -> Result<Instruction, Deco
 
     // Parse prefixes
     loop {
-        if pos >= bytes.len() { return Err(DecodeError::TooShort); }
+        if pos >= bytes.len() {
+            return Err(DecodeError::TooShort);
+        }
         match bytes[pos] {
-            0xF0 => { prefixes.lock = true; pos += 1; }
-            0xF2 => { prefixes.repne = true; pos += 1; }
-            0xF3 => { prefixes.rep = true; pos += 1; }
-            0x2E => { prefixes.cs = true; pos += 1; }
-            0x36 => { prefixes.ss = true; pos += 1; }
-            0x3E => { prefixes.ds = true; pos += 1; }
-            0x26 => { prefixes.es = true; pos += 1; }
-            0x64 => { prefixes.fs = true; pos += 1; }
-            0x65 => { prefixes.gs = true; pos += 1; }
-            0x66 => { prefixes.operand_size_override = true; pos += 1; }
-            0x67 => { prefixes.address_size_override = true; pos += 1; }
+            0xF0 => {
+                prefixes.lock = true;
+                pos += 1;
+            }
+            0xF2 => {
+                prefixes.repne = true;
+                pos += 1;
+            }
+            0xF3 => {
+                prefixes.rep = true;
+                pos += 1;
+            }
+            0x2E => {
+                prefixes.cs = true;
+                pos += 1;
+            }
+            0x36 => {
+                prefixes.ss = true;
+                pos += 1;
+            }
+            0x3E => {
+                prefixes.ds = true;
+                pos += 1;
+            }
+            0x26 => {
+                prefixes.es = true;
+                pos += 1;
+            }
+            0x64 => {
+                prefixes.fs = true;
+                pos += 1;
+            }
+            0x65 => {
+                prefixes.gs = true;
+                pos += 1;
+            }
+            0x66 => {
+                prefixes.operand_size_override = true;
+                pos += 1;
+            }
+            0x67 => {
+                prefixes.address_size_override = true;
+                pos += 1;
+            }
             _ => break,
         }
     }
@@ -68,7 +108,9 @@ pub fn decode(code: &[u8], address: u64, mode: Mode) -> Result<Instruction, Deco
         pos += 1;
     }
 
-    if pos >= bytes.len() { return Err(DecodeError::TooShort); }
+    if pos >= bytes.len() {
+        return Err(DecodeError::TooShort);
+    }
 
     let rex_w = rex.is_some_and(|r| r.w);
     let p66 = prefixes.operand_size_override;
@@ -95,14 +137,39 @@ pub fn decode(code: &[u8], address: u64, mode: Mode) -> Result<Instruction, Deco
 
     // Stack width follows the mode (only 0x66 toggles it)
     let stack_op_size: OperandSize = match mode {
-        Mode::X16 => if p66 { OperandSize::Dword } else { OperandSize::Word },
-        Mode::X86 => if p66 { OperandSize::Word } else { OperandSize::Dword },
-        Mode::X64 => if p66 { OperandSize::Word } else { OperandSize::Qword },
+        Mode::X16 => {
+            if p66 {
+                OperandSize::Dword
+            } else {
+                OperandSize::Word
+            }
+        }
+        Mode::X86 => {
+            if p66 {
+                OperandSize::Word
+            } else {
+                OperandSize::Dword
+            }
+        }
+        Mode::X64 => {
+            if p66 {
+                OperandSize::Word
+            } else {
+                OperandSize::Qword
+            }
+        }
     };
 
     let (mnemonic, operands) = decode_opcode(
-        bytes, pos + 1, address, len, ctx, rex,
-        default_op_size, stack_op_size, prefixes,
+        bytes,
+        pos + 1,
+        address,
+        len,
+        ctx,
+        rex,
+        default_op_size,
+        stack_op_size,
+        prefixes,
     )?;
 
     let mut raw = [0u8; 15];
@@ -121,15 +188,29 @@ pub fn decode(code: &[u8], address: u64, mode: Mode) -> Result<Instruction, Deco
 
 #[allow(clippy::too_many_arguments)]
 fn decode_opcode(
-    bytes: &[u8], pos: usize, address: u64, insn_len: usize,
-    ctx: Ctx, rex: Option<RexPrefix>,
-    op_size: OperandSize, stack_size: OperandSize, prefixes: Prefixes,
+    bytes: &[u8],
+    pos: usize,
+    address: u64,
+    insn_len: usize,
+    ctx: Ctx,
+    rex: Option<RexPrefix>,
+    op_size: OperandSize,
+    stack_size: OperandSize,
+    prefixes: Prefixes,
 ) -> Result<(Mnemonic, Vec<Operand>), DecodeError> {
     let opcode = bytes[pos - 1];
     let is_64 = ctx.is_64;
     let is_16 = ctx.is_16;
     let p66 = prefixes.operand_size_override;
-    let pp = if p66 { 1 } else if prefixes.rep { 2 } else if prefixes.repne { 3 } else { 0 };
+    let pp = if p66 {
+        1
+    } else if prefixes.rep {
+        2
+    } else if prefixes.repne {
+        3
+    } else {
+        0
+    };
     let rex_w = rex.is_some_and(|r| r.w);
     let rex_r = rex.is_some_and(|r| r.r);
     let rex_x = rex.is_some_and(|r| r.x);
@@ -184,13 +265,21 @@ fn decode_opcode(
             (Mnemonic::Jecxz, vec![Operand::Rel(t)])
         }
         0x98 => {
-            let m = if is_64 && rex_w { Mnemonic::Cdqe }
-                else if p66 != is_16 { Mnemonic::Cbw }
-                else { Mnemonic::Cwde };
+            let m = if is_64 && rex_w {
+                Mnemonic::Cdqe
+            } else if p66 != is_16 {
+                Mnemonic::Cbw
+            } else {
+                Mnemonic::Cwde
+            };
             (m, vec![])
         }
         0x99 => (
-            if is_16 && !p66 { Mnemonic::Cwd } else { Mnemonic::Cdq },
+            if is_16 && !p66 {
+                Mnemonic::Cwd
+            } else {
+                Mnemonic::Cdq
+            },
             vec![],
         ),
         0xD7 => (Mnemonic::Xlat, vec![]),
@@ -234,10 +323,17 @@ fn decode_opcode(
         0x68 => {
             // push imm: 16-bit in 16-bit mode, 32-bit otherwise
             // (REX.W does not widen it in long mode).
-            let imm = if ctx.op16 { read_u16(bytes, pos)? as i64 } else { read_i32(bytes, pos)? as i64 };
+            let imm = if ctx.op16 {
+                read_u16(bytes, pos)? as i64
+            } else {
+                read_i32(bytes, pos)? as i64
+            };
             (Mnemonic::Push, vec![Operand::Imm(imm)])
         }
-        0x6A => (Mnemonic::Push, vec![Operand::Imm(read_i8(bytes, pos)? as i64)]),
+        0x6A => (
+            Mnemonic::Push,
+            vec![Operand::Imm(read_i8(bytes, pos)? as i64)],
+        ),
 
         // в”Ђв”Ђ inc/dec r (32-bit mode only; in x64 these are REX slots) в”Ђ
         0x40..=0x47 if !is_64 => (
@@ -263,14 +359,23 @@ fn decode_opcode(
         }
         0xB0..=0xB7 => {
             let r = reg8_for_index(opcode - 0xB0, rex_present, rex_b);
-            (Mnemonic::Mov, vec![Operand::Reg(r), Operand::Imm(read_u8(bytes, pos)? as i64)])
+            (
+                Mnemonic::Mov,
+                vec![Operand::Reg(r), Operand::Imm(read_u8(bytes, pos)? as i64)],
+            )
         }
 
         // в”Ђв”Ђ ALU reg/mem forms (00-3D) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         // +0: r/m8, r8   +1: r/m, r   +2: r8, r/m8   +3: r, r/m
         // +4: al, imm8   +5: acc, imm
-        0x00..=0x03 | 0x08..=0x0B | 0x10..=0x13 | 0x18..=0x1B |
-        0x20..=0x23 | 0x28..=0x2B | 0x30..=0x33 | 0x38..=0x3B => {
+        0x00..=0x03
+        | 0x08..=0x0B
+        | 0x10..=0x13
+        | 0x18..=0x1B
+        | 0x20..=0x23
+        | 0x28..=0x2B
+        | 0x30..=0x33
+        | 0x38..=0x3B => {
             let alu = alu_mnemonic(opcode >> 3);
             let is_byte = (opcode & 1) == 0;
             let dir_to_rm = (opcode & 2) == 0; // +0/+1: dst = r/m
@@ -284,7 +389,10 @@ fn decode_opcode(
         }
         0x04 | 0x0C | 0x14 | 0x1C | 0x24 | 0x2C | 0x34 | 0x3C => (
             alu_mnemonic(opcode >> 3),
-            vec![Operand::Reg(Register::Al), Operand::Imm(read_u8(bytes, pos)? as i64)],
+            vec![
+                Operand::Reg(Register::Al),
+                Operand::Imm(read_u8(bytes, pos)? as i64),
+            ],
         ),
         0x05 | 0x0D | 0x15 | 0x1D | 0x25 | 0x2D | 0x35 | 0x3D => (
             alu_mnemonic(opcode >> 3),
@@ -296,22 +404,33 @@ fn decode_opcode(
 
         // в”Ђв”Ђ test в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         0x84 => {
-            let (r, rm, _) = decode_modrm(bytes, pos, ctx, rex, OperandSize::Byte, OperandSize::Byte)?;
+            let (r, rm, _) =
+                decode_modrm(bytes, pos, ctx, rex, OperandSize::Byte, OperandSize::Byte)?;
             (Mnemonic::Test, vec![rm, Operand::Reg(r)])
         }
         0x85 => {
             let (r, rm, _) = decode_modrm(bytes, pos, ctx, rex, op_size, op_size)?;
             (Mnemonic::Test, vec![rm, Operand::Reg(r)])
         }
-        0xA8 => (Mnemonic::Test, vec![Operand::Reg(Register::Al), Operand::Imm(read_u8(bytes, pos)? as i64)]),
-        0xA9 => (Mnemonic::Test, vec![
-            Operand::Reg(accumulator(op_size)),
-            Operand::Imm(read_imm_opsize(bytes, pos, ctx)?),
-        ]),
+        0xA8 => (
+            Mnemonic::Test,
+            vec![
+                Operand::Reg(Register::Al),
+                Operand::Imm(read_u8(bytes, pos)? as i64),
+            ],
+        ),
+        0xA9 => (
+            Mnemonic::Test,
+            vec![
+                Operand::Reg(accumulator(op_size)),
+                Operand::Imm(read_imm_opsize(bytes, pos, ctx)?),
+            ],
+        ),
 
         // в”Ђв”Ђ mov r/m forms в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         0x88 => {
-            let (r, rm, _) = decode_modrm(bytes, pos, ctx, rex, OperandSize::Byte, OperandSize::Byte)?;
+            let (r, rm, _) =
+                decode_modrm(bytes, pos, ctx, rex, OperandSize::Byte, OperandSize::Byte)?;
             (Mnemonic::Mov, vec![rm, Operand::Reg(r)])
         }
         0x89 => {
@@ -319,7 +438,8 @@ fn decode_opcode(
             (Mnemonic::Mov, vec![rm, Operand::Reg(r)])
         }
         0x8A => {
-            let (r, rm, _) = decode_modrm(bytes, pos, ctx, rex, OperandSize::Byte, OperandSize::Byte)?;
+            let (r, rm, _) =
+                decode_modrm(bytes, pos, ctx, rex, OperandSize::Byte, OperandSize::Byte)?;
             (Mnemonic::Mov, vec![Operand::Reg(r), rm])
         }
         0x8B => {
@@ -345,8 +465,12 @@ fn decode_opcode(
         0xA0..=0xA3 => {
             let (addr, sz) = read_moffs(bytes, pos, ctx, rex_w, op_size)?;
             let mem = Operand::Mem(MemOperand {
-                base: None, index: None, scale: 1,
-                displacement: addr, segment: None, size: sz,
+                base: None,
+                index: None,
+                scale: 1,
+                displacement: addr,
+                segment: None,
+                size: sz,
             });
             match opcode {
                 0xA0 => (Mnemonic::Mov, vec![Operand::Reg(Register::Al), mem]),
@@ -376,69 +500,139 @@ fn decode_opcode(
 
         // в”Ђв”Ђ String operations в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         0xA4 => (Mnemonic::Movsb, vec![]),
-        0xA5 => str_op(ctx, rex_w, p66, (Mnemonic::Movsw, Mnemonic::Movsd, Mnemonic::Movsq)),
+        0xA5 => str_op(
+            ctx,
+            rex_w,
+            p66,
+            (Mnemonic::Movsw, Mnemonic::Movsd, Mnemonic::Movsq),
+        ),
         0xA6 => (Mnemonic::Cmpsb, vec![]),
-        0xA7 => str_op(ctx, rex_w, p66, (Mnemonic::Cmpsw, Mnemonic::Cmpsd, Mnemonic::Cmpsq)),
+        0xA7 => str_op(
+            ctx,
+            rex_w,
+            p66,
+            (Mnemonic::Cmpsw, Mnemonic::Cmpsd, Mnemonic::Cmpsq),
+        ),
         0xAA => (Mnemonic::Stosb, vec![]),
-        0xAB => str_op(ctx, rex_w, p66, (Mnemonic::Stosw, Mnemonic::Stosd, Mnemonic::Stosq)),
+        0xAB => str_op(
+            ctx,
+            rex_w,
+            p66,
+            (Mnemonic::Stosw, Mnemonic::Stosd, Mnemonic::Stosq),
+        ),
         0xAC => (Mnemonic::Lodsb, vec![]),
-        0xAD => str_op(ctx, rex_w, p66, (Mnemonic::Lodsw, Mnemonic::Lodsd, Mnemonic::Lodsq)),
+        0xAD => str_op(
+            ctx,
+            rex_w,
+            p66,
+            (Mnemonic::Lodsw, Mnemonic::Lodsd, Mnemonic::Lodsq),
+        ),
         0xAE => (Mnemonic::Scasb, vec![]),
-        0xAF => str_op(ctx, rex_w, p66, (Mnemonic::Scasw, Mnemonic::Scasd, Mnemonic::Scasq)),
+        0xAF => str_op(
+            ctx,
+            rex_w,
+            p66,
+            (Mnemonic::Scasw, Mnemonic::Scasd, Mnemonic::Scasq),
+        ),
 
         // в”Ђв”Ђ Control flow в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         0x70..=0x7F => {
             let rel = read_i8(bytes, pos)? as i64;
-            (jcc_mnemonic(opcode - 0x70), vec![Operand::Rel(rel_target(address, insn_len, rel))])
+            (
+                jcc_mnemonic(opcode - 0x70),
+                vec![Operand::Rel(rel_target(address, insn_len, rel))],
+            )
         }
         0xE8 => {
             // call rel: 16-bit in 16-bit mode, 32-bit otherwise (0x66 toggles).
             let rel = read_rel_opsize(bytes, pos, ctx)? as i64;
-            (Mnemonic::Call, vec![Operand::Rel(rel_target(address, insn_len, rel))])
+            (
+                Mnemonic::Call,
+                vec![Operand::Rel(rel_target(address, insn_len, rel))],
+            )
         }
         0xE9 => {
             let rel = read_rel_opsize(bytes, pos, ctx)? as i64;
-            (Mnemonic::Jmp, vec![Operand::Rel(rel_target(address, insn_len, rel))])
+            (
+                Mnemonic::Jmp,
+                vec![Operand::Rel(rel_target(address, insn_len, rel))],
+            )
         }
         0xEB => {
             let rel = read_i8(bytes, pos)? as i64;
-            (Mnemonic::Jmp, vec![Operand::Rel(rel_target(address, insn_len, rel))])
+            (
+                Mnemonic::Jmp,
+                vec![Operand::Rel(rel_target(address, insn_len, rel))],
+            )
         }
         // Far jump/call (16/32-bit only): ptr16:16 (5 bytes) / ptr16:32 (7 bytes).
         // Operands intentionally empty — segment:offset has no Operand form.
         0xEA | 0x9A if !is_64 => {
             let need = if is_16 { 4 } else { 6 };
-            if pos + need > bytes.len() { return Err(DecodeError::TooShort); }
-            (if opcode == 0xEA { Mnemonic::Jmp } else { Mnemonic::Call }, vec![])
+            if pos + need > bytes.len() {
+                return Err(DecodeError::TooShort);
+            }
+            (
+                if opcode == 0xEA {
+                    Mnemonic::Jmp
+                } else {
+                    Mnemonic::Call
+                },
+                vec![],
+            )
         }
 
         // в”Ђв”Ђ Group 1: add/or/adc/sbb/and/sub/xor/cmp, imm в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         0x80 | 0x82 => {
             let (rf, dst, next) = modrm_group(bytes, pos, ctx, rex, OperandSize::Byte)?;
-            (alu_mnemonic(rf), vec![dst, Operand::Imm(read_u8(bytes, next)? as i64)])
+            (
+                alu_mnemonic(rf),
+                vec![dst, Operand::Imm(read_u8(bytes, next)? as i64)],
+            )
         }
         0x81 => {
             let (rf, dst, next) = modrm_group(bytes, pos, ctx, rex, op_size)?;
-            (alu_mnemonic(rf), vec![dst, Operand::Imm(read_imm_opsize(bytes, next, ctx)?)])
+            (
+                alu_mnemonic(rf),
+                vec![dst, Operand::Imm(read_imm_opsize(bytes, next, ctx)?)],
+            )
         }
         0x83 => {
             let (rf, dst, next) = modrm_group(bytes, pos, ctx, rex, op_size)?;
-            (alu_mnemonic(rf), vec![dst, Operand::Imm(read_i8(bytes, next)? as i64)])
+            (
+                alu_mnemonic(rf),
+                vec![dst, Operand::Imm(read_i8(bytes, next)? as i64)],
+            )
         }
 
         // в”Ђв”Ђ Shift groups в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         0xC0 | 0xC1 => {
-            let sz = if opcode == 0xC0 { OperandSize::Byte } else { op_size };
+            let sz = if opcode == 0xC0 {
+                OperandSize::Byte
+            } else {
+                op_size
+            };
             let (rf, dst, next) = modrm_group(bytes, pos, ctx, rex, sz)?;
-            (shift_mnemonic(rf), vec![dst, Operand::Imm(read_u8(bytes, next)? as i64)])
+            (
+                shift_mnemonic(rf),
+                vec![dst, Operand::Imm(read_u8(bytes, next)? as i64)],
+            )
         }
         0xD0 | 0xD1 => {
-            let sz = if opcode == 0xD0 { OperandSize::Byte } else { op_size };
+            let sz = if opcode == 0xD0 {
+                OperandSize::Byte
+            } else {
+                op_size
+            };
             let (rf, dst, _) = modrm_group(bytes, pos, ctx, rex, sz)?;
             (shift_mnemonic(rf), vec![dst, Operand::Imm(1)])
         }
         0xD2 | 0xD3 => {
-            let sz = if opcode == 0xD2 { OperandSize::Byte } else { op_size };
+            let sz = if opcode == 0xD2 {
+                OperandSize::Byte
+            } else {
+                op_size
+            };
             let (rf, dst, _) = modrm_group(bytes, pos, ctx, rex, sz)?;
             (shift_mnemonic(rf), vec![dst, Operand::Reg(Register::Cl)])
         }
@@ -446,16 +640,26 @@ fn decode_opcode(
         // в”Ђв”Ђ Group 11: mov r/m, imm в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         0xC6 => {
             let (_, dst, next) = modrm_group(bytes, pos, ctx, rex, OperandSize::Byte)?;
-            (Mnemonic::Mov, vec![dst, Operand::Imm(read_u8(bytes, next)? as i64)])
+            (
+                Mnemonic::Mov,
+                vec![dst, Operand::Imm(read_u8(bytes, next)? as i64)],
+            )
         }
         0xC7 => {
             let (_, dst, next) = modrm_group(bytes, pos, ctx, rex, op_size)?;
-            (Mnemonic::Mov, vec![dst, Operand::Imm(read_imm_opsize(bytes, next, ctx)?)])
+            (
+                Mnemonic::Mov,
+                vec![dst, Operand::Imm(read_imm_opsize(bytes, next, ctx)?)],
+            )
         }
 
         // в”Ђв”Ђ Group 3 (F6/F7): test/not/neg/mul/imul/div/idiv в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         0xF6 | 0xF7 => {
-            let sz = if opcode == 0xF6 { OperandSize::Byte } else { op_size };
+            let sz = if opcode == 0xF6 {
+                OperandSize::Byte
+            } else {
+                op_size
+            };
             let (rf, dst, next) = modrm_group(bytes, pos, ctx, rex, sz)?;
             match rf {
                 0 | 1 => {
@@ -479,7 +683,7 @@ fn decode_opcode(
         0xFF if pos < bytes.len() => {
             let rf = (bytes[pos] >> 3) & 7;
             let sz = match rf {
-                6 => stack_size,           // push r/m uses stack width
+                6 => stack_size,             // push r/m uses stack width
                 2 | 4 => OperandSize::Qword, // indirect call/jmp are full-width
                 _ => op_size,
             };
@@ -530,8 +734,14 @@ fn decode_opcode(
                 if inner_pos < bytes.len() {
                     let rf = (bytes[inner_pos] >> 3) & 7;
                     let name = match rf {
-                        0 => "fxsave", 1 => "fxrstor", 2 => "ldmxcsr", 3 => "stmxcsr",
-                        4 => "xsave", 5 => "lfence", 6 => "mfence", 7 => "sfence",
+                        0 => "fxsave",
+                        1 => "fxrstor",
+                        2 => "ldmxcsr",
+                        3 => "stmxcsr",
+                        4 => "xsave",
+                        5 => "lfence",
+                        6 => "mfence",
+                        7 => "sfence",
                         _ => return Ok((Mnemonic::Unknown, vec![])),
                     };
                     let (_, rm, _) = decode_modrm(bytes, inner_pos, ctx, rex, op_size, op_size)?;
@@ -561,26 +771,33 @@ fn decode_opcode(
                 }
                 0x80..=0x8F => {
                     let rel = read_rel_opsize(bytes, inner_pos, ctx)? as i64;
-                    (jcc_mnemonic(op2 - 0x80), vec![Operand::Rel(rel_target(address, insn_len, rel))])
+                    (
+                        jcc_mnemonic(op2 - 0x80),
+                        vec![Operand::Rel(rel_target(address, insn_len, rel))],
+                    )
                 }
                 0xAF => {
                     let (r, rm, _) = decode_modrm(bytes, inner_pos, ctx, rex, op_size, op_size)?;
                     (Mnemonic::Imul, vec![Operand::Reg(r), rm])
                 }
                 0xB6 => {
-                    let (r, rm, _) = decode_modrm(bytes, inner_pos, ctx, rex, op_size, OperandSize::Byte)?;
+                    let (r, rm, _) =
+                        decode_modrm(bytes, inner_pos, ctx, rex, op_size, OperandSize::Byte)?;
                     (Mnemonic::Movzx, vec![Operand::Reg(r), rm])
                 }
                 0xB7 => {
-                    let (r, rm, _) = decode_modrm(bytes, inner_pos, ctx, rex, op_size, OperandSize::Word)?;
+                    let (r, rm, _) =
+                        decode_modrm(bytes, inner_pos, ctx, rex, op_size, OperandSize::Word)?;
                     (Mnemonic::Movzx, vec![Operand::Reg(r), rm])
                 }
                 0xBE => {
-                    let (r, rm, _) = decode_modrm(bytes, inner_pos, ctx, rex, op_size, OperandSize::Byte)?;
+                    let (r, rm, _) =
+                        decode_modrm(bytes, inner_pos, ctx, rex, op_size, OperandSize::Byte)?;
                     (Mnemonic::Movsx, vec![Operand::Reg(r), rm])
                 }
                 0xBF => {
-                    let (r, rm, _) = decode_modrm(bytes, inner_pos, ctx, rex, op_size, OperandSize::Word)?;
+                    let (r, rm, _) =
+                        decode_modrm(bytes, inner_pos, ctx, rex, op_size, OperandSize::Word)?;
                     (Mnemonic::Movsx, vec![Operand::Reg(r), rm])
                 }
                 0xA3 | 0xAB | 0xB3 | 0xBB => {
@@ -597,7 +814,11 @@ fn decode_opcode(
                 0xBC | 0xBD => {
                     // bsf/bsr r, r/m
                     let (r, rm, _) = decode_modrm(bytes, inner_pos, ctx, rex, op_size, op_size)?;
-                    let m = if op2 == 0xBC { Mnemonic::Bsf } else { Mnemonic::Bsr };
+                    let m = if op2 == 0xBC {
+                        Mnemonic::Bsf
+                    } else {
+                        Mnemonic::Bsr
+                    };
                     (m, vec![Operand::Reg(r), rm])
                 }
                 0xBA => {
@@ -617,7 +838,14 @@ fn decode_opcode(
                     vec![Operand::Reg(reg(op2 - 0xC8, rex_b, op_size))],
                 ),
                 0x90..=0x9F => {
-                    let (_, rm, _) = decode_modrm(bytes, inner_pos, ctx, rex, OperandSize::Byte, OperandSize::Byte)?;
+                    let (_, rm, _) = decode_modrm(
+                        bytes,
+                        inner_pos,
+                        ctx,
+                        rex,
+                        OperandSize::Byte,
+                        OperandSize::Byte,
+                    )?;
                     (setcc_mnemonic(op2 - 0x90), vec![rm])
                 }
                 0xA0 => (Mnemonic::Push, vec![Operand::Reg(Register::Fs)]),
@@ -626,22 +854,49 @@ fn decode_opcode(
                 0xA9 => (Mnemonic::Pop, vec![Operand::Reg(Register::Gs)]),
                 0xA4 => {
                     let (r, rm, next) = decode_modrm(bytes, inner_pos, ctx, rex, op_size, op_size)?;
-                    (Mnemonic::Raw("shld".to_string()), vec![rm, Operand::Reg(r), Operand::Imm(read_u8(bytes, next)? as i64)])
+                    (
+                        Mnemonic::Raw("shld".to_string()),
+                        vec![
+                            rm,
+                            Operand::Reg(r),
+                            Operand::Imm(read_u8(bytes, next)? as i64),
+                        ],
+                    )
                 }
                 0xA5 => {
                     let (r, rm, _) = decode_modrm(bytes, inner_pos, ctx, rex, op_size, op_size)?;
-                    (Mnemonic::Raw("shld".to_string()), vec![rm, Operand::Reg(r), Operand::Reg(Register::Cl)])
+                    (
+                        Mnemonic::Raw("shld".to_string()),
+                        vec![rm, Operand::Reg(r), Operand::Reg(Register::Cl)],
+                    )
                 }
                 0xAC => {
                     let (r, rm, next) = decode_modrm(bytes, inner_pos, ctx, rex, op_size, op_size)?;
-                    (Mnemonic::Raw("shrd".to_string()), vec![rm, Operand::Reg(r), Operand::Imm(read_u8(bytes, next)? as i64)])
+                    (
+                        Mnemonic::Raw("shrd".to_string()),
+                        vec![
+                            rm,
+                            Operand::Reg(r),
+                            Operand::Imm(read_u8(bytes, next)? as i64),
+                        ],
+                    )
                 }
                 0xAD => {
                     let (r, rm, _) = decode_modrm(bytes, inner_pos, ctx, rex, op_size, op_size)?;
-                    (Mnemonic::Raw("shrd".to_string()), vec![rm, Operand::Reg(r), Operand::Reg(Register::Cl)])
+                    (
+                        Mnemonic::Raw("shrd".to_string()),
+                        vec![rm, Operand::Reg(r), Operand::Reg(Register::Cl)],
+                    )
                 }
                 0xB0 => {
-                    let (r, rm, _) = decode_modrm(bytes, inner_pos, ctx, rex, OperandSize::Byte, OperandSize::Byte)?;
+                    let (r, rm, _) = decode_modrm(
+                        bytes,
+                        inner_pos,
+                        ctx,
+                        rex,
+                        OperandSize::Byte,
+                        OperandSize::Byte,
+                    )?;
                     (Mnemonic::Cmpxchg, vec![rm, Operand::Reg(r)])
                 }
                 0xB1 => {
@@ -649,7 +904,14 @@ fn decode_opcode(
                     (Mnemonic::Cmpxchg, vec![rm, Operand::Reg(r)])
                 }
                 0xC0 => {
-                    let (r, rm, _) = decode_modrm(bytes, inner_pos, ctx, rex, OperandSize::Byte, OperandSize::Byte)?;
+                    let (r, rm, _) = decode_modrm(
+                        bytes,
+                        inner_pos,
+                        ctx,
+                        rex,
+                        OperandSize::Byte,
+                        OperandSize::Byte,
+                    )?;
                     (Mnemonic::Xadd, vec![rm, Operand::Reg(r)])
                 }
                 0xC1 => {
@@ -659,7 +921,8 @@ fn decode_opcode(
                 0xC7 if inner_pos < bytes.len() => {
                     let rf = (bytes[inner_pos] >> 3) & 7;
                     if rf == 1 {
-                        let (_, rm, _) = decode_modrm(bytes, inner_pos, ctx, rex, op_size, op_size)?;
+                        let (_, rm, _) =
+                            decode_modrm(bytes, inner_pos, ctx, rex, op_size, op_size)?;
                         (Mnemonic::Cmpxchg8b, vec![rm])
                     } else {
                         (Mnemonic::Unknown, vec![])
@@ -673,7 +936,12 @@ fn decode_opcode(
     })
 }
 
-fn str_op(ctx: Ctx, rex_w: bool, p66: bool, variants: (Mnemonic, Mnemonic, Mnemonic)) -> (Mnemonic, Vec<Operand>) {
+fn str_op(
+    ctx: Ctx,
+    rex_w: bool,
+    p66: bool,
+    variants: (Mnemonic, Mnemonic, Mnemonic),
+) -> (Mnemonic, Vec<Operand>) {
     // variants are (word, dword, qword) forms: 16-bit mode defaults to word.
     let word = if ctx.is_16 { !p66 } else { p66 };
     let m = if ctx.is_64 && rex_w {
@@ -699,7 +967,13 @@ fn rel_target(address: u64, insn_len: usize, rel: i64) -> u64 {
 }
 
 /// moffs displacement: sized by operand size (REX.W в†’ 8, 66 в†’ 2, else 4).
-fn read_moffs(code: &[u8], pos: usize, ctx: Ctx, rex_w: bool, op_size: OperandSize) -> Result<(i64, OperandSize), DecodeError> {
+fn read_moffs(
+    code: &[u8],
+    pos: usize,
+    ctx: Ctx,
+    rex_w: bool,
+    op_size: OperandSize,
+) -> Result<(i64, OperandSize), DecodeError> {
     // moffs address width follows the *address* size: 16-bit -> 2 bytes,
     // REX.W in long mode -> 8 bytes, otherwise 4. The operand size rides
     // along separately (this also fixes 0x66 A0-A3 in 32-bit mode, which
@@ -711,7 +985,9 @@ fn read_moffs(code: &[u8], pos: usize, ctx: Ctx, rex_w: bool, op_size: OperandSi
     } else {
         4usize
     };
-    if pos + n > code.len() { return Err(DecodeError::TooShort); }
+    if pos + n > code.len() {
+        return Err(DecodeError::TooShort);
+    }
     let mut v: u64 = 0;
     for i in 0..n {
         v |= (code[pos + i] as u64) << (i * 8);
@@ -775,20 +1051,37 @@ fn read_i8(code: &[u8], pos: usize) -> Result<i8, DecodeError> {
 }
 
 fn read_u16(code: &[u8], pos: usize) -> Result<u16, DecodeError> {
-    if pos + 2 > code.len() { return Err(DecodeError::TooShort); }
+    if pos + 2 > code.len() {
+        return Err(DecodeError::TooShort);
+    }
     Ok(u16::from_le_bytes([code[pos], code[pos + 1]]))
 }
 
 fn read_i32(code: &[u8], pos: usize) -> Result<i32, DecodeError> {
-    if pos + 4 > code.len() { return Err(DecodeError::TooShort); }
-    Ok(i32::from_le_bytes([code[pos], code[pos+1], code[pos+2], code[pos+3]]))
+    if pos + 4 > code.len() {
+        return Err(DecodeError::TooShort);
+    }
+    Ok(i32::from_le_bytes([
+        code[pos],
+        code[pos + 1],
+        code[pos + 2],
+        code[pos + 3],
+    ]))
 }
 
 fn read_i64(code: &[u8], pos: usize) -> Result<i64, DecodeError> {
-    if pos + 8 > code.len() { return Err(DecodeError::TooShort); }
+    if pos + 8 > code.len() {
+        return Err(DecodeError::TooShort);
+    }
     Ok(i64::from_le_bytes([
-        code[pos], code[pos+1], code[pos+2], code[pos+3],
-        code[pos+4], code[pos+5], code[pos+6], code[pos+7],
+        code[pos],
+        code[pos + 1],
+        code[pos + 2],
+        code[pos + 3],
+        code[pos + 4],
+        code[pos + 5],
+        code[pos + 6],
+        code[pos + 7],
     ]))
 }
 
@@ -803,24 +1096,60 @@ pub(crate) fn reg_for_index(idx: u8, rex_ext: bool, size: OperandSize) -> Regist
     let extended = if rex_ext { idx + 8 } else { idx };
     match size {
         OperandSize::Qword => match extended {
-            0 => Register::Rax, 1 => Register::Rcx, 2 => Register::Rdx, 3 => Register::Rbx,
-            4 => Register::Rsp, 5 => Register::Rbp, 6 => Register::Rsi, 7 => Register::Rdi,
-            8 => Register::R8, 9 => Register::R9, 10 => Register::R10, 11 => Register::R11,
-            12 => Register::R12, 13 => Register::R13, 14 => Register::R14, 15 => Register::R15,
+            0 => Register::Rax,
+            1 => Register::Rcx,
+            2 => Register::Rdx,
+            3 => Register::Rbx,
+            4 => Register::Rsp,
+            5 => Register::Rbp,
+            6 => Register::Rsi,
+            7 => Register::Rdi,
+            8 => Register::R8,
+            9 => Register::R9,
+            10 => Register::R10,
+            11 => Register::R11,
+            12 => Register::R12,
+            13 => Register::R13,
+            14 => Register::R14,
+            15 => Register::R15,
             _ => Register::Rax,
         },
         OperandSize::Dword => match extended {
-            0 => Register::Eax, 1 => Register::Ecx, 2 => Register::Edx, 3 => Register::Ebx,
-            4 => Register::Esp, 5 => Register::Ebp, 6 => Register::Esi, 7 => Register::Edi,
-            8 => Register::R8d, 9 => Register::R9d, 10 => Register::R10d, 11 => Register::R11d,
-            12 => Register::R12d, 13 => Register::R13d, 14 => Register::R14d, 15 => Register::R15d,
+            0 => Register::Eax,
+            1 => Register::Ecx,
+            2 => Register::Edx,
+            3 => Register::Ebx,
+            4 => Register::Esp,
+            5 => Register::Ebp,
+            6 => Register::Esi,
+            7 => Register::Edi,
+            8 => Register::R8d,
+            9 => Register::R9d,
+            10 => Register::R10d,
+            11 => Register::R11d,
+            12 => Register::R12d,
+            13 => Register::R13d,
+            14 => Register::R14d,
+            15 => Register::R15d,
             _ => Register::Eax,
         },
         OperandSize::Word => match extended {
-            0 => Register::Ax, 1 => Register::Cx, 2 => Register::Dx, 3 => Register::Bx,
-            4 => Register::Sp, 5 => Register::Bp, 6 => Register::Si, 7 => Register::Di,
-            8 => Register::R8w, 9 => Register::R9w, 10 => Register::R10w, 11 => Register::R11w,
-            12 => Register::R12w, 13 => Register::R13w, 14 => Register::R14w, 15 => Register::R15w,
+            0 => Register::Ax,
+            1 => Register::Cx,
+            2 => Register::Dx,
+            3 => Register::Bx,
+            4 => Register::Sp,
+            5 => Register::Bp,
+            6 => Register::Si,
+            7 => Register::Di,
+            8 => Register::R8w,
+            9 => Register::R9w,
+            10 => Register::R10w,
+            11 => Register::R11w,
+            12 => Register::R12w,
+            13 => Register::R13w,
+            14 => Register::R14w,
+            15 => Register::R15w,
             _ => Register::Ax,
         },
         _ => Register::Eax,
@@ -832,47 +1161,110 @@ pub(crate) fn reg_for_index(idx: u8, rex_ext: bool, size: OperandSize) -> Regist
 fn reg8_for_index(idx: u8, rex_present: bool, rex_ext: bool) -> Register {
     if rex_ext {
         return match idx + 8 {
-            8 => Register::R8b, 9 => Register::R9b, 10 => Register::R10b, 11 => Register::R11b,
-            12 => Register::R12b, 13 => Register::R13b, 14 => Register::R14b, 15 => Register::R15b,
+            8 => Register::R8b,
+            9 => Register::R9b,
+            10 => Register::R10b,
+            11 => Register::R11b,
+            12 => Register::R12b,
+            13 => Register::R13b,
+            14 => Register::R14b,
+            15 => Register::R15b,
             _ => Register::Al,
         };
     }
     match idx {
-        0 => Register::Al, 1 => Register::Cl, 2 => Register::Dl, 3 => Register::Bl,
-        4 => if rex_present { Register::Spl } else { Register::Ah },
-        5 => if rex_present { Register::Bpl } else { Register::Ch },
-        6 => if rex_present { Register::Sil } else { Register::Dh },
-        7 => if rex_present { Register::Dil } else { Register::Bh },
+        0 => Register::Al,
+        1 => Register::Cl,
+        2 => Register::Dl,
+        3 => Register::Bl,
+        4 => {
+            if rex_present {
+                Register::Spl
+            } else {
+                Register::Ah
+            }
+        }
+        5 => {
+            if rex_present {
+                Register::Bpl
+            } else {
+                Register::Ch
+            }
+        }
+        6 => {
+            if rex_present {
+                Register::Sil
+            } else {
+                Register::Dh
+            }
+        }
+        7 => {
+            if rex_present {
+                Register::Dil
+            } else {
+                Register::Bh
+            }
+        }
         _ => Register::Al,
     }
 }
 
 fn jcc_mnemonic(cc: u8) -> Mnemonic {
     match cc {
-        0 => Mnemonic::Jo, 1 => Mnemonic::Jno, 2 => Mnemonic::Jb, 3 => Mnemonic::Jnb,
-        4 => Mnemonic::Je, 5 => Mnemonic::Jne, 6 => Mnemonic::Jbe, 7 => Mnemonic::Ja,
-        8 => Mnemonic::Js, 9 => Mnemonic::Jns, 0xA => Mnemonic::Jp, 0xB => Mnemonic::Jnp,
-        0xC => Mnemonic::Jl, 0xD => Mnemonic::Jge, 0xE => Mnemonic::Jle, 0xF => Mnemonic::Jg,
+        0 => Mnemonic::Jo,
+        1 => Mnemonic::Jno,
+        2 => Mnemonic::Jb,
+        3 => Mnemonic::Jnb,
+        4 => Mnemonic::Je,
+        5 => Mnemonic::Jne,
+        6 => Mnemonic::Jbe,
+        7 => Mnemonic::Ja,
+        8 => Mnemonic::Js,
+        9 => Mnemonic::Jns,
+        0xA => Mnemonic::Jp,
+        0xB => Mnemonic::Jnp,
+        0xC => Mnemonic::Jl,
+        0xD => Mnemonic::Jge,
+        0xE => Mnemonic::Jle,
+        0xF => Mnemonic::Jg,
         _ => Mnemonic::Jcc,
     }
 }
 
 fn cmovcc_mnemonic(cc: u8) -> Mnemonic {
     match cc {
-        0 => Mnemonic::Cmovo, 1 => Mnemonic::Cmovno, 2 => Mnemonic::Cmovb, 3 => Mnemonic::Cmovae,
-        4 => Mnemonic::Cmove, 5 => Mnemonic::Cmovne, 6 => Mnemonic::Cmovbe, 7 => Mnemonic::Cmova,
-        8 => Mnemonic::Cmovs, 9 => Mnemonic::Cmovns, 0xA => Mnemonic::Cmovp, 0xB => Mnemonic::Cmovnp,
-        0xC => Mnemonic::Cmovl, 0xD => Mnemonic::Cmovge, 0xE => Mnemonic::Cmovle, 0xF => Mnemonic::Cmovg,
+        0 => Mnemonic::Cmovo,
+        1 => Mnemonic::Cmovno,
+        2 => Mnemonic::Cmovb,
+        3 => Mnemonic::Cmovae,
+        4 => Mnemonic::Cmove,
+        5 => Mnemonic::Cmovne,
+        6 => Mnemonic::Cmovbe,
+        7 => Mnemonic::Cmova,
+        8 => Mnemonic::Cmovs,
+        9 => Mnemonic::Cmovns,
+        0xA => Mnemonic::Cmovp,
+        0xB => Mnemonic::Cmovnp,
+        0xC => Mnemonic::Cmovl,
+        0xD => Mnemonic::Cmovge,
+        0xE => Mnemonic::Cmovle,
+        0xF => Mnemonic::Cmovg,
         _ => Mnemonic::Cmovcc,
     }
 }
 
 /// Decode ModR/M (+SIB+disp). Returns (reg-field operand, r/m operand, next position).
 pub(crate) fn decode_modrm(
-    code: &[u8], pos: usize, ctx: Ctx, rex: Option<RexPrefix>,
-    reg_size: OperandSize, rm_size: OperandSize,
+    code: &[u8],
+    pos: usize,
+    ctx: Ctx,
+    rex: Option<RexPrefix>,
+    reg_size: OperandSize,
+    rm_size: OperandSize,
 ) -> Result<(Register, Operand, usize), DecodeError> {
-    if pos >= code.len() { return Err(DecodeError::TooShort); }
+    if pos >= code.len() {
+        return Err(DecodeError::TooShort);
+    }
     let modrm = code[pos];
     let r#mod = (modrm >> 6) & 3;
     let reg_f = (modrm >> 3) & 7;
@@ -889,7 +1281,11 @@ pub(crate) fn decode_modrm(
 
     // 16-bit addressing: no SIB, distinct r/m mapping with disp16.
     if ctx.addr16 && r#mod != 3 {
-        return Ok((reg_operand, decode_modrm16(code, &mut next_pos, r#mod, rm, rm_size)?, next_pos));
+        return Ok((
+            reg_operand,
+            decode_modrm16(code, &mut next_pos, r#mod, rm, rm_size)?,
+            next_pos,
+        ));
     }
 
     let mem_operand = if r#mod == 3 {
@@ -902,7 +1298,9 @@ pub(crate) fn decode_modrm(
 
         if rm == 4 {
             // SIB byte
-            if next_pos >= code.len() { return Err(DecodeError::TooShort); }
+            if next_pos >= code.len() {
+                return Err(DecodeError::TooShort);
+            }
             let sib = code[next_pos];
             next_pos += 1;
             let sib_base = sib & 7;
@@ -940,14 +1338,24 @@ pub(crate) fn decode_modrm(
         }
 
         match r#mod {
-            1 => { disp = read_i8(code, next_pos)? as i64; next_pos += 1; }
-            2 => { disp = read_i32(code, next_pos)? as i64; next_pos += 4; }
+            1 => {
+                disp = read_i8(code, next_pos)? as i64;
+                next_pos += 1;
+            }
+            2 => {
+                disp = read_i32(code, next_pos)? as i64;
+                next_pos += 4;
+            }
             _ => {}
         }
 
         Operand::Mem(MemOperand {
-            base, index, scale, displacement: disp,
-            segment: None, size: rm_size,
+            base,
+            index,
+            scale,
+            displacement: disp,
+            segment: None,
+            size: rm_size,
         })
     };
 
@@ -957,7 +1365,11 @@ pub(crate) fn decode_modrm(
 /// 16-bit ModR/M addressing (no SIB).
 /// r/m map: 0 BX+SI, 1 BX+DI, 2 BP+SI, 3 BP+DI, 4 SI, 5 DI, 6 BP(disp16 if mod==0), 7 BX.
 fn decode_modrm16(
-    code: &[u8], next_pos: &mut usize, r#mod: u8, rm: u8, rm_size: OperandSize,
+    code: &[u8],
+    next_pos: &mut usize,
+    r#mod: u8,
+    rm: u8,
+    rm_size: OperandSize,
 ) -> Result<Operand, DecodeError> {
     use Register::*;
     let (base, index) = match rm {
@@ -988,16 +1400,26 @@ fn decode_modrm16(
         _ => {}
     }
     Ok(Operand::Mem(MemOperand {
-        base, index, scale: 1, displacement: disp,
-        segment: None, size: rm_size,
+        base,
+        index,
+        scale: 1,
+        displacement: disp,
+        segment: None,
+        size: rm_size,
     }))
 }
 
 /// ModR/M group instruction: reg field selects the operation.
 fn modrm_group(
-    code: &[u8], pos: usize, ctx: Ctx, rex: Option<RexPrefix>, op_size: OperandSize,
+    code: &[u8],
+    pos: usize,
+    ctx: Ctx,
+    rex: Option<RexPrefix>,
+    op_size: OperandSize,
 ) -> Result<(u8, Operand, usize), DecodeError> {
-    if pos >= code.len() { return Err(DecodeError::TooShort); }
+    if pos >= code.len() {
+        return Err(DecodeError::TooShort);
+    }
     let reg_field = (code[pos] >> 3) & 7;
     let (_, operand, next_pos) = decode_modrm(code, pos, ctx, rex, op_size, op_size)?;
     Ok((reg_field, operand, next_pos))
@@ -1007,19 +1429,35 @@ fn modrm_group(
 
 fn setcc_mnemonic(cc: u8) -> Mnemonic {
     let s = match cc {
-        0 => "seto", 1 => "setno", 2 => "setb", 3 => "setae",
-        4 => "sete", 5 => "setne", 6 => "setbe", 7 => "seta",
-        8 => "sets", 9 => "setns", 0xA => "setp", 0xB => "setnp",
-        0xC => "setl", 0xD => "setge", 0xE => "setle", 0xF => "setg",
+        0 => "seto",
+        1 => "setno",
+        2 => "setb",
+        3 => "setae",
+        4 => "sete",
+        5 => "setne",
+        6 => "setbe",
+        7 => "seta",
+        8 => "sets",
+        9 => "setns",
+        0xA => "setp",
+        0xB => "setnp",
+        0xC => "setl",
+        0xD => "setge",
+        0xE => "setle",
+        0xF => "setg",
         _ => "setcc",
     };
-            Mnemonic::Raw(s.to_string())
+    Mnemonic::Raw(s.to_string())
 }
 
 fn seg_reg(idx: u8) -> Register {
     match idx & 7 {
-        0 => Register::Es, 1 => Register::Cs, 2 => Register::Ss,
-        3 => Register::Ds, 4 => Register::Fs, 5 => Register::Gs,
+        0 => Register::Es,
+        1 => Register::Cs,
+        2 => Register::Ss,
+        3 => Register::Ds,
+        4 => Register::Fs,
+        5 => Register::Gs,
         _ => Register::Ds,
     }
 }
@@ -1029,30 +1467,82 @@ fn seg_reg(idx: u8) -> Register {
 fn fpu_mem_size(opcode: u8, reg: u8) -> OperandSize {
     match opcode {
         0xD8..=0xDB => {
-            if opcode == 0xDB && (reg == 5 || reg == 7) { OperandSize::Qword } else { OperandSize::Dword }
+            if opcode == 0xDB && (reg == 5 || reg == 7) {
+                OperandSize::Qword
+            } else {
+                OperandSize::Dword
+            }
         }
         0xDC | 0xDD => OperandSize::Qword,
         0xDE => OperandSize::Word,
-        0xDF => if reg == 5 || reg == 7 { OperandSize::Tbyte } else { OperandSize::Word },
+        0xDF => {
+            if reg == 5 || reg == 7 {
+                OperandSize::Tbyte
+            } else {
+                OperandSize::Word
+            }
+        }
         _ => OperandSize::Dword,
     }
 }
 
 fn fpu_mem(opcode: u8, reg: u8, mem: Operand) -> Option<(String, Vec<Operand>)> {
     let s = match (opcode, reg) {
-        (0xD8, 0) => "fadd", (0xD8, 1) => "fmul", (0xD8, 2) => "fcom", (0xD8, 3) => "fcomp",
-        (0xD8, 4) => "fsub", (0xD8, 5) => "fsubr", (0xD8, 6) => "fdiv", (0xD8, 7) => "fdivr",
-        (0xDC, 0) => "fadd", (0xDC, 1) => "fmul", (0xDC, 2) => "fcom", (0xDC, 3) => "fcomp",
-        (0xDC, 4) => "fsub", (0xDC, 5) => "fsubr", (0xDC, 6) => "fdiv", (0xDC, 7) => "fdivr",
-        (0xDA, 0) => "fiadd", (0xDA, 1) => "fimul", (0xDA, 2) => "ficom", (0xDA, 3) => "ficomp",
-        (0xDA, 4) => "fisub", (0xDA, 5) => "fisubr", (0xDA, 6) => "fidiv", (0xDA, 7) => "fidivr",
-        (0xDE, 0) => "fiadd", (0xDE, 1) => "fimul", (0xDE, 2) => "ficom", (0xDE, 3) => "ficomp",
-        (0xDE, 4) => "fisub", (0xDE, 5) => "fisubr", (0xDE, 6) => "fidiv", (0xDE, 7) => "fidivr",
-        (0xD9, 0) => "fld", (0xD9, 2) => "fst", (0xD9, 3) => "fstp",
-        (0xD9, 4) => "fldenv", (0xD9, 5) => "fstenv", (0xD9, 6) => "fsave", (0xD9, 7) => "fstcw",
-        (0xDB, 0) => "fild", (0xDB, 2) => "fist", (0xDB, 3) => "fistp", (0xDB, 5) => "fild", (0xDB, 7) => "fistp",
-        (0xDD, 0) => "fld", (0xDD, 2) => "fst", (0xDD, 3) => "fstp", (0xDD, 1) => "frstor", (0xDD, 6) => "fsave", (0xDD, 7) => "fstsw",
-        (0xDF, 0) => "fild", (0xDF, 2) => "fist", (0xDF, 3) => "fistp", (0xDF, 5) => "fbld", (0xDF, 7) => "fbstp",
+        (0xD8, 0) => "fadd",
+        (0xD8, 1) => "fmul",
+        (0xD8, 2) => "fcom",
+        (0xD8, 3) => "fcomp",
+        (0xD8, 4) => "fsub",
+        (0xD8, 5) => "fsubr",
+        (0xD8, 6) => "fdiv",
+        (0xD8, 7) => "fdivr",
+        (0xDC, 0) => "fadd",
+        (0xDC, 1) => "fmul",
+        (0xDC, 2) => "fcom",
+        (0xDC, 3) => "fcomp",
+        (0xDC, 4) => "fsub",
+        (0xDC, 5) => "fsubr",
+        (0xDC, 6) => "fdiv",
+        (0xDC, 7) => "fdivr",
+        (0xDA, 0) => "fiadd",
+        (0xDA, 1) => "fimul",
+        (0xDA, 2) => "ficom",
+        (0xDA, 3) => "ficomp",
+        (0xDA, 4) => "fisub",
+        (0xDA, 5) => "fisubr",
+        (0xDA, 6) => "fidiv",
+        (0xDA, 7) => "fidivr",
+        (0xDE, 0) => "fiadd",
+        (0xDE, 1) => "fimul",
+        (0xDE, 2) => "ficom",
+        (0xDE, 3) => "ficomp",
+        (0xDE, 4) => "fisub",
+        (0xDE, 5) => "fisubr",
+        (0xDE, 6) => "fidiv",
+        (0xDE, 7) => "fidivr",
+        (0xD9, 0) => "fld",
+        (0xD9, 2) => "fst",
+        (0xD9, 3) => "fstp",
+        (0xD9, 4) => "fldenv",
+        (0xD9, 5) => "fstenv",
+        (0xD9, 6) => "fsave",
+        (0xD9, 7) => "fstcw",
+        (0xDB, 0) => "fild",
+        (0xDB, 2) => "fist",
+        (0xDB, 3) => "fistp",
+        (0xDB, 5) => "fild",
+        (0xDB, 7) => "fistp",
+        (0xDD, 0) => "fld",
+        (0xDD, 2) => "fst",
+        (0xDD, 3) => "fstp",
+        (0xDD, 1) => "frstor",
+        (0xDD, 6) => "fsave",
+        (0xDD, 7) => "fstsw",
+        (0xDF, 0) => "fild",
+        (0xDF, 2) => "fist",
+        (0xDF, 3) => "fistp",
+        (0xDF, 5) => "fbld",
+        (0xDF, 7) => "fbstp",
         _ => return None,
     };
     Some((s.to_string(), vec![mem]))
@@ -1064,29 +1554,64 @@ fn fpu_reg3(opcode: u8, reg: u8, rm: u8) -> Option<(String, Vec<Operand>)> {
     let bin = |s: &str| Some((s.to_string(), vec![st_0.clone(), st_i.clone()]));
     let un = |s: &str| Some((s.to_string(), vec![st_i.clone()]));
     match (opcode, reg) {
-        (0xD8, 0) => bin("fadd"), (0xD8, 1) => bin("fmul"), (0xD8, 2) => un("fcom"),
-        (0xD8, 3) => un("fcomp"), (0xD8, 4) => bin("fsub"), (0xD8, 5) => bin("fsubr"),
-        (0xD8, 6) => bin("fdiv"), (0xD8, 7) => bin("fdivr"),
-        (0xD9, 0) => un("fld"), (0xD9, 1) => un("fxch"), (0xD9, 2) => un("fst"),
-        (0xD9, 3) => un("fstp"), (0xD9, 4) => un("fnop"), (0xD9, 5) => un("fchs"),
-        (0xD9, 6) => un("fabs"), (0xD9, 7) => un("fstp"),
-        (0xDA, 0) => bin("fcmovb"), (0xDA, 1) => bin("fcmove"), (0xDA, 2) => bin("fcmovbe"),
-        (0xDA, 3) => bin("fcmovu"), (0xDA, 5) => bin("fucompp"),
-        (0xDB, 0) => bin("fcmovnb"), (0xDB, 1) => bin("fcmovne"), (0xDB, 2) => bin("fcmovnbe"),
+        (0xD8, 0) => bin("fadd"),
+        (0xD8, 1) => bin("fmul"),
+        (0xD8, 2) => un("fcom"),
+        (0xD8, 3) => un("fcomp"),
+        (0xD8, 4) => bin("fsub"),
+        (0xD8, 5) => bin("fsubr"),
+        (0xD8, 6) => bin("fdiv"),
+        (0xD8, 7) => bin("fdivr"),
+        (0xD9, 0) => un("fld"),
+        (0xD9, 1) => un("fxch"),
+        (0xD9, 2) => un("fst"),
+        (0xD9, 3) => un("fstp"),
+        (0xD9, 4) => un("fnop"),
+        (0xD9, 5) => un("fchs"),
+        (0xD9, 6) => un("fabs"),
+        (0xD9, 7) => un("fstp"),
+        (0xDA, 0) => bin("fcmovb"),
+        (0xDA, 1) => bin("fcmove"),
+        (0xDA, 2) => bin("fcmovbe"),
+        (0xDA, 3) => bin("fcmovu"),
+        (0xDA, 5) => bin("fucompp"),
+        (0xDB, 0) => bin("fcmovnb"),
+        (0xDB, 1) => bin("fcmovne"),
+        (0xDB, 2) => bin("fcmovnbe"),
         (0xDB, 3) => bin("fcmovnu"),
-        (0xDC, 0) => bin("faddp"), (0xDC, 1) => bin("fmulp"), (0xDC, 4) => bin("fsubp"),
-        (0xDC, 5) => bin("fsubrp"), (0xDC, 6) => bin("fdivp"), (0xDC, 7) => bin("fdivrp"),
-        (0xDD, 0) => un("ffree"), (0xDD, 2) => un("fst"), (0xDD, 3) => un("fstp"),
-        (0xDD, 4) => un("fucom"), (0xDD, 5) => un("fucomp"),
-        (0xDE, 0) => bin("faddp"), (0xDE, 1) => bin("fmulp"), (0xDE, 4) => bin("fsubp"),
-        (0xDE, 5) => bin("fsubrp"), (0xDE, 6) => bin("fdivp"), (0xDE, 7) => bin("fdivrp"),
-        (0xDF, 0) => un("ffreep"), (0xDF, 4) => bin("fucomip"), (0xDF, 5) => bin("fcomip"),
+        (0xDC, 0) => bin("faddp"),
+        (0xDC, 1) => bin("fmulp"),
+        (0xDC, 4) => bin("fsubp"),
+        (0xDC, 5) => bin("fsubrp"),
+        (0xDC, 6) => bin("fdivp"),
+        (0xDC, 7) => bin("fdivrp"),
+        (0xDD, 0) => un("ffree"),
+        (0xDD, 2) => un("fst"),
+        (0xDD, 3) => un("fstp"),
+        (0xDD, 4) => un("fucom"),
+        (0xDD, 5) => un("fucomp"),
+        (0xDE, 0) => bin("faddp"),
+        (0xDE, 1) => bin("fmulp"),
+        (0xDE, 4) => bin("fsubp"),
+        (0xDE, 5) => bin("fsubrp"),
+        (0xDE, 6) => bin("fdivp"),
+        (0xDE, 7) => bin("fdivrp"),
+        (0xDF, 0) => un("ffreep"),
+        (0xDF, 4) => bin("fucomip"),
+        (0xDF, 5) => bin("fcomip"),
         _ => None,
     }
 }
 
-fn decode_fpu(opcode: u8, bytes: &[u8], pos: usize, ctx: Ctx) -> Result<(Mnemonic, Vec<Operand>), DecodeError> {
-    if pos >= bytes.len() { return Err(DecodeError::TooShort); }
+fn decode_fpu(
+    opcode: u8,
+    bytes: &[u8],
+    pos: usize,
+    ctx: Ctx,
+) -> Result<(Mnemonic, Vec<Operand>), DecodeError> {
+    if pos >= bytes.len() {
+        return Err(DecodeError::TooShort);
+    }
     let modrm = bytes[pos];
     let r#mod = (modrm >> 6) & 3;
     let reg = (modrm >> 3) & 7;
@@ -1099,7 +1624,13 @@ fn decode_fpu(opcode: u8, bytes: &[u8], pos: usize, ctx: Ctx) -> Result<(Mnemoni
         }
     } else {
         let (_, m, _) = decode_modrm(bytes, pos, ctx, None, mem_size, mem_size)?;
-        let m = match m { Operand::Mem(mut mm) => { mm.size = mem_size; Operand::Mem(mm) }, _ => unreachable!() };
+        let m = match m {
+            Operand::Mem(mut mm) => {
+                mm.size = mem_size;
+                Operand::Mem(mm)
+            }
+            _ => unreachable!(),
+        };
         match fpu_mem(opcode, reg, m) {
             Some(x) => x,
             None => return Ok((Mnemonic::Unknown, vec![])),
@@ -1110,31 +1641,67 @@ fn decode_fpu(opcode: u8, bytes: &[u8], pos: usize, ctx: Ctx) -> Result<(Mnemoni
 
 // ---- VEX (AVX/AVX2) ----
 
-fn decode_vex(opcode: u8, bytes: &[u8], pos: usize, _is_64: bool) -> Result<(Mnemonic, Vec<Operand>), DecodeError> {
+fn decode_vex(
+    opcode: u8,
+    bytes: &[u8],
+    pos: usize,
+    _is_64: bool,
+) -> Result<(Mnemonic, Vec<Operand>), DecodeError> {
     // `pos` points just past the leading VEX opcode (0xC4/0xC5).
     // C5: [opcode, b1,     op, modrm]
     // C4: [opcode, b1, b2, op, modrm]
     let (op, map, pp, w, r_bit, x_bit, b_bit, vvvv, vl, modrm_pos) = if opcode == 0xC5 {
         let b1 = *bytes.get(pos).ok_or(DecodeError::TooShort)?;
         let op = *bytes.get(pos + 1).ok_or(DecodeError::TooShort)?;
-        ( op, 0u8, b1 & 3, false,
-          ((b1 >> 7) & 1) == 0, false, false,
-          ((b1 >> 3) & 7) ^ 7, (b1 >> 2) & 1, pos + 2 )
+        (
+            op,
+            0u8,
+            b1 & 3,
+            false,
+            ((b1 >> 7) & 1) == 0,
+            false,
+            false,
+            ((b1 >> 3) & 7) ^ 7,
+            (b1 >> 2) & 1,
+            pos + 2,
+        )
     } else {
         let b1 = *bytes.get(pos).ok_or(DecodeError::TooShort)?;
         let b2 = *bytes.get(pos + 1).ok_or(DecodeError::TooShort)?;
         let mmmmm = b1 & 0x1F;
-        if mmmmm == 0 { return Ok((Mnemonic::Unknown, vec![])); }
+        if mmmmm == 0 {
+            return Ok((Mnemonic::Unknown, vec![]));
+        }
         let op = *bytes.get(pos + 2).ok_or(DecodeError::TooShort)?;
-        ( op, mmmmm - 1, b2 & 3, (b2 >> 7) & 1 != 0,
-          ((b1 >> 7) & 1) == 0, ((b1 >> 6) & 1) == 0, ((b1 >> 5) & 1) == 0,
-          ((b2 >> 3) & 7) ^ 7, (b2 >> 2) & 1, pos + 3 )
+        (
+            op,
+            mmmmm - 1,
+            b2 & 3,
+            (b2 >> 7) & 1 != 0,
+            ((b1 >> 7) & 1) == 0,
+            ((b1 >> 6) & 1) == 0,
+            ((b1 >> 5) & 1) == 0,
+            ((b2 >> 3) & 7) ^ 7,
+            (b2 >> 2) & 1,
+            pos + 3,
+        )
     };
     if op == 0x77 && map == 0 {
         let name = if vl == 1 { "vzeroall" } else { "vzeroupper" };
         return Ok((Mnemonic::Raw(name.to_string()), vec![]));
     }
-    let st = crate::simd::SimdState { map, pp, w, vl, vvvv: Some(vvvv), r_bit, x_bit, b_bit, evex: false, mask: None };
+    let st = crate::simd::SimdState {
+        map,
+        pp,
+        w,
+        vl,
+        vvvv: Some(vvvv),
+        r_bit,
+        x_bit,
+        b_bit,
+        evex: false,
+        mask: None,
+    };
     match crate::simd::decode_simd(&st, bytes, modrm_pos - 1, ctx64()) {
         Some(r) => Ok(r),
         None => Ok((Mnemonic::Unknown, vec![])),
@@ -1145,7 +1712,11 @@ fn decode_vex(opcode: u8, bytes: &[u8], pos: usize, _is_64: bool) -> Result<(Mne
 // `pos` points just past the leading 0x62 byte:
 // [opcode, p0, p1, p2, op, modrm]
 
-fn decode_evex(bytes: &[u8], pos: usize, _is_64: bool) -> Result<(Mnemonic, Vec<Operand>), DecodeError> {
+fn decode_evex(
+    bytes: &[u8],
+    pos: usize,
+    _is_64: bool,
+) -> Result<(Mnemonic, Vec<Operand>), DecodeError> {
     let p0 = *bytes.get(pos).ok_or(DecodeError::TooShort)?;
     let p1 = *bytes.get(pos + 1).ok_or(DecodeError::TooShort)?;
     let p2 = *bytes.get(pos + 2).ok_or(DecodeError::TooShort)?;
@@ -1163,10 +1734,20 @@ fn decode_evex(bytes: &[u8], pos: usize, _is_64: bool) -> Result<(Mnemonic, Vec<
     let vvvv = (vlow ^ 7) | (((vhigh ^ 1) & 1) << 3);
     let vl = (p2 >> 2) & 3;
     let aaa = p2 & 7;
-    let st = crate::simd::SimdState { map, pp, w, vl, vvvv: Some(vvvv), r_bit, x_bit, b_bit, evex: true, mask: Some(aaa) };
+    let st = crate::simd::SimdState {
+        map,
+        pp,
+        w,
+        vl,
+        vvvv: Some(vvvv),
+        r_bit,
+        x_bit,
+        b_bit,
+        evex: true,
+        mask: Some(aaa),
+    };
     match crate::simd::decode_simd(&st, bytes, modrm_pos - 1, ctx64()) {
         Some(r) => Ok(r),
         None => Ok((Mnemonic::Unknown, vec![])),
     }
 }
-

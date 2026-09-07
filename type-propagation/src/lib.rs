@@ -28,7 +28,5 @@ pub mod inference;
 pub mod propagation;
 
 pub use constraints::{Constraint, ConstraintSystem};
-pub use inference::{TypeInference, InferenceError};
+pub use inference::{InferenceError, TypeInference};
 pub use propagation::TypePropagator;
-
-

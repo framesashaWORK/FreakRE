@@ -25,7 +25,11 @@ impl BytePattern {
         }
     }
 
-    pub fn with_wildcards(pattern: &[(u8, bool)], description: &'static str, confidence: f32) -> Self {
+    pub fn with_wildcards(
+        pattern: &[(u8, bool)],
+        description: &'static str,
+        confidence: f32,
+    ) -> Self {
         Self {
             bytes: pattern.iter().map(|(b, _)| Some(*b)).collect(),
             mask: pattern.iter().map(|(_, m)| *m).collect(),
@@ -40,7 +44,8 @@ impl BytePattern {
             return false;
         }
 
-        for (i, (pattern_byte, &must_match)) in self.bytes.iter().zip(self.mask.iter()).enumerate() {
+        for (i, (pattern_byte, &must_match)) in self.bytes.iter().zip(self.mask.iter()).enumerate()
+        {
             if must_match {
                 if let Some(pb) = pattern_byte {
                     if data[offset + i] != *pb {
@@ -80,7 +85,14 @@ pub fn x86_prologues() -> Vec<BytePattern> {
         ),
         // sub esp, N (32-bit imm)
         BytePattern::with_wildcards(
-            &[(0x81, true), (0xEC, true), (0x00, false), (0x00, false), (0x00, false), (0x00, false)],
+            &[
+                (0x81, true),
+                (0xEC, true),
+                (0x00, false),
+                (0x00, false),
+                (0x00, false),
+                (0x00, false),
+            ],
             "sub esp, imm32",
             0.4,
         ),
@@ -97,11 +109,7 @@ pub fn x86_epilogues() -> Vec<BytePattern> {
         // ret
         BytePattern::new(&[0xC3], "ret", 0.5),
         // ret N
-        BytePattern::with_wildcards(
-            &[(0xC2, true), (0x00, false), (0x00, false)],
-            "ret N",
-            0.5,
-        ),
+        BytePattern::with_wildcards(&[(0xC2, true), (0x00, false), (0x00, false)], "ret N", 0.5),
         // pop ebp; ret
         BytePattern::new(&[0x5D, 0xC3], "pop ebp; ret", 0.8),
         // leave; ret
@@ -130,14 +138,26 @@ pub fn x86_64_prologues() -> Vec<BytePattern> {
         ),
         // sub rsp, N (32-bit imm)
         BytePattern::with_wildcards(
-            &[(0x48, true), (0x81, true), (0xEC, true), (0x00, false), (0x00, false), (0x00, false), (0x00, false)],
+            &[
+                (0x48, true),
+                (0x81, true),
+                (0xEC, true),
+                (0x00, false),
+                (0x00, false),
+                (0x00, false),
+                (0x00, false),
+            ],
             "sub rsp, imm32",
             0.4,
         ),
         // endbr64 (CET-enabled binaries, modern)
         BytePattern::new(&[0xF3, 0x0F, 0x1E, 0xFA], "endbr64", 0.9),
         // endbr64 + push rbp
-        BytePattern::new(&[0xF3, 0x0F, 0x1E, 0xFA, 0x55, 0x48, 0x89, 0xE5], "endbr64 + prologue", 0.99),
+        BytePattern::new(
+            &[0xF3, 0x0F, 0x1E, 0xFA, 0x55, 0x48, 0x89, 0xE5],
+            "endbr64 + prologue",
+            0.99,
+        ),
         // int3 padding + prologue
         BytePattern::new(&[0xCC, 0x55, 0x48, 0x89, 0xE5], "int3 + prologue", 0.98),
     ]
@@ -153,11 +173,7 @@ pub fn x86_64_epilogues() -> Vec<BytePattern> {
         // leave; ret
         BytePattern::new(&[0xC9, 0xC3], "leave; ret", 0.9),
         // ret N
-        BytePattern::with_wildcards(
-            &[(0xC2, true), (0x00, false), (0x00, false)],
-            "ret N",
-            0.5,
-        ),
+        BytePattern::with_wildcards(&[(0xC2, true), (0x00, false), (0x00, false)], "ret N", 0.5),
     ]
 }
 
@@ -167,11 +183,18 @@ pub fn arm_prologues() -> Vec<BytePattern> {
     vec![
         // push {fp, lr}; add fp, sp, #4 (classic)
         // Little-endian: E5 2D 48 08 (push) + 08 40 A0 E1 (add)
-        BytePattern::new(&[0x08, 0x48, 0x2D, 0xE9, 0x04, 0xB0, 0x8D, 0xE2], "push {fp, lr}", 0.95),
+        BytePattern::new(
+            &[0x08, 0x48, 0x2D, 0xE9, 0x04, 0xB0, 0x8D, 0xE2],
+            "push {fp, lr}",
+            0.95,
+        ),
         // push {r4-rN, lr}
         BytePattern::with_wildcards(
             &[
-                (0x00, false), (0x40, true), (0x2D, true), (0xE9, true), // push {regs, lr}
+                (0x00, false),
+                (0x40, true),
+                (0x2D, true),
+                (0xE9, true), // push {regs, lr}
             ],
             "push {regs, lr}",
             0.7,
@@ -184,17 +207,13 @@ pub fn arm64_prologues() -> Vec<BytePattern> {
     vec![
         // stp x29, x30, [sp, #-N]! (save fp and lr)
         BytePattern::with_wildcards(
-            &[
-                (0xFD, true), (0x7B, true), (0x00, false), (0xA9, true),
-            ],
+            &[(0xFD, true), (0x7B, true), (0x00, false), (0xA9, true)],
             "stp x29, x30, [sp]",
             0.9,
         ),
         // sub sp, sp, #N (allocate frame)
         BytePattern::with_wildcards(
-            &[
-                (0xFF, true), (0x03, true), (0x00, false), (0xD1, true),
-            ],
+            &[(0xFF, true), (0x03, true), (0x00, false), (0xD1, true)],
             "sub sp, sp, imm",
             0.5,
         ),
@@ -226,13 +245,20 @@ pub fn prologues_for_arch(arch: Architecture) -> Vec<BytePattern> {
         Architecture::X86_64 => x86_64_prologues(),
         Architecture::Arm | Architecture::Arm32 | Architecture::Arm32Thumb => arm_prologues(),
         Architecture::Arm64 | Architecture::Arm64BE => arm64_prologues(),
-        Architecture::Mips | Architecture::MipsEl
-        | Architecture::Mips32LE | Architecture::Mips32BE
-        | Architecture::Mips64LE | Architecture::Mips64BE => mips_prologues(),
+        Architecture::Mips
+        | Architecture::MipsEl
+        | Architecture::Mips32LE
+        | Architecture::Mips32BE
+        | Architecture::Mips64LE
+        | Architecture::Mips64BE => mips_prologues(),
         // RISC-V, PPC, SPARC: return empty for now
-        Architecture::RiscV32 | Architecture::RiscV64
-        | Architecture::Ppc32 | Architecture::Ppc64 | Architecture::Ppc64LE
-        | Architecture::Sparc32 | Architecture::Sparc64 => vec![],
+        Architecture::RiscV32
+        | Architecture::RiscV64
+        | Architecture::Ppc32
+        | Architecture::Ppc64
+        | Architecture::Ppc64LE
+        | Architecture::Sparc32
+        | Architecture::Sparc64 => vec![],
     }
 }
 
@@ -315,9 +341,12 @@ pub fn epilogues_for_arch(arch: Architecture) -> Vec<BytePattern> {
         Architecture::X86_64 => x86_64_epilogues(),
         Architecture::Arm | Architecture::Arm32 | Architecture::Arm32Thumb => arm_epilogues(),
         Architecture::Arm64 | Architecture::Arm64BE => arm64_epilogues(),
-        Architecture::Mips | Architecture::MipsEl
-        | Architecture::Mips32LE | Architecture::Mips32BE
-        | Architecture::Mips64LE | Architecture::Mips64BE => mips_epilogues(),
+        Architecture::Mips
+        | Architecture::MipsEl
+        | Architecture::Mips32LE
+        | Architecture::Mips32BE
+        | Architecture::Mips64LE
+        | Architecture::Mips64BE => mips_epilogues(),
         Architecture::RiscV32 | Architecture::RiscV64 => riscv_epilogues(),
         Architecture::Ppc32 | Architecture::Ppc64 | Architecture::Ppc64LE => ppc_epilogues(),
         Architecture::Sparc32 | Architecture::Sparc64 => sparc_epilogues(),

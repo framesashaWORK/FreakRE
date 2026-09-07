@@ -1,4 +1,4 @@
-﻿//! Control flow structuring: convert unstructured CFG to structured AST.
+//! Control flow structuring: convert unstructured CFG to structured AST.
 //!
 //! Recovers high-level control flow constructs from the control flow graph:
 //! - if/else
@@ -147,14 +147,8 @@ impl<'a> ControlFlowStructurer<'a> {
             let mut ctx = StructContext::default();
             let empty: HashSet<BlockId> = HashSet::new();
             let mut probe = IrToAstConverter::new(self.func);
-            let _ = self.process_region(
-                self.func.entry_block,
-                None,
-                &mut probe,
-                &mut ctx,
-                0,
-                &empty,
-            );
+            let _ =
+                self.process_region(self.func.entry_block, None, &mut probe, &mut ctx, 0, &empty);
         }
 
         // Pass 2: emit the structured AST, now with labels for goto targets.
@@ -208,8 +202,7 @@ impl<'a> ControlFlowStructurer<'a> {
                         let li = &self.loops[loop_idx];
                         // `continue` is only valid when jumping to the
                         // condition re-check of a while/for loop.
-                        li.header == block_id
-                            && matches!(li.kind, LoopKind::While | LoopKind::For)
+                        li.header == block_id && matches!(li.kind, LoopKind::While | LoopKind::For)
                     })
                     .unwrap_or(false);
                 if header_continue {
@@ -223,9 +216,15 @@ impl<'a> ControlFlowStructurer<'a> {
                 break;
             }
 
+            // Labels must precede every kind of emitted region. Restricting
+            // this to normal blocks leaves dangling gotos when an irreducible
+            // edge targets a loop, switch, or try-region header.
+            self.maybe_emit_label(&mut stmts, block_id);
+
             // в”Ђв”Ђ Check if this block is a loop header в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
             if let Some(&loop_idx) = self.loop_by_header.get(&block_id) {
-                let loop_stmts = self.structure_loop(loop_idx, enclosing_loop_idx, converter, ctx, depth);
+                let loop_stmts =
+                    self.structure_loop(loop_idx, enclosing_loop_idx, converter, ctx, depth);
                 stmts.extend(loop_stmts);
                 // After the loop, follow the successor that is NOT part of the loop
                 // (unless a break arm already consumed it).
@@ -252,7 +251,8 @@ impl<'a> ControlFlowStructurer<'a> {
 
             // в”Ђв”Ђ Check if this block starts a try-catch region в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
             if let Some(tc_idx) = self.try_catch_at(block_id) {
-                let tc_stmts = self.structure_try_catch(tc_idx, enclosing_loop_idx, converter, ctx, depth);
+                let tc_stmts =
+                    self.structure_try_catch(tc_idx, enclosing_loop_idx, converter, ctx, depth);
                 stmts.extend(tc_stmts);
                 current = self.try_catch_exit(tc_idx);
                 continue;
@@ -260,10 +260,6 @@ impl<'a> ControlFlowStructurer<'a> {
 
             // в”Ђв”Ђ Normal block в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
             ctx.visited.insert(block_id);
-
-            // A block that is the target of a backward `goto` needs a label so
-            // the generated jump resolves (otherwise the C would be dangling).
-            self.maybe_emit_label(&mut stmts, block_id);
 
             let block = match self.func.block(block_id) {
                 Some(b) => b,
@@ -311,8 +307,28 @@ impl<'a> ControlFlowStructurer<'a> {
                     current = Some(*target);
                 }
 
-                Some(IrInst::CBranch { cond, target_true, target_false }) => {
-                    let cond_expr = converter.convert_value_to_expr(cond);
+                Some(IrInst::CBranch {
+                    cond,
+                    target_true,
+                    target_false,
+                }) => {
+                    // Short-circuit fold: `a && b` / `a || b` chains where one
+                    // arm is a branch-only block that re-branches on the same
+                    // join. Replaces the nested-if shape with a LogAnd/LogOr
+                    // condition and continues with the folded targets.
+                    let first_cond = converter.convert_value_to_expr(cond);
+                    let (cond_expr, target_true, target_false) = self.fold_short_circuit(
+                        block_id,
+                        first_cond,
+                        *target_true,
+                        *target_false,
+                        enclosing_loop_idx,
+                        boundaries,
+                        ctx,
+                        converter,
+                    );
+                    let target_true = &target_true;
+                    let target_false = &target_false;
 
                     // Detect do-while: if the false branch goes back to a loop header
                     // that encloses us, this might be the do-while condition at the bottom.
@@ -488,7 +504,101 @@ impl<'a> ControlFlowStructurer<'a> {
         stmts
     }
 
-    // в”Ђв”Ђ Loop structuring в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    /// Fold `a && b` / `a || b` short-circuit chains into a single condition.
+    ///
+    /// `x && y` in the source becomes: `if (x) { if (y) join else join }
+    /// else join` — i.e. the true edge of the first branch leads to a
+    /// branch-only block whose false edge rejoins the second target.
+    /// Symmetrically for `x || y` with the false edge. The inner block must
+    /// be a pure branch (single predecessor, no instructions, not a loop
+    /// header/switch/try) and must not be a region boundary, otherwise
+    /// folding would consume structurally meaningful blocks. Returns the
+    /// composed condition plus the (possibly folded) branch targets; the
+    /// consumed inner block is marked visited so it is never re-emitted.
+    #[allow(clippy::too_many_arguments)]
+    fn fold_short_circuit(
+        &self,
+        from: BlockId,
+        first_cond: Expr,
+        tt: BlockId,
+        tf: BlockId,
+        enclosing_loop_idx: Option<usize>,
+        boundaries: &HashSet<BlockId>,
+        ctx: &mut StructContext,
+        converter: &mut IrToAstConverter,
+    ) -> (Expr, BlockId, BlockId) {
+        // Candidate inner block: on the true edge (&&) or false edge (||).
+        for (inner, other, is_and) in [(tt, tf, true), (tf, tt, false)] {
+            if inner == other
+                || boundaries.contains(&inner)
+                || ctx.visited.contains(&inner)
+            {
+                continue;
+            }
+            if self.loop_by_header.contains_key(&inner)
+                || self.switch_at(inner).is_some()
+                || self.try_catch_at(inner).is_some()
+            {
+                continue;
+            }
+            // Inside a loop the fold must not reach outside the body.
+            if let Some(idx) = enclosing_loop_idx {
+                let body = &self.loops[idx].body_blocks;
+                if !body.contains(&inner) || !body.contains(&other) {
+                    continue;
+                }
+            }
+            let Some(inner_block) = self.func.block(inner) else {
+                continue;
+            };
+            // Branch-only: no non-terminator instructions and exactly one
+            // predecessor (this branch).
+            if inner_block.insts.iter().any(|i| !i.is_terminator()) {
+                continue;
+            }
+            if inner_block.predecessors.len() != 1 || inner_block.predecessors[0] != from {
+                continue;
+            }
+            let Some(IrInst::CBranch {
+                cond: inner_cond,
+                target_true: itt,
+                target_false: itf,
+            }) = inner_block.terminator()
+            else {
+                continue;
+            };
+            // The inner branch must split `other` (the first condition's
+            // opposite side) from the folded continuation target.
+            if *itt != other && *itf != other {
+                continue;
+            }
+            let inner_expr = converter.convert_value_to_expr(inner_cond);
+            // Polarity: `a && b` — the inner cond is evaluated when the first
+            // cond held, and `other` (chain-false side) is reached when the
+            // inner cond is false. Mirror for `a || b`.
+            let negated = if is_and { *itt == other } else { *itf == other };
+            let inner_expr = if negated {
+                Expr::Unary {
+                    op: UnOp::LogNot,
+                    operand: Box::new(inner_expr),
+                }
+            } else {
+                inner_expr
+            };
+            let combined = Expr::Binary {
+                op: if is_and { BinOp::LogAnd } else { BinOp::LogOr },
+                lhs: Box::new(first_cond),
+                rhs: Box::new(inner_expr),
+            };
+            // Chain continues on the inner edge that does NOT go to `other`.
+            let folded = if *itt == other { *itf } else { *itt };
+            ctx.visited.insert(inner);
+            return (combined, folded, other);
+        }
+        (first_cond, tt, tf)
+    }
+
+    // в”Ђв”Ђ Loop structuring в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
     fn structure_loop(
         &self,
@@ -505,9 +615,15 @@ impl<'a> ControlFlowStructurer<'a> {
                 // while (header_cond) { body }
                 let header = self.func.block(li.header).unwrap();
                 let cond_expr = match header.terminator() {
-                    Some(IrInst::CBranch { cond, target_true, target_false }) => {
+                    Some(IrInst::CBranch {
+                        cond,
+                        target_true,
+                        target_false,
+                    }) => {
                         let e = converter.convert_value_to_expr(cond);
-                        if li.body_blocks.contains(target_false) && !li.body_blocks.contains(target_true) {
+                        if li.body_blocks.contains(target_false)
+                            && !li.body_blocks.contains(target_true)
+                        {
                             Expr::Unary {
                                 op: UnOp::LogNot,
                                 operand: Box::new(e),
@@ -531,10 +647,19 @@ impl<'a> ControlFlowStructurer<'a> {
 
                 // Process body blocks (skip header itself)
                 let mut full_body = header_stmts;
-                full_body.extend(self.process_loop_body(loop_idx, Some(loop_idx), converter, ctx, depth));
+                full_body.extend(self.process_loop_body(
+                    loop_idx,
+                    Some(loop_idx),
+                    converter,
+                    ctx,
+                    depth,
+                ));
                 trim_trailing_continue(&mut full_body);
 
-                vec![Stmt::While { cond: cond_expr, body: full_body }]
+                vec![Stmt::While {
+                    cond: cond_expr,
+                    body: full_body,
+                }]
             }
 
             LoopKind::DoWhile => {
@@ -549,13 +674,23 @@ impl<'a> ControlFlowStructurer<'a> {
                         }
                     }
                 }
-                body.extend(self.process_loop_body(loop_idx, Some(loop_idx), converter, ctx, depth));
+                body.extend(self.process_loop_body(
+                    loop_idx,
+                    Some(loop_idx),
+                    converter,
+                    ctx,
+                    depth,
+                ));
                 trim_trailing_continue(&mut body);
 
                 // Get condition from latch block
                 let latch = self.func.block(li.latch).unwrap();
                 let cond_expr = match latch.terminator() {
-                    Some(IrInst::CBranch { cond, target_true, target_false }) => {
+                    Some(IrInst::CBranch {
+                        cond,
+                        target_true,
+                        target_false,
+                    }) => {
                         let e = converter.convert_value_to_expr(cond);
                         if *target_true != li.header && *target_false == li.header {
                             Expr::Unary {
@@ -569,7 +704,10 @@ impl<'a> ControlFlowStructurer<'a> {
                     _ => Expr::BoolLit(true),
                 };
 
-                vec![Stmt::DoWhile { body, cond: cond_expr }]
+                vec![Stmt::DoWhile {
+                    body,
+                    cond: cond_expr,
+                }]
             }
 
             LoopKind::For => {
@@ -606,10 +744,14 @@ impl<'a> ControlFlowStructurer<'a> {
                 // Condition from header
                 let header = self.func.block(li.header).unwrap();
                 let cond = match header.terminator() {
-                    Some(IrInst::CBranch { cond, target_true, target_false }) => {
+                    Some(IrInst::CBranch {
+                        cond,
+                        target_true,
+                        target_false,
+                    }) => {
                         let e = converter.convert_value_to_expr(cond);
-                        let inverted =
-                            li.body_blocks.contains(target_false) && !li.body_blocks.contains(target_true);
+                        let inverted = li.body_blocks.contains(target_false)
+                            && !li.body_blocks.contains(target_true);
                         Some(if inverted {
                             Expr::Unary {
                                 op: UnOp::LogNot,
@@ -651,10 +793,21 @@ impl<'a> ControlFlowStructurer<'a> {
 
                 // Body: everything between header and latch
                 let mut body = header_stmts;
-                body.extend(self.process_loop_body(loop_idx, Some(loop_idx), converter, ctx, depth));
+                body.extend(self.process_loop_body(
+                    loop_idx,
+                    Some(loop_idx),
+                    converter,
+                    ctx,
+                    depth,
+                ));
                 trim_trailing_continue(&mut body);
 
-                vec![Stmt::For { init, cond, update, body }]
+                vec![Stmt::For {
+                    init,
+                    cond,
+                    update,
+                    body,
+                }]
             }
         }
     }
@@ -698,7 +851,8 @@ impl<'a> ControlFlowStructurer<'a> {
             }
 
             let empty: HashSet<BlockId> = HashSet::new();
-            let region = self.process_region(bid, enclosing_loop_idx, converter, ctx, depth + 1, &empty);
+            let region =
+                self.process_region(bid, enclosing_loop_idx, converter, ctx, depth + 1, &empty);
             body.extend(region);
         }
 
@@ -739,8 +893,14 @@ impl<'a> ControlFlowStructurer<'a> {
             }
         }
 
-        let mut arm =
-            self.process_region(target, enclosing_loop_idx, converter, ctx, depth + 1, &arm_bounds);
+        let mut arm = self.process_region(
+            target,
+            enclosing_loop_idx,
+            converter,
+            ctx,
+            depth + 1,
+            &arm_bounds,
+        );
         if ends_with_jump(&arm) {
             return arm;
         }
@@ -838,8 +998,14 @@ impl<'a> ControlFlowStructurer<'a> {
                 });
                 continue;
             }
-            let case_body =
-                self.process_region(target, enclosing_loop_idx, converter, ctx, depth + 1, &arm_boundaries);
+            let case_body = self.process_region(
+                target,
+                enclosing_loop_idx,
+                converter,
+                ctx,
+                depth + 1,
+                &arm_boundaries,
+            );
             let fallthrough = !ends_with_jump(&case_body);
             cases.push(SwitchCase {
                 value: Expr::IntLit(val),
@@ -852,12 +1018,26 @@ impl<'a> ControlFlowStructurer<'a> {
             if !emitted_targets.insert(d) {
                 Vec::new()
             } else {
-                self.process_region(d, enclosing_loop_idx, converter, ctx, depth + 1, &arm_boundaries)
+                self.process_region(
+                    d,
+                    enclosing_loop_idx,
+                    converter,
+                    ctx,
+                    depth + 1,
+                    &arm_boundaries,
+                )
             }
         });
 
         let cont = join.filter(|j| !ctx.visited.contains(j));
-        (vec![Stmt::Switch { expr, cases, default }], cont)
+        (
+            vec![Stmt::Switch {
+                expr,
+                cases,
+                default,
+            }],
+            cont,
+        )
     }
 
     /// Find the post-switch join block: a block reachable from every case
@@ -895,7 +1075,7 @@ impl<'a> ControlFlowStructurer<'a> {
         let mut queue = VecDeque::new();
         queue.push_back(from);
         visited.insert(from);
-        let budget = self.func.blocks.len() * 4 + 64;
+        let budget = self.func.blocks.len().saturating_mul(4).saturating_add(64);
         let mut steps = 0usize;
         while let Some(cur) = queue.pop_front() {
             if steps >= budget {
@@ -914,7 +1094,9 @@ impl<'a> ControlFlowStructurer<'a> {
     }
 
     fn switch_at(&self, block_id: BlockId) -> Option<usize> {
-        self.switches.iter().position(|s| s.dispatch_block == block_id)
+        self.switches
+            .iter()
+            .position(|s| s.dispatch_block == block_id)
     }
 
     fn switch_continuation(&self, sw_idx: usize, ctx: &StructContext) -> Option<BlockId> {
@@ -956,7 +1138,8 @@ impl<'a> ControlFlowStructurer<'a> {
         for bid in ordered {
             if !ctx.visited.contains(&bid) {
                 let empty: HashSet<BlockId> = HashSet::new();
-            let region = self.process_region(bid, enclosing_loop_idx, converter, ctx, depth + 1, &empty);
+                let region =
+                    self.process_region(bid, enclosing_loop_idx, converter, ctx, depth + 1, &empty);
                 try_body.extend(region);
             }
         }
@@ -1067,7 +1250,7 @@ impl<'a> ControlFlowStructurer<'a> {
 
         // FIXED: Scale BFS limit to function size. Large functions (>256 blocks)
         // need more steps to find merge points. Cap at 4x block count + 64.
-        let max_steps = self.func.blocks.len() * 4 + 64;
+        let max_steps = self.func.blocks.len().saturating_mul(4).saturating_add(64);
         for _ in 0..max_steps {
             // Expand A one step
             if let Some(cur) = queue_a.pop_front() {
@@ -1309,7 +1492,12 @@ fn compute_natural_loop(func: &IrFunction, header: BlockId, latch: BlockId) -> H
 }
 
 /// Classify a loop as while, do-while, or for.
-fn classify_loop(func: &IrFunction, header: BlockId, latch: BlockId, _body: &HashSet<BlockId>) -> LoopKind {
+fn classify_loop(
+    func: &IrFunction,
+    header: BlockId,
+    latch: BlockId,
+    _body: &HashSet<BlockId>,
+) -> LoopKind {
     let header_block = match func.block(header) {
         Some(b) => b,
         None => return LoopKind::While,
@@ -1331,10 +1519,12 @@ fn classify_loop(func: &IrFunction, header: BlockId, latch: BlockId, _body: &Has
 
     // For-loop heuristic: header has a conditional branch AND there exists
     // a pre-header with an assignment, AND the latch contains an increment-like pattern.
-    if latch_has_cond && find_pre_header(func, header, _body).is_some()
-        && latch_has_increment_pattern(latch_block) {
-            return LoopKind::For;
-        }
+    if latch_has_cond
+        && find_pre_header(func, header, _body).is_some()
+        && latch_has_increment_pattern(latch_block)
+    {
+        return LoopKind::For;
+    }
 
     // Default: while loop (condition at header)
     LoopKind::While
@@ -1352,8 +1542,16 @@ fn find_pre_header(func: &IrFunction, header: BlockId, body: &HashSet<BlockId>) 
         if let Some(pb) = func.block(pred) {
             // Check if this block has an assignment-like instruction
             let has_init = pb.insts.iter().any(|inst| {
-                matches!(inst, IrInst::Binary { op: OpCode::Copy | OpCode::Add | OpCode::Sub, .. }
-                    | IrInst::Unary { op: OpCode::Copy, .. })
+                matches!(
+                    inst,
+                    IrInst::Binary {
+                        op: OpCode::Copy | OpCode::Add | OpCode::Sub,
+                        ..
+                    } | IrInst::Unary {
+                        op: OpCode::Copy,
+                        ..
+                    }
+                )
             });
             if has_init {
                 return Some(pred);
@@ -1366,7 +1564,11 @@ fn find_pre_header(func: &IrFunction, header: BlockId, body: &HashSet<BlockId>) 
 /// Check if a latch block contains an increment/decrement pattern typical of for-loops.
 fn latch_has_increment_pattern(block: &freakre_ir::IrBlock) -> bool {
     for inst in &block.insts {
-        if let IrInst::Binary { op: OpCode::Add | OpCode::Sub, .. } = inst {
+        if let IrInst::Binary {
+            op: OpCode::Add | OpCode::Sub,
+            ..
+        } = inst
+        {
             return true;
         }
     }
@@ -1381,7 +1583,19 @@ fn detect_switches(func: &IrFunction) -> Vec<SwitchInfo> {
     let cmp_index = build_cmp_index(func);
 
     for block in &func.blocks {
-        // Pattern 1: IndirectBranch preceded by bounds check в†’ jump table
+        // Pattern 0: explicit IrInst::Switch (lifted from a recovered jump
+        // table) — the lifter already resolved cases and validated targets.
+        if let Some(IrInst::Switch { index, cases, default }) = block.terminator() {
+            switches.push(SwitchInfo {
+                dispatch_block: block.id,
+                expr: index.clone(),
+                cases: cases.iter().copied().collect(),
+                default: *default,
+            });
+            continue;
+        }
+
+        // Pattern 1: IndirectBranch preceded by bounds check → jump table
         if let Some(IrInst::IndirectBranch { target }) = block.terminator() {
             // Look for comparison chain or table load in preceding instructions
             if let Some(sw) = detect_jump_table_switch(func, block, target, &cmp_index) {
@@ -1409,12 +1623,36 @@ fn build_cmp_index(func: &IrFunction) -> CmpIndex {
         for inst in &block.insts {
             // Handle Eq/Ne as well as range checks LtU/LeU/GtU/GeU for switch bounds
             let (op, is_eq) = match inst {
-                IrInst::Binary { dst: _, op: OpCode::Eq, .. } => (OpCode::Eq, true),
-                IrInst::Binary { dst: _, op: OpCode::Ne, .. } => (OpCode::Ne, false),
-                IrInst::Binary { dst: _, op: OpCode::LtU, .. } => (OpCode::LtU, false),
-                IrInst::Binary { dst: _, op: OpCode::LeU, .. } => (OpCode::LeU, false),
-                IrInst::Binary { dst: _, op: OpCode::GtU, .. } => (OpCode::GtU, false),
-                IrInst::Binary { dst: _, op: OpCode::GeU, .. } => (OpCode::GeU, false),
+                IrInst::Binary {
+                    dst: _,
+                    op: OpCode::Eq,
+                    ..
+                } => (OpCode::Eq, true),
+                IrInst::Binary {
+                    dst: _,
+                    op: OpCode::Ne,
+                    ..
+                } => (OpCode::Ne, false),
+                IrInst::Binary {
+                    dst: _,
+                    op: OpCode::LtU,
+                    ..
+                } => (OpCode::LtU, false),
+                IrInst::Binary {
+                    dst: _,
+                    op: OpCode::LeU,
+                    ..
+                } => (OpCode::LeU, false),
+                IrInst::Binary {
+                    dst: _,
+                    op: OpCode::GtU,
+                    ..
+                } => (OpCode::GtU, false),
+                IrInst::Binary {
+                    dst: _,
+                    op: OpCode::GeU,
+                    ..
+                } => (OpCode::GeU, false),
                 _ => continue,
             };
             if let IrInst::Binary { dst, lhs, rhs, .. } = inst {
@@ -1448,7 +1686,12 @@ impl CmpIndex {
 }
 
 /// Detect a jump-table based switch: load from base + index*stride, bounded by cmp.
-fn detect_jump_table_switch(func: &IrFunction, block: &freakre_ir::IrBlock, _target: &Value, cmp_index: &CmpIndex) -> Option<SwitchInfo> {
+fn detect_jump_table_switch(
+    func: &IrFunction,
+    block: &freakre_ir::IrBlock,
+    _target: &Value,
+    cmp_index: &CmpIndex,
+) -> Option<SwitchInfo> {
     // Look for a Load instruction whose address involves an index variable
     let mut switch_var = None;
     let mut cases = BTreeMap::new();
@@ -1467,13 +1710,22 @@ fn detect_jump_table_switch(func: &IrFunction, block: &freakre_ir::IrBlock, _tar
     // Try to resolve jump table entries from predecessors' constant comparisons
     for pred_id in &block.predecessors {
         if let Some(pred) = func.block(*pred_id) {
-            if let Some(IrInst::CBranch { cond, target_true, target_false }) = pred.terminator() {
+            if let Some(IrInst::CBranch {
+                cond,
+                target_true,
+                target_false,
+            }) = pred.terminator()
+            {
                 // Check if cond compares a variable to a constant
                 if let Some((var_id, const_val, eq_on_true)) = cmp_index.lookup(cond) {
                     if let Value::Var { id, .. } = &switch_var {
                         if var_id == *id {
                             // The equality-matching branch goes to a case target
-                            let case_target = if eq_on_true { *target_true } else { *target_false };
+                            let case_target = if eq_on_true {
+                                *target_true
+                            } else {
+                                *target_false
+                            };
                             cases.insert(const_val, case_target);
                             // The false branch might be default or next comparison
                             if !cases.values().any(|v| *v == *target_false) {
@@ -1499,10 +1751,18 @@ fn detect_jump_table_switch(func: &IrFunction, block: &freakre_ir::IrBlock, _tar
 }
 
 /// Detect a comparison-chain switch: multiple CBranch on same variable vs constants.
-fn detect_comparison_chain_switch(func: &IrFunction, block: &freakre_ir::IrBlock, cmp_index: &CmpIndex) -> Option<SwitchInfo> {
+fn detect_comparison_chain_switch(
+    func: &IrFunction,
+    block: &freakre_ir::IrBlock,
+    cmp_index: &CmpIndex,
+) -> Option<SwitchInfo> {
     let terminator = block.terminator()?;
     let (cond, target_true, target_false) = match terminator {
-        IrInst::CBranch { cond, target_true, target_false } => (cond, target_true, target_false),
+        IrInst::CBranch {
+            cond,
+            target_true,
+            target_false,
+        } => (cond, target_true, target_false),
         _ => return None,
     };
 
@@ -1511,11 +1771,19 @@ fn detect_comparison_chain_switch(func: &IrFunction, block: &freakre_ir::IrBlock
     let switch_var = Value::var(var_id, cond.ty());
 
     let mut cases = BTreeMap::new();
-    let case_target = if eq_on_true { *target_true } else { *target_false };
+    let case_target = if eq_on_true {
+        *target_true
+    } else {
+        *target_false
+    };
     cases.insert(const_val, case_target);
 
     // Follow the not-equal branch to see if it leads to another comparison on the same variable
-    let mut current = if eq_on_true { *target_false } else { *target_true };
+    let mut current = if eq_on_true {
+        *target_false
+    } else {
+        *target_true
+    };
     let mut max_chain = 32; // prevent infinite loops
 
     while max_chain > 0 {
@@ -1529,7 +1797,11 @@ fn detect_comparison_chain_switch(func: &IrFunction, block: &freakre_ir::IrBlock
         }
 
         match next_block.terminator() {
-            Some(IrInst::CBranch { cond: c, target_true: t_true, target_false: t_false }) => {
+            Some(IrInst::CBranch {
+                cond: c,
+                target_true: t_true,
+                target_false: t_false,
+            }) => {
                 if let Some((vid, cv, eq_taken)) = cmp_index.lookup(c) {
                     if vid == var_id {
                         cases.insert(cv, if eq_taken { *t_true } else { *t_false });
@@ -1553,11 +1825,7 @@ fn detect_comparison_chain_switch(func: &IrFunction, block: &freakre_ir::IrBlock
         return None;
     }
 
-    let default = if max_chain > 0 {
-        Some(current)
-    } else {
-        None
-    };
+    let default = if max_chain > 0 { Some(current) } else { None };
 
     Some(SwitchInfo {
         dispatch_block: block.id,
@@ -1608,7 +1876,11 @@ fn detect_try_catch_regions(func: &IrFunction) -> Vec<TryCatchRegion> {
         let mut handler_target = None;
 
         for inst in &block.insts {
-            if let IrInst::Call { target: Value::Symbol(sym), .. } = inst {
+            if let IrInst::Call {
+                target: Value::Symbol(sym),
+                ..
+            } = inst
+            {
                 if exception_handlers.contains(sym.as_str()) {
                     has_throwing_call = true;
                 }
@@ -1621,7 +1893,8 @@ fn detect_try_catch_regions(func: &IrFunction) -> Vec<TryCatchRegion> {
                 if let Some(tid) = target.var_id().or_else(|| {
                     // If target is a constant address, find the block at that address
                     target.as_const().and_then(|addr| {
-                        func.blocks.iter()
+                        func.blocks
+                            .iter()
                             .find(|b| b.source_range.is_some_and(|(s, _)| s == addr as u64))
                             .map(|b| b.id.0)
                     })
@@ -1674,7 +1947,12 @@ pub fn detect_loops(func: &IrFunction) -> Vec<super::LoopInfo> {
 pub fn detect_if_else(func: &IrFunction, block_id: BlockId) -> Option<super::IfElsePattern> {
     let block = func.block(block_id)?;
     let terminator = block.terminator()?;
-    if let IrInst::CBranch { cond: _, target_true, target_false } = terminator {
+    if let IrInst::CBranch {
+        cond: _,
+        target_true,
+        target_false,
+    } = terminator
+    {
         Some(super::IfElsePattern {
             cond_block: block_id,
             then_block: *target_true,
@@ -1692,14 +1970,127 @@ mod tests {
     use super::*;
     use freakre_ir::{OpCode, Ty, Value};
 
+    fn stmt_text(stmts: &[Stmt]) -> String {
+        let func = crate::ast::AstFunction {
+            name: "t".into(),
+            entry_address: 0,
+            params: vec![],
+            locals: vec![],
+            body: stmts.to_vec(),
+            return_type: freakre_ir::Ty::Void,
+        };
+        crate::ast_to_c::ast_to_c(&func)
+    }
+
+    #[test]
+    fn test_short_circuit_and_fold() {
+        // if (a) { if (b) X; } X;  ==>  if (a && b) { X; }
+        let mut func = IrFunction::new("t_and", 0x1000);
+        let a = Value::var(0, Ty::Bool);
+        let b = Value::var(1, Ty::Bool);
+        let inner = func.add_block("inner");
+        let action = func.add_block("action");
+        let join = func.add_block("join");
+
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: a,
+                target_true: inner,
+                target_false: join,
+            },
+        );
+        func.push_inst(
+            inner,
+            IrInst::CBranch {
+                cond: b,
+                target_true: action,
+                target_false: join,
+            },
+        );
+        let flag = func.alloc_var(Ty::i32());
+        func.push_inst(action, IrInst::Store {
+            addr: Value::int(0x2000),
+            value: flag.into(),
+            size: 4,
+        });
+        func.push_inst(action, IrInst::Branch { target: join });
+        func.push_inst(join, IrInst::Return { value: None });
+        func.build_cfg();
+
+        let mut converter = IrToAstConverter::new(&func);
+        let stmts = structure_control_flow(&func, &mut converter);
+        let text = stmt_text(&stmts);
+        assert!(
+            text.contains("&&"),
+            "expected folded `&&` in:\n{}",
+            text
+        );
+        assert!(
+            !text.contains("if (a)"),
+            "should not keep the nested shape:\n{}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_short_circuit_or_fold() {
+        // if (!a) { if (!b) {} else X; } ==> if (a || b) { X; }
+        // entry: if (a) -> join else inner; inner: if (b) -> join else action
+        let mut func = IrFunction::new("t_or", 0x1000);
+        let a = Value::var(0, Ty::Bool);
+        let b = Value::var(1, Ty::Bool);
+        let inner = func.add_block("inner");
+        let action = func.add_block("action");
+        let join = func.add_block("join");
+
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: a,
+                target_true: join,
+                target_false: inner,
+            },
+        );
+        func.push_inst(
+            inner,
+            IrInst::CBranch {
+                cond: b,
+                target_true: join,
+                target_false: action,
+            },
+        );
+        let flag = func.alloc_var(Ty::i32());
+        func.push_inst(action, IrInst::Store {
+            addr: Value::int(0x2000),
+            value: flag.into(),
+            size: 4,
+        });
+        func.push_inst(action, IrInst::Branch { target: join });
+        func.push_inst(join, IrInst::Return { value: None });
+        func.build_cfg();
+
+        let mut converter = IrToAstConverter::new(&func);
+        let stmts = structure_control_flow(&func, &mut converter);
+        let text = stmt_text(&stmts);
+        assert!(
+            text.contains("||"),
+            "expected folded `||` in:\n{}",
+            text
+        );
+    }
+
     #[test]
     fn test_simple_structuring() {
         let mut func = IrFunction::new("test", 0x1000);
         let v0 = func.alloc_var(Ty::i32());
 
-        func.push_inst(func.entry_block, IrInst::Return {
-            value: Some(v0.clone()),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Return {
+                value: Some(v0.clone()),
+            },
+        );
 
         let mut converter = IrToAstConverter::new(&func);
         let stmts = structure_control_flow(&func, &mut converter);
@@ -1715,11 +2106,14 @@ mod tests {
         let then_block = func.add_block("then");
         let else_block = func.add_block("else");
 
-        func.push_inst(func.entry_block, IrInst::CBranch {
-            cond: cond.clone(),
-            target_true: then_block,
-            target_false: else_block,
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: cond.clone(),
+                target_true: then_block,
+                target_false: else_block,
+            },
+        );
 
         let pattern = detect_if_else(&func, func.entry_block);
         assert!(pattern.is_some());
@@ -1738,14 +2132,22 @@ mod tests {
         let exit_block = func.add_block("exit");
 
         // Entry: cbranch cond в†’ body | exit
-        func.push_inst(func.entry_block, IrInst::CBranch {
-            cond: cond.clone(),
-            target_true: body_block,
-            target_false: exit_block,
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: cond.clone(),
+                target_true: body_block,
+                target_false: exit_block,
+            },
+        );
 
         // Body: branch в†’ entry (back edge)
-        func.push_inst(body_block, IrInst::Branch { target: func.entry_block });
+        func.push_inst(
+            body_block,
+            IrInst::Branch {
+                target: func.entry_block,
+            },
+        );
 
         // Exit: return
         func.push_inst(exit_block, IrInst::Return { value: None });
@@ -1771,11 +2173,14 @@ mod tests {
 
         // Latch: cbranch cond в†’ entry | exit
         let exit_block = func.add_block("exit");
-        func.push_inst(latch, IrInst::CBranch {
-            cond: cond.clone(),
-            target_true: func.entry_block,
-            target_false: exit_block,
-        });
+        func.push_inst(
+            latch,
+            IrInst::CBranch {
+                cond: cond.clone(),
+                target_true: func.entry_block,
+                target_false: exit_block,
+            },
+        );
 
         func.push_inst(exit_block, IrInst::Return { value: None });
 
@@ -1795,68 +2200,96 @@ mod tests {
 
         // Create comparison: v1 = v0 == 1
         let v1 = func.alloc_var(Ty::Bool);
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v1.clone(),
-            op: OpCode::Eq,
-            lhs: v0.clone(),
-            rhs: Value::Const(1),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v1.clone(),
+                op: OpCode::Eq,
+                lhs: v0.clone(),
+                rhs: Value::Const(1),
+            },
+        );
 
         let case1 = func.add_block("case1");
         let chain2 = func.add_block("chain2");
-        func.push_inst(func.entry_block, IrInst::CBranch {
-            cond: v1,
-            target_true: case1,
-            target_false: chain2,
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: v1,
+                target_true: case1,
+                target_false: chain2,
+            },
+        );
 
         // Chain2: v2 = v0 == 2
         let v2 = func.alloc_var(Ty::Bool);
-        func.push_inst(chain2, IrInst::Binary {
-            dst: v2.clone(),
-            op: OpCode::Eq,
-            lhs: v0.clone(),
-            rhs: Value::Const(2),
-        });
+        func.push_inst(
+            chain2,
+            IrInst::Binary {
+                dst: v2.clone(),
+                op: OpCode::Eq,
+                lhs: v0.clone(),
+                rhs: Value::Const(2),
+            },
+        );
 
         let case2 = func.add_block("case2");
         let chain3 = func.add_block("chain3");
-        func.push_inst(chain2, IrInst::CBranch {
-            cond: v2,
-            target_true: case2,
-            target_false: chain3,
-        });
+        func.push_inst(
+            chain2,
+            IrInst::CBranch {
+                cond: v2,
+                target_true: case2,
+                target_false: chain3,
+            },
+        );
 
         // Chain3: v3 = v0 == 3
         let v3 = func.alloc_var(Ty::Bool);
-        func.push_inst(chain3, IrInst::Binary {
-            dst: v3.clone(),
-            op: OpCode::Eq,
-            lhs: v0.clone(),
-            rhs: Value::Const(3),
-        });
+        func.push_inst(
+            chain3,
+            IrInst::Binary {
+                dst: v3.clone(),
+                op: OpCode::Eq,
+                lhs: v0.clone(),
+                rhs: Value::Const(3),
+            },
+        );
 
         let case3 = func.add_block("case3");
         let default = func.add_block("default");
-        func.push_inst(chain3, IrInst::CBranch {
-            cond: v3,
-            target_true: case3,
-            target_false: default,
-        });
+        func.push_inst(
+            chain3,
+            IrInst::CBranch {
+                cond: v3,
+                target_true: case3,
+                target_false: default,
+            },
+        );
 
         func.build_cfg();
 
         let switches = detect_switches(&func);
-        assert!(!switches.is_empty(), "Should detect comparison chain switch");
+        assert!(
+            !switches.is_empty(),
+            "Should detect comparison chain switch"
+        );
         assert_eq!(switches[0].cases.len(), 3);
     }
 
     fn contains_return(stmts: &[Stmt]) -> bool {
         stmts.iter().any(|s| match s {
             Stmt::Return { .. } => true,
-            Stmt::If { then_body, else_body, .. } => {
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 contains_return(then_body)
-                    || else_body.as_ref().map(|e| contains_return(e)).unwrap_or(false)
+                    || else_body
+                        .as_ref()
+                        .map(|e| contains_return(e))
+                        .unwrap_or(false)
             }
             Stmt::While { body, .. } | Stmt::DoWhile { body, .. } | Stmt::For { body, .. } => {
                 contains_return(body)
@@ -1864,11 +2297,16 @@ mod tests {
             Stmt::Block(b) => contains_return(b),
             Stmt::Switch { cases, default, .. } => {
                 cases.iter().any(|c| contains_return(&c.body))
-                    || default.as_ref().map(|d| contains_return(d)).unwrap_or(false)
+                    || default
+                        .as_ref()
+                        .map(|d| contains_return(d))
+                        .unwrap_or(false)
             }
-            Stmt::TryCatch { try_body, catch_body, .. } => {
-                contains_return(try_body) || contains_return(catch_body)
-            }
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => contains_return(try_body) || contains_return(catch_body),
             _ => false,
         })
     }
@@ -1879,23 +2317,29 @@ mod tests {
         let mut prev_false = func.entry_block;
         for (i, val) in [1i64, 2, 3].iter().enumerate() {
             let vi = func.alloc_var(Ty::Bool);
-            func.push_inst(prev_false, IrInst::Binary {
-                dst: vi.clone(),
-                op,
-                lhs: v0.clone(),
-                rhs: Value::Const(*val),
-            });
+            func.push_inst(
+                prev_false,
+                IrInst::Binary {
+                    dst: vi.clone(),
+                    op,
+                    lhs: v0.clone(),
+                    rhs: Value::Const(*val),
+                },
+            );
             let case_i = func.add_block(&format!("case{}", i));
             let next = if i == 2 {
                 func.add_block("default")
             } else {
                 func.add_block(&format!("chain{}", i + 1))
             };
-            func.push_inst(prev_false, IrInst::CBranch {
-                cond: vi,
-                target_true: case_i,
-                target_false: next,
-            });
+            func.push_inst(
+                prev_false,
+                IrInst::CBranch {
+                    cond: vi,
+                    target_true: case_i,
+                    target_false: next,
+                },
+            );
             prev_false = next;
             if i == 2 {
                 return func;
@@ -1911,7 +2355,10 @@ mod tests {
         let blocks: Vec<BlockId> = func.blocks.iter().map(|b| b.id).collect();
         for bid in blocks {
             let is_case = matches!(func.block(bid).and_then(|b| b.terminator()), Some(IrInst::Branch { target }) if *target == join);
-            let has_cbranch = matches!(func.block(bid).and_then(|b| b.terminator()), Some(IrInst::CBranch { .. }));
+            let has_cbranch = matches!(
+                func.block(bid).and_then(|b| b.terminator()),
+                Some(IrInst::CBranch { .. })
+            );
             if !has_cbranch && !is_case && bid != join {
                 func.push_inst(bid, IrInst::Branch { target: join });
             }
@@ -1921,14 +2368,20 @@ mod tests {
 
         let mut converter = IrToAstConverter::new(&func);
         let stmts = structure_control_flow(&func, &mut converter);
-        assert!(contains_return(&stmts), "code after switch must not be dropped");
+        assert!(
+            contains_return(&stmts),
+            "code after switch must not be dropped"
+        );
     }
 
     #[test]
     fn test_lt_chain_is_not_switch() {
         let func = build_chain_switch_func("lt_chain", OpCode::LtS);
         let switches = detect_switches(&func);
-        assert!(switches.is_empty(), "range checks must not become switch cases");
+        assert!(
+            switches.is_empty(),
+            "range checks must not become switch cases"
+        );
     }
 
     #[test]
@@ -1938,12 +2391,20 @@ mod tests {
         let body_block = func.add_block("body");
         let exit_block = func.add_block("exit");
 
-        func.push_inst(func.entry_block, IrInst::CBranch {
-            cond: cond.clone(),
-            target_true: exit_block,
-            target_false: body_block,
-        });
-        func.push_inst(body_block, IrInst::Branch { target: func.entry_block });
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: cond.clone(),
+                target_true: exit_block,
+                target_false: body_block,
+            },
+        );
+        func.push_inst(
+            body_block,
+            IrInst::Branch {
+                target: func.entry_block,
+            },
+        );
         func.push_inst(exit_block, IrInst::Return { value: None });
         func.build_cfg();
 
@@ -1952,7 +2413,13 @@ mod tests {
         match &stmts[0] {
             Stmt::While { cond, .. } => {
                 assert!(
-                    matches!(cond, Expr::Unary { op: UnOp::LogNot, .. }),
+                    matches!(
+                        cond,
+                        Expr::Unary {
+                            op: UnOp::LogNot,
+                            ..
+                        }
+                    ),
                     "condition must be inverted when body is behind the false edge"
                 );
             }
@@ -1969,25 +2436,34 @@ mod tests {
         let exit_block = func.add_block("exit");
 
         let init_dst = func.alloc_var(Ty::i32());
-        func.push_inst(pre, IrInst::Unary {
-            dst: init_dst,
-            op: OpCode::Copy,
-            src: Value::Const(0),
-        });
+        func.push_inst(
+            pre,
+            IrInst::Unary {
+                dst: init_dst,
+                op: OpCode::Copy,
+                src: Value::Const(0),
+            },
+        );
         func.push_inst(pre, IrInst::Branch { target: header });
         func.push_inst(header, IrInst::Branch { target: latch });
         let v = func.alloc_var(Ty::Bool);
-        func.push_inst(latch, IrInst::CBranch {
-            cond: v,
-            target_true: header,
-            target_false: exit_block,
-        });
+        func.push_inst(
+            latch,
+            IrInst::CBranch {
+                cond: v,
+                target_true: header,
+                target_false: exit_block,
+            },
+        );
         func.push_inst(exit_block, IrInst::Return { value: None });
         func.build_cfg();
 
         let body = compute_natural_loop(&func, header, latch);
         assert!(body.contains(&header) && body.contains(&latch));
-        assert!(!body.contains(&pre), "pre-header must not leak into the loop body");
+        assert!(
+            !body.contains(&pre),
+            "pre-header must not leak into the loop body"
+        );
         let ph = find_pre_header(&func, header, &body);
         assert_eq!(ph, Some(pre));
     }
@@ -2001,11 +2477,14 @@ mod tests {
         let exit_block = func.add_block("exit");
 
         let c = func.alloc_var(Ty::Bool);
-        func.push_inst(header, IrInst::CBranch {
-            cond: c,
-            target_true: b1,
-            target_false: b2,
-        });
+        func.push_inst(
+            header,
+            IrInst::CBranch {
+                cond: c,
+                target_true: b1,
+                target_false: b2,
+            },
+        );
         func.push_inst(b1, IrInst::Branch { target: header });
         func.push_inst(b2, IrInst::Branch { target: header });
         func.push_inst(exit_block, IrInst::Return { value: None });
@@ -2014,7 +2493,11 @@ mod tests {
 
         let idom = freakre_ir::ssa::compute_dominators(&func);
         let loops = detect_and_classify_loops(&func, &idom);
-        assert_eq!(loops.len(), 1, "two latches to one header merge into one loop");
+        assert_eq!(
+            loops.len(),
+            1,
+            "two latches to one header merge into one loop"
+        );
         assert!(loops[0].body_blocks.contains(&b1));
         assert!(loops[0].body_blocks.contains(&b2));
     }
@@ -2028,7 +2511,11 @@ mod tests {
             match s {
                 Stmt::Goto { label } => out.push(format!("goto {}", label)),
                 Stmt::Comment(c) if c.contains("WARNING") => out.push(c.clone()),
-                Stmt::If { then_body, else_body, .. } => {
+                Stmt::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
                     collect_fallbacks(then_body, out);
                     if let Some(e) = else_body {
                         collect_fallbacks(e, out);
@@ -2046,7 +2533,11 @@ mod tests {
                         collect_fallbacks(d, out);
                     }
                 }
-                Stmt::TryCatch { try_body, catch_body, .. } => {
+                Stmt::TryCatch {
+                    try_body,
+                    catch_body,
+                    ..
+                } => {
                     collect_fallbacks(try_body, out);
                     collect_fallbacks(catch_body, out);
                 }
@@ -2058,10 +2549,11 @@ mod tests {
     fn has_while(stmts: &[Stmt]) -> bool {
         stmts.iter().any(|s| match s {
             Stmt::While { .. } => true,
-            Stmt::If { then_body, else_body, .. } => {
-                has_while(then_body)
-                    || else_body.as_ref().map(|e| has_while(e)).unwrap_or(false)
-            }
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => has_while(then_body) || else_body.as_ref().map(|e| has_while(e)).unwrap_or(false),
             Stmt::Block(b) => has_while(b),
             _ => false,
         })
@@ -2082,17 +2574,23 @@ mod tests {
 
         // entry: cbranch c ? body : join
         let c = func.alloc_var(Ty::Bool);
-        func.push_inst(func.entry_block, IrInst::CBranch {
-            cond: c,
-            target_true: body,
-            target_false: join,
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: c,
+                target_true: body,
+                target_false: join,
+            },
+        );
         let tmp = func.alloc_var(Ty::i32());
-        func.push_inst(body, IrInst::Unary {
-            dst: tmp,
-            op: OpCode::Copy,
-            src: Value::Const(1),
-        });
+        func.push_inst(
+            body,
+            IrInst::Unary {
+                dst: tmp,
+                op: OpCode::Copy,
+                src: Value::Const(1),
+            },
+        );
         // body falls through into the join (false target)
         func.push_inst(body, IrInst::Branch { target: join });
         func.push_inst(join, IrInst::Branch { target: next });
@@ -2124,19 +2622,25 @@ mod tests {
         let exit_block = func.add_block("exit");
 
         let c = func.alloc_var(Ty::Bool);
-        func.push_inst(header, IrInst::CBranch {
-            cond: c,
-            target_true: body,
-            target_false: exit_block,
-        });
+        func.push_inst(
+            header,
+            IrInst::CBranch {
+                cond: c,
+                target_true: body,
+                target_false: exit_block,
+            },
+        );
 
         // Body: conditional back edge to the header (true side)
         let z = func.alloc_var(Ty::Bool);
-        func.push_inst(body, IrInst::CBranch {
-            cond: z,
-            target_true: header,
-            target_false: mid,
-        });
+        func.push_inst(
+            body,
+            IrInst::CBranch {
+                cond: z,
+                target_true: header,
+                target_false: mid,
+            },
+        );
 
         // Mid: latch with unconditional back edge
         func.push_inst(mid, IrInst::Branch { target: header });
@@ -2168,18 +2672,24 @@ mod tests {
 
         // entry branches to both sides; neither a nor b dominates the
         // other, so no natural loop exists even though control flow cycles.
-        func.push_inst(func.entry_block, IrInst::CBranch {
-            cond: Value::Const(1),
-            target_true: a,
-            target_false: b,
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: Value::Const(1),
+                target_true: a,
+                target_false: b,
+            },
+        );
         let v = func.alloc_var(Ty::Bool);
         let ret_block = func.add_block("ret");
-        func.push_inst(a, IrInst::CBranch {
-            cond: v,
-            target_true: b,
-            target_false: ret_block,
-        });
+        func.push_inst(
+            a,
+            IrInst::CBranch {
+                cond: v,
+                target_true: b,
+                target_false: ret_block,
+            },
+        );
         func.push_inst(b, IrInst::Branch { target: a });
         func.push_inst(ret_block, IrInst::Return { value: None });
         func.build_cfg();
@@ -2218,7 +2728,11 @@ mod tests {
             }
             Expr::Deref(x) | Expr::AddrOf(x) => expr_int_lit_count(x, val),
             Expr::Cast { expr, .. } => expr_int_lit_count(expr, val),
-            Expr::Ternary { cond, then_expr, else_expr } => {
+            Expr::Ternary {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
                 expr_int_lit_count(cond, val)
                     + expr_int_lit_count(then_expr, val)
                     + expr_int_lit_count(else_expr, val)
@@ -2234,38 +2748,70 @@ mod tests {
                 Stmt::Assign { target, value } => {
                     expr_int_lit_count(target, val) + expr_int_lit_count(value, val)
                 }
-                Stmt::If { cond, then_body, else_body } => {
+                Stmt::If {
+                    cond,
+                    then_body,
+                    else_body,
+                } => {
                     expr_int_lit_count(cond, val)
                         + stmt_int_lit_count(then_body, val)
-                        + else_body.as_ref().map(|e| stmt_int_lit_count(e, val)).unwrap_or(0)
+                        + else_body
+                            .as_ref()
+                            .map(|e| stmt_int_lit_count(e, val))
+                            .unwrap_or(0)
                 }
                 Stmt::While { cond, body } => {
                     expr_int_lit_count(cond, val) + stmt_int_lit_count(body, val)
                 }
-                Stmt::For { init, cond, update, body } => {
-                    init.as_ref().map(|s| stmt_int_lit_count(std::slice::from_ref(s), val)).unwrap_or(0)
-                        + cond.as_ref().map(|e| expr_int_lit_count(e, val)).unwrap_or(0)
-                        + update.as_ref().map(|s| stmt_int_lit_count(std::slice::from_ref(s), val)).unwrap_or(0)
+                Stmt::For {
+                    init,
+                    cond,
+                    update,
+                    body,
+                } => {
+                    init.as_ref()
+                        .map(|s| stmt_int_lit_count(std::slice::from_ref(s), val))
+                        .unwrap_or(0)
+                        + cond
+                            .as_ref()
+                            .map(|e| expr_int_lit_count(e, val))
+                            .unwrap_or(0)
+                        + update
+                            .as_ref()
+                            .map(|s| stmt_int_lit_count(std::slice::from_ref(s), val))
+                            .unwrap_or(0)
                         + stmt_int_lit_count(body, val)
                 }
                 Stmt::DoWhile { body, cond } => {
                     stmt_int_lit_count(body, val) + expr_int_lit_count(cond, val)
                 }
-                Stmt::Return { value } => {
-                    value.as_ref().map(|e| expr_int_lit_count(e, val)).unwrap_or(0)
-                }
+                Stmt::Return { value } => value
+                    .as_ref()
+                    .map(|e| expr_int_lit_count(e, val))
+                    .unwrap_or(0),
                 Stmt::Expr(e) => expr_int_lit_count(e, val),
                 Stmt::Block(b) => stmt_int_lit_count(b, val),
-                Stmt::Switch { expr, cases, default } => {
+                Stmt::Switch {
+                    expr,
+                    cases,
+                    default,
+                } => {
                     expr_int_lit_count(expr, val)
-                        + cases.iter().map(|c| {
-                            expr_int_lit_count(&c.value, val) + stmt_int_lit_count(&c.body, val)
-                        }).sum::<usize>()
-                        + default.as_ref().map(|d| stmt_int_lit_count(d, val)).unwrap_or(0)
+                        + cases
+                            .iter()
+                            .map(|c| {
+                                expr_int_lit_count(&c.value, val) + stmt_int_lit_count(&c.body, val)
+                            })
+                            .sum::<usize>()
+                        + default
+                            .as_ref()
+                            .map(|d| stmt_int_lit_count(d, val))
+                            .unwrap_or(0)
                 }
-                Stmt::Decl { init, .. } => {
-                    init.as_ref().map(|e| expr_int_lit_count(e, val)).unwrap_or(0)
-                }
+                Stmt::Decl { init, .. } => init
+                    .as_ref()
+                    .map(|e| expr_int_lit_count(e, val))
+                    .unwrap_or(0),
                 _ => 0,
             };
         }
@@ -2276,12 +2822,18 @@ mod tests {
     fn has_bare_trailing_continue(stmts: &[Stmt]) -> bool {
         stmts.iter().any(|s| match s {
             Stmt::While { body, .. } | Stmt::DoWhile { body, .. } | Stmt::For { body, .. } => {
-                matches!(body.last(), Some(Stmt::Continue))
-                    || has_bare_trailing_continue(body)
+                matches!(body.last(), Some(Stmt::Continue)) || has_bare_trailing_continue(body)
             }
-            Stmt::If { then_body, else_body, .. } => {
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 has_bare_trailing_continue(then_body)
-                    || else_body.as_ref().map(|e| has_bare_trailing_continue(e)).unwrap_or(false)
+                    || else_body
+                        .as_ref()
+                        .map(|e| has_bare_trailing_continue(e))
+                        .unwrap_or(false)
             }
             Stmt::Block(b) => has_bare_trailing_continue(b),
             _ => false,
@@ -2291,9 +2843,16 @@ mod tests {
     fn contains_break(stmts: &[Stmt]) -> bool {
         stmts.iter().any(|s| match s {
             Stmt::Break => true,
-            Stmt::If { then_body, else_body, .. } => {
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 contains_break(then_body)
-                    || else_body.as_ref().map(|e| contains_break(e)).unwrap_or(false)
+                    || else_body
+                        .as_ref()
+                        .map(|e| contains_break(e))
+                        .unwrap_or(false)
             }
             Stmt::While { body, .. } | Stmt::DoWhile { body, .. } | Stmt::For { body, .. } => {
                 contains_break(body)
@@ -2322,11 +2881,14 @@ mod tests {
     /// block's code was emitted exactly once at the right place.
     fn push_marker(func: &mut IrFunction, block: BlockId, val: i64) {
         let dst = func.alloc_var(Ty::i32());
-        func.push_inst(block, IrInst::Unary {
-            dst,
-            op: OpCode::Copy,
-            src: Value::Const(val),
-        });
+        func.push_inst(
+            block,
+            IrInst::Unary {
+                dst,
+                op: OpCode::Copy,
+                src: Value::Const(val),
+            },
+        );
     }
 
     /// Repro of the frozen-binary shape at 0xBE00: loop header with NO
@@ -2346,11 +2908,14 @@ mod tests {
         func.push_inst(func.entry_block, IrInst::Branch { target: header });
         func.push_inst(header, IrInst::Branch { target: t1 });
         let c = func.alloc_var(Ty::Bool);
-        func.push_inst(t1, IrInst::CBranch {
-            cond: c,
-            target_true: exit_block,
-            target_false: t2,
-        });
+        func.push_inst(
+            t1,
+            IrInst::CBranch {
+                cond: c,
+                target_true: exit_block,
+                target_false: t2,
+            },
+        );
         func.push_inst(t2, IrInst::Branch { target: header });
         func.push_inst(exit_block, IrInst::Return { value: None });
         func.build_cfg();
@@ -2369,9 +2934,19 @@ mod tests {
             "header does not test anything, cond should be true, got {:?}",
             cond
         );
-        assert!(contains_break(body), "mid-body exit must become break, got {:#?}", body);
-        assert!(!contains_return(body), "exit block must not be swallowed into the body");
-        assert!(!has_bare_trailing_continue(&stmts), "body must not end in a bare continue");
+        assert!(
+            contains_break(body),
+            "mid-body exit must become break, got {:#?}",
+            body
+        );
+        assert!(
+            !contains_return(body),
+            "exit block must not be swallowed into the body"
+        );
+        assert!(
+            !has_bare_trailing_continue(&stmts),
+            "body must not end in a bare continue"
+        );
     }
 
     /// Same shape, but the FALSE edge of the mid-body test leaves the loop.
@@ -2387,11 +2962,14 @@ mod tests {
         func.push_inst(func.entry_block, IrInst::Branch { target: header });
         func.push_inst(header, IrInst::Branch { target: t1 });
         let c = func.alloc_var(Ty::Bool);
-        func.push_inst(t1, IrInst::CBranch {
-            cond: c,
-            target_true: t2,
-            target_false: exit_block,
-        });
+        func.push_inst(
+            t1,
+            IrInst::CBranch {
+                cond: c,
+                target_true: t2,
+                target_false: exit_block,
+            },
+        );
         func.push_inst(t2, IrInst::Branch { target: header });
         func.push_inst(exit_block, IrInst::Return { value: None });
         func.build_cfg();
@@ -2406,12 +2984,20 @@ mod tests {
             other => panic!("expected top-level While, got {:?}", other),
         };
         let break_if = body.iter().find_map(|s| match s {
-            Stmt::If { cond, then_body, .. } => Some((cond, then_body)),
+            Stmt::If {
+                cond, then_body, ..
+            } => Some((cond, then_body)),
             _ => None,
         });
         let (cond, then_body) = break_if.expect("expected an if guarding the break");
         assert!(
-            matches!(cond, Expr::Unary { op: UnOp::LogNot, .. }),
+            matches!(
+                cond,
+                Expr::Unary {
+                    op: UnOp::LogNot,
+                    ..
+                }
+            ),
             "false-side exit must negate the condition, got {:?}",
             cond
         );
@@ -2420,7 +3006,10 @@ mod tests {
             "break must be the whole then-arm, got {:#?}",
             then_body
         );
-        assert!(!contains_return(body), "exit block must not be swallowed into the body");
+        assert!(
+            !contains_return(body),
+            "exit block must not be swallowed into the body"
+        );
         assert!(!has_bare_trailing_continue(&stmts));
     }
 
@@ -2442,17 +3031,23 @@ mod tests {
         func.push_inst(h1, IrInst::Branch { target: h2 });
 
         let o = func.alloc_var(Ty::Bool);
-        func.push_inst(h2, IrInst::CBranch {
-            cond: o,
-            target_true: i1,
-            target_false: done,
-        });
+        func.push_inst(
+            h2,
+            IrInst::CBranch {
+                cond: o,
+                target_true: i1,
+                target_false: done,
+            },
+        );
         let i = func.alloc_var(Ty::Bool);
-        func.push_inst(i1, IrInst::CBranch {
-            cond: i,
-            target_true: i2,
-            target_false: mid_exit,
-        });
+        func.push_inst(
+            i1,
+            IrInst::CBranch {
+                cond: i,
+                target_true: i2,
+                target_false: mid_exit,
+            },
+        );
         func.push_inst(i2, IrInst::Branch { target: h2 });
         push_marker(&mut func, mid_exit, 7);
         func.push_inst(mid_exit, IrInst::Branch { target: l1 });
@@ -2479,8 +3074,18 @@ mod tests {
         );
         // Inner-loop exit path marker (7) and post-inner-loop marker (9):
         // each emitted exactly once.
-        assert_eq!(stmt_int_lit_count(&stmts, 7), 1, "mid-exit code duplicated/dropped: {:#?}", stmts);
-        assert_eq!(stmt_int_lit_count(&stmts, 9), 1, "post-exit code duplicated/dropped: {:#?}", stmts);
+        assert_eq!(
+            stmt_int_lit_count(&stmts, 7),
+            1,
+            "mid-exit code duplicated/dropped: {:#?}",
+            stmts
+        );
+        assert_eq!(
+            stmt_int_lit_count(&stmts, 9),
+            1,
+            "post-exit code duplicated/dropped: {:#?}",
+            stmts
+        );
     }
 
     /// Loop exit target shared with the surrounding continuation: both the
@@ -2497,17 +3102,23 @@ mod tests {
 
         func.push_inst(func.entry_block, IrInst::Branch { target: h });
         let c = func.alloc_var(Ty::Bool);
-        func.push_inst(h, IrInst::CBranch {
-            cond: c,
-            target_true: b1,
-            target_false: exit_block,
-        });
+        func.push_inst(
+            h,
+            IrInst::CBranch {
+                cond: c,
+                target_true: b1,
+                target_false: exit_block,
+            },
+        );
         let d = func.alloc_var(Ty::Bool);
-        func.push_inst(b1, IrInst::CBranch {
-            cond: d,
-            target_true: h,
-            target_false: tail,
-        });
+        func.push_inst(
+            b1,
+            IrInst::CBranch {
+                cond: d,
+                target_true: h,
+                target_false: tail,
+            },
+        );
         push_marker(&mut func, tail, 5);
         func.push_inst(tail, IrInst::Branch { target: exit_block });
         push_marker(&mut func, exit_block, 8);
@@ -2530,14 +3141,29 @@ mod tests {
             cond
         );
         assert!(contains_break(body), "mid-body exit must become break");
-        assert_eq!(stmt_int_lit_count(&stmts, 5), 1, "tail code duplicated/dropped: {:#?}", stmts);
-        assert_eq!(stmt_int_lit_count(&stmts, 8), 1, "shared exit code duplicated/dropped: {:#?}", stmts);
+        assert_eq!(
+            stmt_int_lit_count(&stmts, 5),
+            1,
+            "tail code duplicated/dropped: {:#?}",
+            stmts
+        );
+        assert_eq!(
+            stmt_int_lit_count(&stmts, 8),
+            1,
+            "shared exit code duplicated/dropped: {:#?}",
+            stmts
+        );
         assert!(
             matches!(stmts.last(), Some(Stmt::Return { .. })),
             "shared exit block must run after the loop, got {:#?}",
             stmts
         );
-        assert_eq!(stmts.len(), 2, "nothing else expected at top level, got {:#?}", stmts);
+        assert_eq!(
+            stmts.len(),
+            2,
+            "nothing else expected at top level, got {:#?}",
+            stmts
+        );
     }
 
     #[test]

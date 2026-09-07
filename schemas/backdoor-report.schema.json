@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://freakre.local/schema/backdoor-report.json",
+  "title": "FreakRE Backdoor Report",
+  "type": "object",
+  "required": ["findings", "risk_score", "verdict"],
+  "properties": {
+    "risk_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "verdict": { "enum": ["CLEAN", "SUSPICIOUS", "BACKDOOR_DETECTED"] },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "required": ["rule_id", "severity", "confidence", "description", "evidence", "mitre_ids"],
+      "properties": {
+        "rule_id": { "type": "string" },
+        "severity": { "enum": ["low", "medium", "high", "critical"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "description": { "type": "string" },
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "mitre_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

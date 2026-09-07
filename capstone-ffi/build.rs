@@ -62,6 +62,8 @@ fn main() {
         println!("cargo:rustc-cfg=capstone_available");
     } else {
         eprintln!("cargo:warning=Capstone not found - LIMITED DISASSEMBLY MODE (built-in LDE, x86/x64 only)");
-        eprintln!("cargo:warning=Install Capstone or set CAPSTONE_LIB_DIR for full multi-arch support");
+        eprintln!(
+            "cargo:warning=Install Capstone or set CAPSTONE_LIB_DIR for full multi-arch support"
+        );
     }
 }

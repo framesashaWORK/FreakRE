@@ -1,9 +1,9 @@
+use crate::app::{DbCommand, FreakREApp, JobKey, Tab};
+use capstone_ffi::instruction::{InstructionKind, Operand};
+use cfg_builder::EdgeType;
 use eframe::egui;
 use freakre_scanner::report::FileReport;
-use cfg_builder::EdgeType;
 use std::sync::Arc;
-use capstone_ffi::instruction::{InstructionKind, Operand};
-use crate::app::{DbCommand, FreakREApp, JobKey, Tab};
 
 /// Resolve a call/jump target address to a human name when possible.
 fn resolve_target_name(app: &FreakREApp, addr: u64) -> Option<String> {
@@ -43,12 +43,16 @@ pub fn disassembly_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 
     // Toolbar row
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Address:").color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("Address:")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
         let mut offset_str = format!("{:08X}", app.disasm_offset);
         let resp = ui.add_sized(
             egui::vec2(80.0, 18.0),
-            egui::TextEdit::singleline(&mut offset_str)
-                .font(egui::FontId::monospace(11.0)),
+            egui::TextEdit::singleline(&mut offset_str).font(egui::FontId::monospace(11.0)),
         );
         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             if let Ok(val) = u64::from_str_radix(&offset_str, 16) {
@@ -58,9 +62,13 @@ pub fn disassembly_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
         }
 
         ui.separator();
-        ui.checkbox(&mut app.disasm_is_64bit,
-            egui::RichText::new("x86_64").monospace().size(11.0).color(c.text_primary));
-
+        ui.checkbox(
+            &mut app.disasm_is_64bit,
+            egui::RichText::new("x86_64")
+                .monospace()
+                .size(11.0)
+                .color(c.text_primary),
+        );
     });
 
     ui.separator();
@@ -68,19 +76,31 @@ pub fn disassembly_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let data = match get_current_data(app) {
         Some(d) => d,
         None => {
-            ui.label(egui::RichText::new("No file loaded.")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("No file loaded.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
             return;
         }
     };
 
     if data.is_empty() {
         if let Some(ref err) = app.data_read_error {
-            ui.label(egui::RichText::new(err)
-                .color(c.danger).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new(err)
+                    .color(c.danger)
+                    .size(11.0)
+                    .monospace(),
+            );
         } else {
-            ui.label(egui::RichText::new("File is empty.")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("File is empty.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
         }
         return;
     }
@@ -90,8 +110,12 @@ pub fn disassembly_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 
     let start = app.disasm_offset as usize;
     if start >= data.len() {
-        ui.label(egui::RichText::new("invalid address")
-            .color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("invalid address")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
         return;
     }
     let end = (start + 0x400).min(data.len());
@@ -99,21 +123,30 @@ pub fn disassembly_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 
     // Disassemble using capstone (or fallback LDE)
     let instructions = if let Some(ref disasm) = app.disasm {
-        disasm.disassemble_n(code_region, start as u64, app.settings.disasm_max_instructions)
+        disasm.disassemble_n(
+            code_region,
+            start as u64,
+            app.settings.disasm_max_instructions,
+        )
     } else {
         Vec::new()
     };
 
     // Toolbar: nav buttons + hotkey hints
     ui.horizontal(|ui| {
-        if ui.small_button("◄ Back").clicked() { app.nav_back(); }
-        if ui.small_button("Fwd ►").clicked() { app.nav_forward(); }
+        if ui.small_button("◄ Back").clicked() {
+            app.nav_back();
+        }
+        if ui.small_button("Fwd ►").clicked() {
+            app.nav_forward();
+        }
         ui.separator();
         if ui.small_button("EP").clicked() {
             if let Some(report) = current_report(app) {
                 if let Some(ep_str) = entry_point_str(report) {
                     if !ep_str.is_empty() {
-                        if let Ok(ep_rva) = u64::from_str_radix(ep_str.trim_start_matches("0x"), 16) {
+                        if let Ok(ep_rva) = u64::from_str_radix(ep_str.trim_start_matches("0x"), 16)
+                        {
                             // PE entry points are RVAs — translate to a file
                             // offset before using it as a disasm byte offset.
                             let ep = pe_rva_to_file_offset(app, ep_rva);
@@ -134,8 +167,14 @@ pub fn disassembly_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
             app.active_tab = Tab::Decompiler;
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new("G:goto  N:rename  X:xrefs  ;:comment  F5:decompile  Space:graph")
-                .color(c.text_secondary.gamma_multiply(0.5)).size(9.0).monospace());
+            ui.label(
+                egui::RichText::new(
+                    "G:goto  N:rename  X:xrefs  ;:comment  F5:decompile  Space:graph",
+                )
+                .color(c.text_secondary.gamma_multiply(0.5))
+                .size(9.0)
+                .monospace(),
+            );
         });
     });
 
@@ -143,18 +182,47 @@ pub fn disassembly_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 
     // Column header
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Address ").color(c.text_secondary).size(fs).monospace());
-        ui.label(egui::RichText::new("Bytes              ").color(c.text_secondary).size(fs).monospace());
-        ui.label(egui::RichText::new("Mnemonic   ").color(c.text_secondary).size(fs).monospace());
-        ui.label(egui::RichText::new("Operands").color(c.text_secondary).size(fs).monospace());
-        ui.label(egui::RichText::new("Comment").color(c.text_secondary).size(fs).monospace());
+        ui.label(
+            egui::RichText::new("Address ")
+                .color(c.text_secondary)
+                .size(fs)
+                .monospace(),
+        );
+        ui.label(
+            egui::RichText::new("Bytes              ")
+                .color(c.text_secondary)
+                .size(fs)
+                .monospace(),
+        );
+        ui.label(
+            egui::RichText::new("Mnemonic   ")
+                .color(c.text_secondary)
+                .size(fs)
+                .monospace(),
+        );
+        ui.label(
+            egui::RichText::new("Operands")
+                .color(c.text_secondary)
+                .size(fs)
+                .monospace(),
+        );
+        ui.label(
+            egui::RichText::new("Comment")
+                .color(c.text_secondary)
+                .size(fs)
+                .monospace(),
+        );
     });
     ui.separator();
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         if instructions.is_empty() {
-            ui.label(egui::RichText::new("; No valid instructions at this offset (capstone fallback)")
-                .color(c.comment_color).size(fs).monospace());
+            ui.label(
+                egui::RichText::new("; No valid instructions at this offset (capstone fallback)")
+                    .color(c.comment_color)
+                    .size(fs)
+                    .monospace(),
+            );
             return;
         }
 
@@ -183,68 +251,101 @@ pub fn disassembly_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                 // highlighted so it's easy to spot where you are.
                 ui.label(
                     egui::RichText::new(format!("{:08X} ", inst.address))
-                        .color(if is_current { c.label_color } else { c.addr_color })
+                        .color(if is_current {
+                            c.label_color
+                        } else {
+                            c.addr_color
+                        })
                         .size(fs)
                         .monospace(),
                 );
 
                 // Bytes: prefer embedded bytes, fall back to data slice.
                 let bytes_str: String = if !inst.bytes.is_empty() {
-                    inst.bytes.iter().take(8).map(|b| format!("{:02X} ", b)).collect()
+                    inst.bytes
+                        .iter()
+                        .take(8)
+                        .map(|b| format!("{:02X} ", b))
+                        .collect()
                 } else {
                     let inst_start = inst.address as usize;
                     let inst_end = (inst_start + inst.size).min(data.len());
-                    data.get(inst_start..inst_end).map(|sb| {
-                        sb.iter().take(8).map(|b| format!("{:02X} ", b)).collect()
-                    }).unwrap_or_default()
+                    data.get(inst_start..inst_end)
+                        .map(|sb| sb.iter().take(8).map(|b| format!("{:02X} ", b)).collect())
+                        .unwrap_or_default()
                 };
-                ui.label(egui::RichText::new(format!("{:<24}", bytes_str))
-                    .color(c.text_secondary).size(fs).monospace());
+                ui.label(
+                    egui::RichText::new(format!("{:<24}", bytes_str))
+                        .color(c.text_secondary)
+                        .size(fs)
+                        .monospace(),
+                );
 
                 // Mnemonic (blue like IDA keywords)
-                ui.label(egui::RichText::new(format!("{:<10}", inst.mnemonic))
-                    .color(c.mnemonic_color).size(fs).monospace());
+                ui.label(
+                    egui::RichText::new(format!("{:<10}", inst.mnemonic))
+                        .color(c.mnemonic_color)
+                        .size(fs)
+                        .monospace(),
+                );
 
                 // Operands (light blue like IDA registers)
-                ui.label(egui::RichText::new(&inst.operands)
-                    .color(c.operand_color).size(fs).monospace());
+                ui.label(
+                    egui::RichText::new(&inst.operands)
+                        .color(c.operand_color)
+                        .size(fs)
+                        .monospace(),
+                );
 
                 // Resolved call/jump target annotation: shows the absolute
                 // target address and, when known, the destination's name
                 // (function start or user-assigned rename).
                 if let Some(tgt) = target_addr {
                     let ann = match resolve_target_name(app, tgt) {
-                        Some(n) => format!(
-                            "; -> {} <{}>",
-                            fmt_addr(tgt, app.disasm_is_64bit),
-                            n
-                        ),
+                        Some(n) => format!("; -> {} <{}>", fmt_addr(tgt, app.disasm_is_64bit), n),
                         None => format!("; -> {}", fmt_addr(tgt, app.disasm_is_64bit)),
                     };
-                    ui.label(egui::RichText::new(ann)
-                        .color(c.label_color)
-                        .size(fs)
-                        .monospace());
+                    ui.label(
+                        egui::RichText::new(ann)
+                            .color(c.label_color)
+                            .size(fs)
+                            .monospace(),
+                    );
                 }
 
                 // Inline comment (if any)
                 if let Some(comment) = app.comments.get(&inst.address) {
-                    ui.label(egui::RichText::new(format!("; {}", comment))
-                        .color(c.comment_color).size(fs).monospace());
+                    ui.label(
+                        egui::RichText::new(format!("; {}", comment))
+                            .color(c.comment_color)
+                            .size(fs)
+                            .monospace(),
+                    );
                 }
 
                 // Bookmark indicator
                 for (bi, bm) in app.bookmarks.iter().enumerate() {
                     if *bm == Some(inst.address) {
-                        ui.label(egui::RichText::new(format!(" [{}]", bi))
-                            .color(c.label_color).size(fs).monospace());
+                        ui.label(
+                            egui::RichText::new(format!(" [{}]", bi))
+                                .color(c.label_color)
+                                .size(fs)
+                                .monospace(),
+                        );
                         break;
                     }
                 }
             });
 
             // Click on instruction to navigate
-            if ui.interact(ui.min_rect().expand(2.0), ui.id().with(("inst_nav", inst.address)), egui::Sense::CLICK).clicked() {
+            if ui
+                .interact(
+                    ui.min_rect().expand(2.0),
+                    ui.id().with(("inst_nav", inst.address)),
+                    egui::Sense::CLICK,
+                )
+                .clicked()
+            {
                 app.nav_push(app.disasm_offset);
                 app.disasm_offset = inst.address;
             }
@@ -260,12 +361,16 @@ pub fn hex_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 
     // Toolbar
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Offset:").color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("Offset:")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
         let mut offset_str = format!("{:08X}", app.hex_offset);
         let resp = ui.add_sized(
             egui::vec2(80.0, 18.0),
-            egui::TextEdit::singleline(&mut offset_str)
-                .font(egui::FontId::monospace(11.0)),
+            egui::TextEdit::singleline(&mut offset_str).font(egui::FontId::monospace(11.0)),
         );
         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             if let Ok(val) = u64::from_str_radix(&offset_str, 16) {
@@ -274,7 +379,12 @@ pub fn hex_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
         }
 
         ui.separator();
-        ui.label(egui::RichText::new("Find:").color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("Find:")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
         ui.add_sized(
             egui::vec2(120.0, 18.0),
             egui::TextEdit::singleline(&mut app.hex_search)
@@ -286,7 +396,10 @@ pub fn hex_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                 let search_bytes = app.hex_search.as_bytes();
                 let start = app.hex_offset.saturating_add(1);
                 if start < data.len() {
-                    if let Some(pos) = data[start..].windows(search_bytes.len()).position(|w| w == search_bytes) {
+                    if let Some(pos) = data[start..]
+                        .windows(search_bytes.len())
+                        .position(|w| w == search_bytes)
+                    {
                         app.hex_offset = start + pos;
                     }
                 }
@@ -294,11 +407,18 @@ pub fn hex_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
         }
 
         ui.separator();
-        if ui.small_button("|<<").clicked() { app.hex_offset = 0; }
-        if ui.small_button("<").clicked() { app.hex_offset = app.hex_offset.saturating_sub(0x100); }
+        if ui.small_button("|<<").clicked() {
+            app.hex_offset = 0;
+        }
+        if ui.small_button("<").clicked() {
+            app.hex_offset = app.hex_offset.saturating_sub(0x100);
+        }
         if ui.small_button(">").clicked() {
             if let Some(data) = get_current_data(app) {
-                app.hex_offset = app.hex_offset.saturating_add(0x100).min(data.len().saturating_sub(16));
+                app.hex_offset = app
+                    .hex_offset
+                    .saturating_add(0x100)
+                    .min(data.len().saturating_sub(16));
             }
         }
     });
@@ -308,19 +428,31 @@ pub fn hex_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let data = match get_current_data(app) {
         Some(d) => d,
         None => {
-            ui.label(egui::RichText::new("No file loaded.")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("No file loaded.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
             return;
         }
     };
 
     if data.is_empty() {
         if let Some(ref err) = app.data_read_error {
-            ui.label(egui::RichText::new(err)
-                .color(c.danger).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new(err)
+                    .color(c.danger)
+                    .size(11.0)
+                    .monospace(),
+            );
         } else {
-            ui.label(egui::RichText::new("File is empty.")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("File is empty.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
         }
         return;
     }
@@ -331,13 +463,30 @@ pub fn hex_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 
     // Header line
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Offset   ").color(c.text_secondary).size(fs).monospace());
+        ui.label(
+            egui::RichText::new("Offset   ")
+                .color(c.text_secondary)
+                .size(fs)
+                .monospace(),
+        );
         for i in 0..bpr {
-            ui.label(egui::RichText::new(format!("{:02X} ", i)).color(c.text_secondary).size(fs).monospace());
-            if i == 7 { ui.add_space(4.0); }
+            ui.label(
+                egui::RichText::new(format!("{:02X} ", i))
+                    .color(c.text_secondary)
+                    .size(fs)
+                    .monospace(),
+            );
+            if i == 7 {
+                ui.add_space(4.0);
+            }
         }
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("ASCII").color(c.text_secondary).size(fs).monospace());
+        ui.label(
+            egui::RichText::new("ASCII")
+                .color(c.text_secondary)
+                .size(fs)
+                .monospace(),
+        );
     });
     ui.separator();
 
@@ -346,8 +495,12 @@ pub fn hex_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
         while offset < end {
             ui.horizontal(|ui| {
                 // Offset column
-                ui.label(egui::RichText::new(format!("{:08X} ", offset))
-                    .color(c.addr_color).size(fs).monospace());
+                ui.label(
+                    egui::RichText::new(format!("{:08X} ", offset))
+                        .color(c.addr_color)
+                        .size(fs)
+                        .monospace(),
+                );
 
                 let mut ascii = String::with_capacity(bpr);
                 for col in 0..bpr {
@@ -361,8 +514,12 @@ pub fn hex_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                         } else {
                             c.text_primary
                         };
-                        ui.label(egui::RichText::new(format!("{:02X} ", byte))
-                            .color(hex_color).size(fs).monospace());
+                        ui.label(
+                            egui::RichText::new(format!("{:02X} ", byte))
+                                .color(hex_color)
+                                .size(fs)
+                                .monospace(),
+                        );
 
                         ascii.push(if byte.is_ascii_graphic() || byte == b' ' {
                             byte as char
@@ -373,12 +530,18 @@ pub fn hex_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                         ui.label(egui::RichText::new("   ").size(fs).monospace());
                         ascii.push(' ');
                     }
-                    if col == 7 { ui.add_space(4.0); }
+                    if col == 7 {
+                        ui.add_space(4.0);
+                    }
                 }
 
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new(&ascii)
-                    .color(c.string_color).size(fs).monospace());
+                ui.label(
+                    egui::RichText::new(&ascii)
+                        .color(c.string_color)
+                        .size(fs)
+                        .monospace(),
+                );
             });
             offset += bpr;
         }
@@ -393,46 +556,91 @@ pub fn strings_view(ui: &mut egui::Ui, app: &FreakREApp) {
     let report = match current_report(app) {
         Some(r) => r,
         None => {
-            ui.label(egui::RichText::new("No file loaded.")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("No file loaded.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
             return;
         }
     };
 
     // Header
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Offset     ").color(c.text_secondary).size(11.0).monospace().strong());
-        ui.label(egui::RichText::new("Len   ").color(c.text_secondary).size(11.0).monospace().strong());
-        ui.label(egui::RichText::new("String").color(c.text_secondary).size(11.0).monospace().strong());
+        ui.label(
+            egui::RichText::new("Offset     ")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace()
+                .strong(),
+        );
+        ui.label(
+            egui::RichText::new("Len   ")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace()
+                .strong(),
+        );
+        ui.label(
+            egui::RichText::new("String")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace()
+                .strong(),
+        );
     });
     ui.separator();
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         if report.strings_found == 0 {
-            ui.label(egui::RichText::new("No strings found.")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("No strings found.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
         } else {
             for finding in &report.findings {
                 if finding.module == "strings" || finding.rule_id.contains("string") {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("-------- ")
-                            .color(c.text_secondary).size(11.0).monospace());
-                        ui.label(egui::RichText::new("---- ")
-                            .color(c.text_secondary).size(11.0).monospace());
-                        ui.label(egui::RichText::new(&finding.description)
-                            .color(c.string_color).size(11.0).monospace());
+                        ui.label(
+                            egui::RichText::new("-------- ")
+                                .color(c.text_secondary)
+                                .size(11.0)
+                                .monospace(),
+                        );
+                        ui.label(
+                            egui::RichText::new("---- ")
+                                .color(c.text_secondary)
+                                .size(11.0)
+                                .monospace(),
+                        );
+                        ui.label(
+                            egui::RichText::new(&finding.description)
+                                .color(c.string_color)
+                                .size(11.0)
+                                .monospace(),
+                        );
                     });
                 }
             }
 
-            let has_string_findings = report.findings.iter()
+            let has_string_findings = report
+                .findings
+                .iter()
                 .any(|f| f.module == "strings" || f.rule_id.contains("string"));
 
             if !has_string_findings {
-                ui.label(egui::RichText::new(format!(
-                    "{} strings detected (details in Report view)",
-                    report.strings_found
-                )).color(c.text_primary).size(11.0).monospace());
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} strings detected (details in Report view)",
+                        report.strings_found
+                    ))
+                    .color(c.text_primary)
+                    .size(11.0)
+                    .monospace(),
+                );
             }
         }
     });
@@ -446,19 +654,27 @@ pub fn imports_view(ui: &mut egui::Ui, app: &FreakREApp) {
     let report = match current_report(app) {
         Some(r) => r,
         None => {
-            ui.label(egui::RichText::new("No file loaded.")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("No file loaded.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
             return;
         }
     };
 
     let imports: Vec<(String, String)> = if report.pe_info.is_some() {
-        report.findings.iter()
+        report
+            .findings
+            .iter()
             .filter(|f| f.module == "imports" || f.module == "import_analyzer")
             .map(|f| ("PE Import".to_string(), f.description.clone()))
             .collect()
     } else if let Some(ref macho) = report.macho_info {
-        macho.imported_dylibs.iter()
+        macho
+            .imported_dylibs
+            .iter()
             .map(|lib| ("dylib".to_string(), lib.clone()))
             .collect()
     } else {
@@ -466,22 +682,46 @@ pub fn imports_view(ui: &mut egui::Ui, app: &FreakREApp) {
     };
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Type       ").color(c.text_secondary).size(11.0).monospace().strong());
-        ui.label(egui::RichText::new("Name").color(c.text_secondary).size(11.0).monospace().strong());
+        ui.label(
+            egui::RichText::new("Type       ")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace()
+                .strong(),
+        );
+        ui.label(
+            egui::RichText::new("Name")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace()
+                .strong(),
+        );
     });
     ui.separator();
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         if imports.is_empty() {
-            ui.label(egui::RichText::new("No import data available for this file type.")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("No import data available for this file type.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
         } else {
             for (typ, name) in &imports {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("{:<12}", typ))
-                        .color(c.type_color).size(11.0).monospace());
-                    ui.label(egui::RichText::new(name)
-                        .color(c.func_color).size(11.0).monospace());
+                    ui.label(
+                        egui::RichText::new(format!("{:<12}", typ))
+                            .color(c.type_color)
+                            .size(11.0)
+                            .monospace(),
+                    );
+                    ui.label(
+                        egui::RichText::new(name)
+                            .color(c.func_color)
+                            .size(11.0)
+                            .monospace(),
+                    );
                 });
             }
         }
@@ -494,9 +734,18 @@ pub fn graph_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let c = app.colors.clone();
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Function:").color(c.text_secondary).size(11.0).monospace());
-        ui.label(egui::RichText::new(format!("{:08X}", app.disasm_offset))
-            .color(c.addr_color).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("Function:")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
+        ui.label(
+            egui::RichText::new(format!("{:08X}", app.disasm_offset))
+                .color(c.addr_color)
+                .size(11.0)
+                .monospace(),
+        );
         ui.separator();
         if ui.small_button("Rebuild CFG").clicked() {
             app.cfg_cache.remove(&app.disasm_offset);
@@ -509,13 +758,24 @@ pub fn graph_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let cfg = match app.cfg_cache.get(&app.disasm_offset) {
         Some(cfg) => cfg,
         None => {
-            if app.pending_jobs.contains_key(&JobKey::BuildCfg(app.disasm_offset)) {
-                ui.label(egui::RichText::new("Building CFG…")
-                    .color(c.text_secondary).size(11.0).monospace());
+            if app
+                .pending_jobs
+                .contains_key(&JobKey::BuildCfg(app.disasm_offset))
+            {
+                ui.label(
+                    egui::RichText::new("Building CFG…")
+                        .color(c.text_secondary)
+                        .size(11.0)
+                        .monospace(),
+                );
                 return;
             }
-            ui.label(egui::RichText::new("No CFG. Press Space or click Rebuild to build one.")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("No CFG. Press Space or click Rebuild to build one.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
             if ui.button("Build CFG now").clicked() {
                 app.build_cfg_at(app.disasm_offset);
             }
@@ -525,27 +785,48 @@ pub fn graph_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 
     // Stats
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(format!("Blocks: {}", cfg.blocks.len()))
-            .color(c.text_primary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new(format!("Blocks: {}", cfg.blocks.len()))
+                .color(c.text_primary)
+                .size(11.0)
+                .monospace(),
+        );
         ui.separator();
-        ui.label(egui::RichText::new(format!("Edges: {}", cfg.num_edges()))
-            .color(c.text_primary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new(format!("Edges: {}", cfg.num_edges()))
+                .color(c.text_primary)
+                .size(11.0)
+                .monospace(),
+        );
         ui.separator();
-        ui.label(egui::RichText::new(format!("Instructions: {}", cfg.total_instructions))
-            .color(c.text_primary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new(format!("Instructions: {}", cfg.total_instructions))
+                .color(c.text_primary)
+                .size(11.0)
+                .monospace(),
+        );
         ui.separator();
         let anomalies = cfg.anomalies.len();
-        ui.label(egui::RichText::new(format!("Anomalies: {}", anomalies))
-            .color(if anomalies > 0 { c.danger } else { c.safe })
-            .size(11.0).monospace());
+        ui.label(
+            egui::RichText::new(format!("Anomalies: {}", anomalies))
+                .color(if anomalies > 0 { c.danger } else { c.safe })
+                .size(11.0)
+                .monospace(),
+        );
     });
 
     let cyclomatic = if !cfg.blocks.is_empty() {
         cfg.num_edges() as i64 - cfg.blocks.len() as i64 + 2
-    } else { 0 };
+    } else {
+        0
+    };
 
-    ui.label(egui::RichText::new(format!("Cyclomatic complexity: {}", cyclomatic))
-        .color(c.text_secondary).size(11.0).monospace());
+    ui.label(
+        egui::RichText::new(format!("Cyclomatic complexity: {}", cyclomatic))
+            .color(c.text_secondary)
+            .size(11.0)
+            .monospace(),
+    );
 
     ui.separator();
 
@@ -557,8 +838,12 @@ pub fn graph_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, egui::CornerRadius::same(0), c.bg_frame);
-    painter.rect_stroke(rect, egui::CornerRadius::same(0),
-        egui::Stroke::new(1.0_f32, c.border), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        egui::CornerRadius::same(0),
+        egui::Stroke::new(1.0_f32, c.border),
+        egui::StrokeKind::Inside,
+    );
 
     if cfg.blocks.is_empty() {
         return;
@@ -584,18 +869,38 @@ pub fn graph_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
         let node_rect = egui::Rect::from_center_size(center, egui::vec2(50.0, 24.0));
         node_rects.push(node_rect);
 
-        let is_anomalous = cfg.anomalies.iter().any(|a| a.offsets.contains(&block.start_offset));
-        let fill = if is_anomalous { c.danger.gamma_multiply(0.5) } else { c.bg_selection };
-        let stroke_color = if is_anomalous { c.danger } else { c.border_light };
+        let is_anomalous = cfg
+            .anomalies
+            .iter()
+            .any(|a| a.offsets.contains(&block.start_offset));
+        let fill = if is_anomalous {
+            c.danger.gamma_multiply(0.5)
+        } else {
+            c.bg_selection
+        };
+        let stroke_color = if is_anomalous {
+            c.danger
+        } else {
+            c.border_light
+        };
 
         painter.rect_filled(node_rect, egui::CornerRadius::same(0), fill);
-        painter.rect_stroke(node_rect, egui::CornerRadius::same(0),
-            egui::Stroke::new(1.0_f32, stroke_color), egui::StrokeKind::Inside);
+        painter.rect_stroke(
+            node_rect,
+            egui::CornerRadius::same(0),
+            egui::Stroke::new(1.0_f32, stroke_color),
+            egui::StrokeKind::Inside,
+        );
 
         // Block info
         let label = format!("BB{}\n{} insts", i, block.num_instructions);
-        painter.text(center, egui::Align2::CENTER_CENTER,
-            label, egui::FontId::monospace(8.0), c.text_primary);
+        painter.text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::monospace(8.0),
+            c.text_primary,
+        );
     }
 
     // Draw edges
@@ -636,14 +941,28 @@ pub fn graph_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     // Anomalies list
     if !cfg.anomalies.is_empty() {
         ui.separator();
-        ui.label(egui::RichText::new("Anomalies:")
-            .color(c.danger).size(11.0).monospace().strong());
-        egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
-            for anomaly in &cfg.anomalies {
-                ui.label(egui::RichText::new(format!("  ! [{}] {}", anomaly.severity, anomaly.description))
-                    .color(c.text_primary).size(11.0).monospace());
-            }
-        });
+        ui.label(
+            egui::RichText::new("Anomalies:")
+                .color(c.danger)
+                .size(11.0)
+                .monospace()
+                .strong(),
+        );
+        egui::ScrollArea::vertical()
+            .max_height(120.0)
+            .show(ui, |ui| {
+                for anomaly in &cfg.anomalies {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "  ! [{}] {}",
+                            anomaly.severity, anomaly.description
+                        ))
+                        .color(c.text_primary)
+                        .size(11.0)
+                        .monospace(),
+                    );
+                }
+            });
     }
 }
 
@@ -655,22 +974,48 @@ pub fn entropy_view(ui: &mut egui::Ui, app: &FreakREApp) {
     let report = match current_report(app) {
         Some(r) => r,
         None => {
-            ui.label(egui::RichText::new("No file loaded.")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("No file loaded.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
             return;
         }
     };
 
     if report.sections_entropy.is_empty() {
-        ui.label(egui::RichText::new("No section entropy data.")
-            .color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("No section entropy data.")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
         return;
     }
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Section        ").color(c.text_secondary).size(11.0).monospace().strong());
-        ui.label(egui::RichText::new("Entropy  ").color(c.text_secondary).size(11.0).monospace().strong());
-        ui.label(egui::RichText::new("Bar").color(c.text_secondary).size(11.0).monospace().strong());
+        ui.label(
+            egui::RichText::new("Section        ")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace()
+                .strong(),
+        );
+        ui.label(
+            egui::RichText::new("Entropy  ")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace()
+                .strong(),
+        );
+        ui.label(
+            egui::RichText::new("Bar")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace()
+                .strong(),
+        );
     });
     ui.separator();
 
@@ -682,8 +1027,12 @@ pub fn entropy_view(ui: &mut egui::Ui, app: &FreakREApp) {
                 egui::vec2(100.0, 18.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
-                    ui.label(egui::RichText::new(&section.name)
-                        .color(c.text_primary).size(11.0).monospace());
+                    ui.label(
+                        egui::RichText::new(&section.name)
+                            .color(c.text_primary)
+                            .size(11.0)
+                            .monospace(),
+                    );
                 },
             );
 
@@ -695,16 +1044,19 @@ pub fn entropy_view(ui: &mut egui::Ui, app: &FreakREApp) {
                 c.safe
             };
 
-            ui.label(egui::RichText::new(format!("{:.2}  ", section.entropy))
-                .color(bar_color).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new(format!("{:.2}  ", section.entropy))
+                    .color(bar_color)
+                    .size(11.0)
+                    .monospace(),
+            );
 
             let fraction = (section.entropy / 8.0).min(1.0);
             let bar_width = (fraction * bar_max_width as f64) as f32;
-            let bar_rect = egui::Rect::from_min_size(
-                ui.cursor().min,
-                egui::vec2(bar_width.max(2.0), 14.0),
-            );
-            ui.painter().rect_filled(bar_rect, egui::CornerRadius::same(0), bar_color);
+            let bar_rect =
+                egui::Rect::from_min_size(ui.cursor().min, egui::vec2(bar_width.max(2.0), 14.0));
+            ui.painter()
+                .rect_filled(bar_rect, egui::CornerRadius::same(0), bar_color);
             ui.advance_cursor_after_rect(bar_rect);
         });
     }
@@ -713,15 +1065,20 @@ pub fn entropy_view(ui: &mut egui::Ui, app: &FreakREApp) {
 // ─── Report View ───────────────────────────────────────────────────
 
 pub fn report_view(ui: &mut egui::Ui, app: &FreakREApp) {
-    let report = app.selected_report
+    let report = app
+        .selected_report
         .and_then(|i| app.reports.get(i))
         .or(app.reports.last());
 
     match report {
         Some(report) => show_report_detail(ui, report, &app.colors),
         None => {
-            ui.label(egui::RichText::new("No reports. Scan a file first.")
-                .color(app.colors.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("No reports. Scan a file first.")
+                    .color(app.colors.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
         }
     }
 }
@@ -734,22 +1091,48 @@ pub fn findings_view(ui: &mut egui::Ui, app: &FreakREApp) {
     let report = match current_report(app) {
         Some(r) => r,
         None => {
-            ui.label(egui::RichText::new("No reports available.")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("No reports available.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
             return;
         }
     };
 
     if report.findings.is_empty() {
-        ui.label(egui::RichText::new("No findings - file appears clean.")
-            .color(c.safe).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("No findings - file appears clean.")
+                .color(c.safe)
+                .size(11.0)
+                .monospace(),
+        );
         return;
     }
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Severity   ").color(c.text_secondary).size(11.0).monospace().strong());
-        ui.label(egui::RichText::new("Module           ").color(c.text_secondary).size(11.0).monospace().strong());
-        ui.label(egui::RichText::new("Description").color(c.text_secondary).size(11.0).monospace().strong());
+        ui.label(
+            egui::RichText::new("Severity   ")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace()
+                .strong(),
+        );
+        ui.label(
+            egui::RichText::new("Module           ")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace()
+                .strong(),
+        );
+        ui.label(
+            egui::RichText::new("Description")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace()
+                .strong(),
+        );
     });
     ui.separator();
 
@@ -757,17 +1140,33 @@ pub fn findings_view(ui: &mut egui::Ui, app: &FreakREApp) {
         for finding in &report.findings {
             let sev_color = theme::severity_color(&finding.severity);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!("{:<12}", format!("{}", finding.severity)))
-                    .color(sev_color).size(11.0).monospace());
-                ui.label(egui::RichText::new(format!("{:<18}", finding.module))
-                    .color(c.text_secondary).size(11.0).monospace());
-                ui.label(egui::RichText::new(&finding.description)
-                    .color(c.text_primary).size(11.0).monospace());
+                ui.label(
+                    egui::RichText::new(format!("{:<12}", format!("{}", finding.severity)))
+                        .color(sev_color)
+                        .size(11.0)
+                        .monospace(),
+                );
+                ui.label(
+                    egui::RichText::new(format!("{:<18}", finding.module))
+                        .color(c.text_secondary)
+                        .size(11.0)
+                        .monospace(),
+                );
+                ui.label(
+                    egui::RichText::new(&finding.description)
+                        .color(c.text_primary)
+                        .size(11.0)
+                        .monospace(),
+                );
             });
 
             if let Some(ref details) = finding.details {
-                ui.label(egui::RichText::new(format!("             {}", details))
-                    .color(c.text_secondary.gamma_multiply(0.7)).size(10.0).monospace());
+                ui.label(
+                    egui::RichText::new(format!("             {}", details))
+                        .color(c.text_secondary.gamma_multiply(0.7))
+                        .size(10.0)
+                        .monospace(),
+                );
             }
         }
     });
@@ -778,54 +1177,125 @@ pub fn findings_view(ui: &mut egui::Ui, app: &FreakREApp) {
 pub fn settings_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let c = app.colors.clone();
 
-    ui.label(egui::RichText::new("Settings")
-        .color(c.text_primary).size(14.0).monospace().strong());
+    ui.label(
+        egui::RichText::new("Settings")
+            .color(c.text_primary)
+            .size(14.0)
+            .monospace()
+            .strong(),
+    );
     ui.separator();
 
     egui::ScrollArea::vertical().show(ui, |ui| {
-        ui.label(egui::RichText::new("Interface").color(c.info).size(12.0).monospace().strong());
+        ui.label(
+            egui::RichText::new("Interface")
+                .color(c.info)
+                .size(12.0)
+                .monospace()
+                .strong(),
+        );
         ui.add_space(4.0);
-        ui.checkbox(&mut app.settings.show_tooltips,
-            egui::RichText::new("Show tooltips").monospace().size(11.0).color(c.text_primary));
+        ui.checkbox(
+            &mut app.settings.show_tooltips,
+            egui::RichText::new("Show tooltips")
+                .monospace()
+                .size(11.0)
+                .color(c.text_primary),
+        );
         ui.add_space(8.0);
 
-        ui.label(egui::RichText::new("Hex View").color(c.info).size(12.0).monospace().strong());
+        ui.label(
+            egui::RichText::new("Hex View")
+                .color(c.info)
+                .size(12.0)
+                .monospace()
+                .strong(),
+        );
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Bytes per row:").monospace().size(11.0).color(c.text_primary));
+            ui.label(
+                egui::RichText::new("Bytes per row:")
+                    .monospace()
+                    .size(11.0)
+                    .color(c.text_primary),
+            );
             egui::ComboBox::from_label("")
                 .selected_text(app.settings.hex_bytes_per_row.to_string())
                 .width(60.0)
                 .show_ui(ui, |ui| {
                     for val in [8, 16, 32] {
-                        ui.selectable_value(&mut app.settings.hex_bytes_per_row, val, val.to_string());
+                        ui.selectable_value(
+                            &mut app.settings.hex_bytes_per_row,
+                            val,
+                            val.to_string(),
+                        );
                     }
                 });
         });
         ui.add_space(8.0);
 
-        ui.label(egui::RichText::new("Disassembly").color(c.info).size(12.0).monospace().strong());
+        ui.label(
+            egui::RichText::new("Disassembly")
+                .color(c.info)
+                .size(12.0)
+                .monospace()
+                .strong(),
+        );
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Max instructions:").monospace().size(11.0).color(c.text_primary));
-            ui.add(egui::Slider::new(&mut app.settings.disasm_max_instructions, 50..=500));
+            ui.label(
+                egui::RichText::new("Max instructions:")
+                    .monospace()
+                    .size(11.0)
+                    .color(c.text_primary),
+            );
+            ui.add(egui::Slider::new(
+                &mut app.settings.disasm_max_instructions,
+                50..=500,
+            ));
         });
         ui.add_space(8.0);
 
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Code font size:").monospace().size(11.0).color(c.text_primary));
+            ui.label(
+                egui::RichText::new("Code font size:")
+                    .monospace()
+                    .size(11.0)
+                    .color(c.text_primary),
+            );
             ui.add(egui::Slider::new(&mut app.settings.font_size_code, 9.0..=18.0).suffix("px"));
         });
         ui.add_space(8.0);
 
-        ui.label(egui::RichText::new("Data").color(c.info).size(12.0).monospace().strong());
+        ui.label(
+            egui::RichText::new("Data")
+                .color(c.info)
+                .size(12.0)
+                .monospace()
+                .strong(),
+        );
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Max recent files:").monospace().size(11.0).color(c.text_primary));
-            ui.add(egui::Slider::new(&mut app.settings.max_recent_files, 5..=50));
+            ui.label(
+                egui::RichText::new("Max recent files:")
+                    .monospace()
+                    .size(11.0)
+                    .color(c.text_primary),
+            );
+            ui.add(egui::Slider::new(
+                &mut app.settings.max_recent_files,
+                5..=50,
+            ));
         });
         ui.add_space(4.0);
-        if ui.button(egui::RichText::new("Clear Recent Files").monospace().size(11.0)).clicked() {
+        if ui
+            .button(
+                egui::RichText::new("Clear Recent Files")
+                    .monospace()
+                    .size(11.0),
+            )
+            .clicked()
+        {
             app.settings.recent_files.clear();
             app.toasts.add("Recent files cleared", ToastKind::Info);
         }
@@ -835,11 +1305,17 @@ pub fn settings_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
         ui.add_space(8.0);
 
         ui.horizontal(|ui| {
-            if ui.button(egui::RichText::new("Save Settings").monospace().size(11.0)).clicked() {
+            if ui
+                .button(egui::RichText::new("Save Settings").monospace().size(11.0))
+                .clicked()
+            {
                 app.settings.save();
                 app.toasts.add("Settings saved", ToastKind::Success);
             }
-            if ui.button(egui::RichText::new("Reset Defaults").monospace().size(11.0)).clicked() {
+            if ui
+                .button(egui::RichText::new("Reset Defaults").monospace().size(11.0))
+                .clicked()
+            {
                 app.settings = crate::theme::AppSettings::default();
                 app.settings.save();
                 app.toasts.add("Settings reset", ToastKind::Info);
@@ -847,8 +1323,12 @@ pub fn settings_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
         });
 
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("Config: ~/.config/freakre/settings.toml")
-            .color(c.text_secondary.gamma_multiply(0.5)).size(10.0).monospace());
+        ui.label(
+            egui::RichText::new("Config: ~/.config/freakre/settings.toml")
+                .color(c.text_secondary.gamma_multiply(0.5))
+                .size(10.0)
+                .monospace(),
+        );
     });
 }
 
@@ -859,12 +1339,16 @@ pub fn decompiler_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let fs = app.settings.font_size_code;
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Address:").color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("Address:")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
         let mut addr_str = format!("{:08X}", app.disasm_offset);
         let resp = ui.add_sized(
             egui::vec2(80.0, 18.0),
-            egui::TextEdit::singleline(&mut addr_str)
-                .font(egui::FontId::monospace(11.0)),
+            egui::TextEdit::singleline(&mut addr_str).font(egui::FontId::monospace(11.0)),
         );
         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             if let Ok(val) = u64::from_str_radix(&addr_str, 16) {
@@ -887,8 +1371,12 @@ pub fn decompiler_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new("F5")
-                .color(c.text_secondary).size(10.0).monospace());
+            ui.label(
+                egui::RichText::new("F5")
+                    .color(c.text_secondary)
+                    .size(10.0)
+                    .monospace(),
+            );
         });
     });
 
@@ -899,7 +1387,10 @@ pub fn decompiler_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
         app.decompile_at(addr);
     }
 
-    let pseudocode = app.decompile_cache.get(&addr).cloned()
+    let pseudocode = app
+        .decompile_cache
+        .get(&addr)
+        .cloned()
         .unwrap_or_else(|| "// Nothing to decompile".to_string());
 
     egui::ScrollArea::vertical()
@@ -930,8 +1421,8 @@ fn highlight_c_line(line: &str, c: &crate::theme::ThemeColors, fs: f32) -> egui:
     let mut job = LayoutJob::default();
     job.wrap.max_width = f32::INFINITY;
 
-    let kw_color = c.type_color;         // keywords
-    let ty_color = c.type_color;         // types share the keyword color family
+    let kw_color = c.type_color; // keywords
+    let ty_color = c.type_color; // types share the keyword color family
     let num_color = egui::Color32::from_rgb(0xB5, 0xCE, 0xA8); // VS Code green numbers
     let str_color = egui::Color32::from_rgb(0xCE, 0x91, 0x78); // VS Code orange strings
     let fn_color = c.func_color;
@@ -958,14 +1449,13 @@ fn highlight_c_line(line: &str, c: &crate::theme::ThemeColors, fs: f32) -> egui:
     }
 
     let keywords = [
-        "void", "return", "if", "else", "while", "for", "do", "goto", "break",
-        "continue", "switch", "case", "default", "struct", "typedef", "unsigned",
-        "sizeof", "try", "catch", "const",
+        "void", "return", "if", "else", "while", "for", "do", "goto", "break", "continue",
+        "switch", "case", "default", "struct", "typedef", "unsigned", "sizeof", "try", "catch",
+        "const",
     ];
     let types = [
-        "bool", "int8_t", "int16_t", "int32_t", "int64_t",
-        "uint8_t", "uint16_t", "uint32_t", "uint64_t",
-        "float", "double", "char", "int",
+        "bool", "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t",
+        "uint64_t", "float", "double", "char", "int",
     ];
 
     let bytes = rest.as_bytes();
@@ -981,8 +1471,14 @@ fn highlight_c_line(line: &str, c: &crate::theme::ThemeColors, fs: f32) -> egui:
             let quote = b;
             i += 1;
             while i < n {
-                if bytes[i] == b'\\' { i += 2; continue; }
-                if bytes[i] == quote { i += 1; break; }
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == quote {
+                    i += 1;
+                    break;
+                }
                 i += 1;
             }
             push(&mut job, &rest[start..i.min(n)], str_color, false);
@@ -1001,9 +1497,7 @@ fn highlight_c_line(line: &str, c: &crate::theme::ThemeColors, fs: f32) -> egui:
             || (b == b'0' && i + 1 < n && (bytes[i + 1] | 32) == b'x')
         {
             i += 1;
-            while i < n
-                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
-            {
+            while i < n && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                 i += 1;
             }
             push(&mut job, &rest[start..i], num_color, false);
@@ -1023,7 +1517,9 @@ fn highlight_c_line(line: &str, c: &crate::theme::ThemeColors, fs: f32) -> egui:
                 ty_color
             } else if rest[i..].starts_with('(') {
                 fn_color
-            } else if word.starts_with("xmm") || word.starts_with('v') && word[1..].chars().all(|ch| ch.is_ascii_digit()) {
+            } else if word.starts_with("xmm")
+                || word.starts_with('v') && word[1..].chars().all(|ch| ch.is_ascii_digit())
+            {
                 egui::Color32::from_rgb(0x9C, 0xDC, 0xFE) // light blue vars
             } else {
                 txt_color
@@ -1046,12 +1542,16 @@ pub fn xrefs_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let c = app.colors.clone();
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Xrefs to:").color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("Xrefs to:")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
         let mut addr_str = format!("{:08X}", app.xref_query_addr);
         let resp = ui.add_sized(
             egui::vec2(80.0, 18.0),
-            egui::TextEdit::singleline(&mut addr_str)
-                .font(egui::FontId::monospace(11.0)),
+            egui::TextEdit::singleline(&mut addr_str).font(egui::FontId::monospace(11.0)),
         );
         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             if let Ok(val) = u64::from_str_radix(&addr_str, 16) {
@@ -1064,36 +1564,70 @@ pub fn xrefs_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 
     let summary = app.xref_db.summary();
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(format!("Total xrefs: {}", summary.total_xrefs))
-            .color(c.text_primary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new(format!("Total xrefs: {}", summary.total_xrefs))
+                .color(c.text_primary)
+                .size(11.0)
+                .monospace(),
+        );
         ui.separator();
-        ui.label(egui::RichText::new(format!("Unique targets: {}", summary.unique_targets))
-            .color(c.text_primary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new(format!("Unique targets: {}", summary.unique_targets))
+                .color(c.text_primary)
+                .size(11.0)
+                .monospace(),
+        );
         ui.separator();
-        ui.label(egui::RichText::new(format!("String xrefs: {}", summary.string_xrefs))
-            .color(c.string_color).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new(format!("String xrefs: {}", summary.string_xrefs))
+                .color(c.string_color)
+                .size(11.0)
+                .monospace(),
+        );
         ui.separator();
-        ui.label(egui::RichText::new(format!("Import xrefs: {}", summary.import_xrefs))
-            .color(c.func_color).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new(format!("Import xrefs: {}", summary.import_xrefs))
+                .color(c.func_color)
+                .size(11.0)
+                .monospace(),
+        );
     });
 
     ui.separator();
 
-    ui.label(egui::RichText::new(format!("References to {:08X}:", app.xref_query_addr))
-        .color(c.info).size(12.0).monospace().strong());
+    ui.label(
+        egui::RichText::new(format!("References to {:08X}:", app.xref_query_addr))
+            .color(c.info)
+            .size(12.0)
+            .monospace()
+            .strong(),
+    );
     if app.xref_query_addr > u32::MAX as u64 {
-        ui.label(egui::RichText::new("  (>32-bit address: matching both LE u32 halves)")
-            .color(c.warn).size(10.0).monospace());
+        ui.label(
+            egui::RichText::new("  (>32-bit address: matching both LE u32 halves)")
+                .color(c.warn)
+                .size(10.0)
+                .monospace(),
+        );
     }
     ui.add_space(4.0);
 
-    let idx = app.selected_report
-        .or_else(|| if app.reports.is_empty() { None } else { Some(app.reports.len() - 1) });
+    let idx = app.selected_report.or_else(|| {
+        if app.reports.is_empty() {
+            None
+        } else {
+            Some(app.reports.len() - 1)
+        }
+    });
     let data = match get_current_data(app) {
         Some(d) => d,
         None => {
-            ui.label(egui::RichText::new("No binary data available.")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("No binary data available.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
             return;
         }
     };
@@ -1107,22 +1641,46 @@ pub fn xrefs_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
             if idx.is_some() {
                 app.enqueue_xref_view_scan(cache_key, data, app.disasm_is_64bit);
             }
-            ui.label(egui::RichText::new("  Scanning binary for direct references…")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("  Scanning binary for direct references…")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
             return;
         }
     };
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         if found_xrefs.is_empty() {
-            ui.label(egui::RichText::new("  No direct references found in binary.")
-                .color(c.text_secondary).size(11.0).monospace());
-            ui.label(egui::RichText::new("  (Full xref analysis available after deep scan)")
-                .color(c.text_secondary.gamma_multiply(0.6)).size(10.0).monospace());
+            ui.label(
+                egui::RichText::new("  No direct references found in binary.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
+            ui.label(
+                egui::RichText::new("  (Full xref analysis available after deep scan)")
+                    .color(c.text_secondary.gamma_multiply(0.6))
+                    .size(10.0)
+                    .monospace(),
+            );
         } else {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Address    ").color(c.text_secondary).size(11.0).monospace().strong());
-                ui.label(egui::RichText::new("Instruction").color(c.text_secondary).size(11.0).monospace().strong());
+                ui.label(
+                    egui::RichText::new("Address    ")
+                        .color(c.text_secondary)
+                        .size(11.0)
+                        .monospace()
+                        .strong(),
+                );
+                ui.label(
+                    egui::RichText::new("Instruction")
+                        .color(c.text_secondary)
+                        .size(11.0)
+                        .monospace()
+                        .strong(),
+                );
             });
             ui.separator();
 
@@ -1134,7 +1692,9 @@ pub fn xrefs_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                     let resp = ui.add(
                         egui::Label::new(
                             egui::RichText::new(format!("{:08X}   ", addr))
-                                .color(c.addr_color).size(11.0).monospace(),
+                                .color(c.addr_color)
+                                .size(11.0)
+                                .monospace(),
                         )
                         .sense(egui::Sense::click()),
                     );
@@ -1147,8 +1707,12 @@ pub fn xrefs_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
 
-                    ui.label(egui::RichText::new(inst_text)
-                        .color(c.text_primary).size(11.0).monospace());
+                    ui.label(
+                        egui::RichText::new(inst_text)
+                            .color(c.text_primary)
+                            .size(11.0)
+                            .monospace(),
+                    );
                 });
             }
         }
@@ -1160,61 +1724,101 @@ pub fn xrefs_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 pub fn structures_view(ui: &mut egui::Ui, app: &FreakREApp) {
     let c = app.colors.clone();
 
-    ui.label(egui::RichText::new("Structures")
-        .color(c.text_primary).size(14.0).monospace().strong());
+    ui.label(
+        egui::RichText::new("Structures")
+            .color(c.text_primary)
+            .size(14.0)
+            .monospace()
+            .strong(),
+    );
     ui.separator();
 
     let report = match current_report(app) {
         Some(r) => r,
         None => {
-            ui.label(egui::RichText::new("No file loaded.")
-                .color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("No file loaded.")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
             return;
         }
     };
 
     if let Some(ref pe) = report.pe_info {
-        ui.label(egui::RichText::new("PE Structures").color(c.info).size(12.0).monospace().strong());
+        ui.label(
+            egui::RichText::new("PE Structures")
+                .color(c.info)
+                .size(12.0)
+                .monospace()
+                .strong(),
+        );
         ui.add_space(4.0);
 
-        egui::CollapsingHeader::new(egui::RichText::new("IMAGE_DOS_HEADER").monospace().size(11.0).color(c.type_color))
-            .default_open(false)
-            .show(ui, |ui| {
-                info_row(ui, "e_magic", "MZ (0x5A4D)", &c);
-                info_row(ui, "e_lfanew", &format!("{:#X}", 0), &c);
-            });
+        egui::CollapsingHeader::new(
+            egui::RichText::new("IMAGE_DOS_HEADER")
+                .monospace()
+                .size(11.0)
+                .color(c.type_color),
+        )
+        .default_open(false)
+        .show(ui, |ui| {
+            info_row(ui, "e_magic", "MZ (0x5A4D)", &c);
+            info_row(ui, "e_lfanew", &format!("{:#X}", 0), &c);
+        });
 
-        egui::CollapsingHeader::new(egui::RichText::new("IMAGE_FILE_HEADER").monospace().size(11.0).color(c.type_color))
-            .default_open(false)
-            .show(ui, |ui| {
-                info_row(ui, "Machine", &pe.machine, &c);
-                info_row(ui, "NumberOfSections", &pe.num_sections.to_string(), &c);
-                info_row(ui, "TimeDateStamp", &pe.timestamp.to_string(), &c);
-            });
+        egui::CollapsingHeader::new(
+            egui::RichText::new("IMAGE_FILE_HEADER")
+                .monospace()
+                .size(11.0)
+                .color(c.type_color),
+        )
+        .default_open(false)
+        .show(ui, |ui| {
+            info_row(ui, "Machine", &pe.machine, &c);
+            info_row(ui, "NumberOfSections", &pe.num_sections.to_string(), &c);
+            info_row(ui, "TimeDateStamp", &pe.timestamp.to_string(), &c);
+        });
 
         ui.add_space(8.0);
     }
 
     if let Some(ref elf) = report.elf_info {
-        ui.label(egui::RichText::new("ELF Structures").color(c.info).size(12.0).monospace().strong());
+        ui.label(
+            egui::RichText::new("ELF Structures")
+                .color(c.info)
+                .size(12.0)
+                .monospace()
+                .strong(),
+        );
         ui.add_space(4.0);
 
-        egui::CollapsingHeader::new(egui::RichText::new("Elf_Header").monospace().size(11.0).color(c.type_color))
-            .default_open(false)
-            .show(ui, |ui| {
-                info_row(ui, "Class", &elf.class, &c);
-                info_row(ui, "Endian", &elf.endian, &c);
-                info_row(ui, "Machine", &elf.machine, &c);
-                info_row(ui, "Type", &elf.elf_type, &c);
-                info_row(ui, "Entry Point", &elf.entry_point, &c);
-            });
+        egui::CollapsingHeader::new(
+            egui::RichText::new("Elf_Header")
+                .monospace()
+                .size(11.0)
+                .color(c.type_color),
+        )
+        .default_open(false)
+        .show(ui, |ui| {
+            info_row(ui, "Class", &elf.class, &c);
+            info_row(ui, "Endian", &elf.endian, &c);
+            info_row(ui, "Machine", &elf.machine, &c);
+            info_row(ui, "Type", &elf.elf_type, &c);
+            info_row(ui, "Entry Point", &elf.entry_point, &c);
+        });
 
         ui.add_space(8.0);
     }
 
     ui.separator();
-    ui.label(egui::RichText::new("Tip: Press Y on a variable to set its type.")
-        .color(c.text_secondary.gamma_multiply(0.6)).size(10.0).monospace());
+    ui.label(
+        egui::RichText::new("Tip: Press Y on a variable to set its type.")
+            .color(c.text_secondary.gamma_multiply(0.6))
+            .size(10.0)
+            .monospace(),
+    );
 }
 
 // ─── Scripting REPL View ───────────────────────────────────────────
@@ -1222,28 +1826,52 @@ pub fn structures_view(ui: &mut egui::Ui, app: &FreakREApp) {
 pub fn scripting_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let c = app.colors.clone();
 
-    ui.label(egui::RichText::new("Script REPL (Lua-like sandboxed DSL)")
-        .color(c.text_primary).size(14.0).monospace().strong());
-    ui.label(egui::RichText::new("Capabilities: print, type, math. No IO, no network, no time.")
-        .color(c.text_secondary).size(10.0).monospace());
+    ui.label(
+        egui::RichText::new("Script REPL (Lua-like sandboxed DSL)")
+            .color(c.text_primary)
+            .size(14.0)
+            .monospace()
+            .strong(),
+    );
+    ui.label(
+        egui::RichText::new("Capabilities: print, type, math. No IO, no network, no time.")
+            .color(c.text_secondary)
+            .size(10.0)
+            .monospace(),
+    );
     ui.separator();
 
     // History output
-    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-        for (input, output) in &app.repl.output {
-            ui.label(egui::RichText::new(format!(">>> {}", input))
-                .color(c.text_secondary).size(11.0).monospace());
-            ui.label(egui::RichText::new(output)
-                .color(c.text_primary).size(11.0).monospace());
-            ui.separator();
-        }
-    });
+    egui::ScrollArea::vertical()
+        .max_height(300.0)
+        .show(ui, |ui| {
+            for (input, output) in &app.repl.output {
+                ui.label(
+                    egui::RichText::new(format!(">>> {}", input))
+                        .color(c.text_secondary)
+                        .size(11.0)
+                        .monospace(),
+                );
+                ui.label(
+                    egui::RichText::new(output)
+                        .color(c.text_primary)
+                        .size(11.0)
+                        .monospace(),
+                );
+                ui.separator();
+            }
+        });
 
     ui.separator();
 
     // Input area
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(">>>").color(c.addr_color).size(12.0).monospace());
+        ui.label(
+            egui::RichText::new(">>>")
+                .color(c.addr_color)
+                .size(12.0)
+                .monospace(),
+        );
         let resp = ui.add_sized(
             egui::vec2(ui.available_width() - 80.0, 22.0),
             egui::TextEdit::singleline(&mut app.repl.input)
@@ -1264,8 +1892,12 @@ pub fn scripting_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     });
 
     ui.add_space(4.0);
-    ui.label(egui::RichText::new("Example: local x = 2 + 3; return x * 2")
-        .color(c.text_secondary.gamma_multiply(0.6)).size(10.0).monospace());
+    ui.label(
+        egui::RichText::new("Example: local x = 2 + 3; return x * 2")
+            .color(c.text_secondary.gamma_multiply(0.6))
+            .size(10.0)
+            .monospace(),
+    );
 }
 
 // ─── Plugins View ───────────────────────────────────────────────────
@@ -1273,29 +1905,55 @@ pub fn scripting_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 pub fn plugins_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let c = app.colors.clone();
 
-    ui.label(egui::RichText::new("Plugins Manager")
-        .color(c.text_primary).size(14.0).monospace().strong());
+    ui.label(
+        egui::RichText::new("Plugins Manager")
+            .color(c.text_primary)
+            .size(14.0)
+            .monospace()
+            .strong(),
+    );
     ui.separator();
 
     let plugins = app.plugin_manager.list_plugins();
 
     if plugins.is_empty() {
-        ui.label(egui::RichText::new("No plugins loaded.")
-            .color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("No plugins loaded.")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
     } else {
         egui::ScrollArea::vertical().show(ui, |ui| {
             for meta in &plugins {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&meta.name)
-                        .color(c.func_color).size(12.0).monospace().strong());
-                    ui.label(egui::RichText::new(format!("v{}", meta.version))
-                        .color(c.text_secondary).size(11.0).monospace());
+                    ui.label(
+                        egui::RichText::new(&meta.name)
+                            .color(c.func_color)
+                            .size(12.0)
+                            .monospace()
+                            .strong(),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("v{}", meta.version))
+                            .color(c.text_secondary)
+                            .size(11.0)
+                            .monospace(),
+                    );
                 });
-                ui.label(egui::RichText::new(&meta.description)
-                    .color(c.text_primary).size(11.0).monospace());
+                ui.label(
+                    egui::RichText::new(&meta.description)
+                        .color(c.text_primary)
+                        .size(11.0)
+                        .monospace(),
+                );
                 if let Some(ref author) = meta.author {
-                    ui.label(egui::RichText::new(format!("Author: {}", author))
-                        .color(c.text_secondary.gamma_multiply(0.7)).size(10.0).monospace());
+                    ui.label(
+                        egui::RichText::new(format!("Author: {}", author))
+                            .color(c.text_secondary.gamma_multiply(0.7))
+                            .size(10.0)
+                            .monospace(),
+                    );
                 }
                 ui.separator();
             }
@@ -1303,13 +1961,26 @@ pub fn plugins_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     }
 
     ui.add_space(8.0);
-    ui.label(egui::RichText::new("Plugin dirs:")
-        .color(c.text_secondary).size(11.0).monospace().strong());
-    ui.label(egui::RichText::new("  ./plugins/")
-        .color(c.text_primary).size(10.0).monospace());
+    ui.label(
+        egui::RichText::new("Plugin dirs:")
+            .color(c.text_secondary)
+            .size(11.0)
+            .monospace()
+            .strong(),
+    );
+    ui.label(
+        egui::RichText::new("  ./plugins/")
+            .color(c.text_primary)
+            .size(10.0)
+            .monospace(),
+    );
     if let Some(d) = dirs::data_dir() {
-        ui.label(egui::RichText::new(format!("  {}/freakre/plugins/", d.display()))
-            .color(c.text_primary).size(10.0).monospace());
+        ui.label(
+            egui::RichText::new(format!("  {}/freakre/plugins/", d.display()))
+                .color(c.text_primary)
+                .size(10.0)
+                .monospace(),
+        );
     }
 }
 
@@ -1318,27 +1989,60 @@ pub fn plugins_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 pub fn diffing_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let c = app.colors.clone();
 
-    ui.label(egui::RichText::new("Binary Diffing (Diaphora-style)")
-        .color(c.text_primary).size(14.0).monospace().strong());
+    ui.label(
+        egui::RichText::new("Binary Diffing (Diaphora-style)")
+            .color(c.text_primary)
+            .size(14.0)
+            .monospace()
+            .strong(),
+    );
     ui.separator();
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Current binary:").color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("Current binary:")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
         if let Some(ref p) = app.current_file_path {
-            ui.label(egui::RichText::new(p.display().to_string())
-                .color(c.text_primary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new(p.display().to_string())
+                    .color(c.text_primary)
+                    .size(11.0)
+                    .monospace(),
+            );
         } else {
-            ui.label(egui::RichText::new("(none)").color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("(none)")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
         }
     });
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Other binary:").color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("Other binary:")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
         if let Some(ref p) = app.diffing_other_path {
-            ui.label(egui::RichText::new(p.display().to_string())
-                .color(c.text_primary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new(p.display().to_string())
+                    .color(c.text_primary)
+                    .size(11.0)
+                    .monospace(),
+            );
         } else {
-            ui.label(egui::RichText::new("(none - use File > Open for Diffing)").color(c.text_secondary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new("(none - use File > Open for Diffing)")
+                    .color(c.text_secondary)
+                    .size(11.0)
+                    .monospace(),
+            );
         }
         if ui.button("Pick...").clicked() {
             if let Some(path) = rfd::FileDialog::new().pick_file() {
@@ -1352,36 +2056,99 @@ pub fn diffing_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     if let Some(ref result) = app.diffing_result {
         // Stats
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("Matched: {} / {}", result.stats.matched_count, result.stats.total_functions_a))
-                .color(c.safe).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new(format!(
+                    "Matched: {} / {}",
+                    result.stats.matched_count, result.stats.total_functions_a
+                ))
+                .color(c.safe)
+                .size(11.0)
+                .monospace(),
+            );
             ui.separator();
-            ui.label(egui::RichText::new(format!("Avg similarity: {:.1}%", result.stats.average_similarity * 100.0))
-                .color(c.info).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new(format!(
+                    "Avg similarity: {:.1}%",
+                    result.stats.average_similarity * 100.0
+                ))
+                .color(c.info)
+                .size(11.0)
+                .monospace(),
+            );
             ui.separator();
-            ui.label(egui::RichText::new(format!("Perfect: {}", result.stats.perfect_matches))
-                .color(c.func_color).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new(format!("Perfect: {}", result.stats.perfect_matches))
+                    .color(c.func_color)
+                    .size(11.0)
+                    .monospace(),
+            );
+            ui.separator();
+            ui.label(
+                egui::RichText::new(format!(
+                    "Added: {} · Removed: {} · Structural: {}",
+                    result.stats.unmatched_b_count,
+                    result.stats.unmatched_a_count,
+                    result.stats.matched_by_structure
+                ))
+                .color(c.warn)
+                .size(11.0)
+                .monospace(),
+            );
         });
 
         ui.separator();
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.label(egui::RichText::new("Matched Functions")
-                .color(c.info).size(12.0).monospace().strong());
+            ui.label(
+                egui::RichText::new("Matched Functions")
+                    .color(c.info)
+                    .size(12.0)
+                    .monospace()
+                    .strong(),
+            );
             for m in &result.matches {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("{:08X} {} <-> ", m.address_a, m.name_a))
-                        .color(c.addr_color).size(11.0).monospace());
-                    ui.label(egui::RichText::new(format!("{:08X} {}", m.address_b, m.name_b))
-                        .color(c.func_color).size(11.0).monospace());
-                    ui.label(egui::RichText::new(format!("[{:.0}%]", m.similarity * 100.0))
-                        .color(c.info).size(11.0).monospace());
+                egui::CollapsingHeader::new(format!("{} [{:.0}%]", m.name_a, m.similarity * 100.0))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{:08X} {} <-> ", m.address_a, m.name_a))
+                            .color(c.addr_color)
+                            .size(11.0)
+                            .monospace(),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("{:08X} {}", m.address_b, m.name_b))
+                            .color(c.func_color)
+                            .size(11.0)
+                            .monospace(),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("[{:.0}%]", m.similarity * 100.0))
+                            .color(c.info)
+                            .size(11.0)
+                            .monospace(),
+                    );
+                    });
+                    ui.label(format!("match type: {:?} · addresses: 0x{:X} -> 0x{:X}", m.match_type, m.address_a, m.address_b));
                 });
+            }
+            if !result.structural_matches.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new("Structural matches").color(c.warn).strong());
+                for pair in &result.structural_matches {
+                    ui.label(format!("0x{:X} -> 0x{:X} [{:.0}%]", pair.address_a, pair.address_b, pair.similarity * 100.0));
+                }
             }
         });
     } else {
-        ui.label(egui::RichText::new("No diffing result yet.")
-            .color(c.text_secondary).size(11.0).monospace());
-        ui.label(egui::RichText::new("Diffing requires project-db for both binaries. This feature requires two loaded projects.")
+        ui.label(
+            egui::RichText::new("No diffing result yet.")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
+        ui.label(egui::RichText::new("Load two function reports or projects to compare matched, added, removed, and structural functions.")
             .color(c.text_secondary.gamma_multiply(0.6)).size(10.0).monospace());
     }
 }
@@ -1391,32 +2158,57 @@ pub fn diffing_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 pub fn dataflow_view(ui: &mut egui::Ui, app: &FreakREApp) {
     let c = app.colors.clone();
 
-    ui.label(egui::RichText::new("DataFlow Analysis")
-        .color(c.text_primary).size(14.0).monospace().strong());
-    ui.label(egui::RichText::new("Reaching definitions, live variables, use-def chains.")
-        .color(c.text_secondary).size(10.0).monospace());
+    ui.label(
+        egui::RichText::new("DataFlow Analysis")
+            .color(c.text_primary)
+            .size(14.0)
+            .monospace()
+            .strong(),
+    );
+    ui.label(
+        egui::RichText::new("Reaching definitions, live variables, use-def chains.")
+            .color(c.text_secondary)
+            .size(10.0)
+            .monospace(),
+    );
     ui.separator();
 
     if let Some(ref df) = app.dataflow_result {
         let patterns = df.suspicious_patterns();
-        ui.label(egui::RichText::new(format!("Suspicious patterns: {}", patterns.len()))
-            .color(if patterns.is_empty() { c.safe } else { c.warn }).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new(format!("Suspicious patterns: {}", patterns.len()))
+                .color(if patterns.is_empty() { c.safe } else { c.warn })
+                .size(11.0)
+                .monospace(),
+        );
 
         if !patterns.is_empty() {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for p in &patterns {
-                    ui.label(egui::RichText::new(format!("  ! {}", p))
-                        .color(c.warn).size(11.0).monospace());
+                    ui.label(
+                        egui::RichText::new(format!("  ! {}", p))
+                            .color(c.warn)
+                            .size(11.0)
+                            .monospace(),
+                    );
                 }
             });
         }
 
         ui.add_space(8.0);
-        ui.label(egui::RichText::new("DataFlow computed for current function (F5 to trigger)")
-            .color(c.text_secondary).size(10.0).monospace());
+        ui.label(
+            egui::RichText::new("DataFlow computed for current function (F5 to trigger)")
+                .color(c.text_secondary)
+                .size(10.0)
+                .monospace(),
+        );
     } else {
-        ui.label(egui::RichText::new("No dataflow analysis yet. Press F5 to decompile and compute.")
-            .color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("No dataflow analysis yet. Press F5 to decompile and compute.")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
     }
 }
 
@@ -1425,10 +2217,19 @@ pub fn dataflow_view(ui: &mut egui::Ui, app: &FreakREApp) {
 pub fn ml_classify_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let c = app.colors.clone();
 
-    ui.label(egui::RichText::new("ML Malware Classification")
-        .color(c.text_primary).size(14.0).monospace().strong());
-    ui.label(egui::RichText::new("Ensemble of 8 decision trees on 96 features.")
-        .color(c.text_secondary).size(10.0).monospace());
+    ui.label(
+        egui::RichText::new("ML Malware Classification")
+            .color(c.text_primary)
+            .size(14.0)
+            .monospace()
+            .strong(),
+    );
+    ui.label(
+        egui::RichText::new("Ensemble of 8 decision trees on 96 features.")
+            .color(c.text_secondary)
+            .size(10.0)
+            .monospace(),
+    );
     ui.separator();
 
     if let Some(ref result) = app.ml_result {
@@ -1440,28 +2241,61 @@ pub fn ml_classify_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
         };
 
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Class:").color(c.text_secondary).size(12.0).monospace());
-            ui.label(egui::RichText::new(format!("{:?}", result.class))
-                .color(verdict_color).size(14.0).monospace().strong());
+            ui.label(
+                egui::RichText::new("Class:")
+                    .color(c.text_secondary)
+                    .size(12.0)
+                    .monospace(),
+            );
+            ui.label(
+                egui::RichText::new(format!("{:?}", result.class))
+                    .color(verdict_color)
+                    .size(14.0)
+                    .monospace()
+                    .strong(),
+            );
         });
 
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Confidence:").color(c.text_secondary).size(12.0).monospace());
-            ui.label(egui::RichText::new(format!("{:.1}%", result.confidence * 100.0))
-                .color(verdict_color).size(14.0).monospace().strong());
+            ui.label(
+                egui::RichText::new("Confidence:")
+                    .color(c.text_secondary)
+                    .size(12.0)
+                    .monospace(),
+            );
+            ui.label(
+                egui::RichText::new(format!("{:.1}%", result.confidence * 100.0))
+                    .color(verdict_color)
+                    .size(14.0)
+                    .monospace()
+                    .strong(),
+            );
         });
 
         ui.separator();
 
-        ui.label(egui::RichText::new("Explanation:")
-            .color(c.info).size(12.0).monospace().strong());
+        ui.label(
+            egui::RichText::new("Explanation:")
+                .color(c.info)
+                .size(12.0)
+                .monospace()
+                .strong(),
+        );
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.label(egui::RichText::new(&result.explanation)
-                .color(c.text_primary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new(&result.explanation)
+                    .color(c.text_primary)
+                    .size(11.0)
+                    .monospace(),
+            );
         });
     } else {
-        ui.label(egui::RichText::new("No classification yet. Auto-runs on file load.")
-            .color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("No classification yet. Auto-runs on file load.")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
     }
 
     // Re-run control (was a dead button with an empty clicked() body).
@@ -1478,64 +2312,142 @@ pub fn ml_classify_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 pub fn func_sigs_view(ui: &mut egui::Ui, app: &FreakREApp) {
     let c = app.colors.clone();
 
-    ui.label(egui::RichText::new("Function Signatures (FLIRT-like)")
-        .color(c.text_primary).size(14.0).monospace().strong());
+    ui.label(
+        egui::RichText::new("Function Signatures (FLIRT-like)")
+            .color(c.text_primary)
+            .size(14.0)
+            .monospace()
+            .strong(),
+    );
     ui.separator();
 
     if let Some(ref result) = app.func_sigs_result {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("Matches: {}", result.matches.len()))
-                .color(c.text_primary).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new(format!("Matches: {}", result.matches.len()))
+                    .color(c.text_primary)
+                    .size(11.0)
+                    .monospace(),
+            );
             ui.separator();
-            ui.label(egui::RichText::new(format!("Libraries: {}", result.libraries_found.len()))
-                .color(c.func_color).size(11.0).monospace());
+            ui.label(
+                egui::RichText::new(format!("Libraries: {}", result.libraries_found.len()))
+                    .color(c.func_color)
+                    .size(11.0)
+                    .monospace(),
+            );
         });
 
         if let Some(ref compiler) = result.compiler_info {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Compiler:").color(c.text_secondary).size(11.0).monospace());
-                ui.label(egui::RichText::new(&compiler.compiler)
-                    .color(c.info).size(11.0).monospace().strong());
+                ui.label(
+                    egui::RichText::new("Compiler:")
+                        .color(c.text_secondary)
+                        .size(11.0)
+                        .monospace(),
+                );
+                ui.label(
+                    egui::RichText::new(&compiler.compiler)
+                        .color(c.info)
+                        .size(11.0)
+                        .monospace()
+                        .strong(),
+                );
             });
         }
 
         ui.separator();
 
         if !result.libraries_found.is_empty() {
-            ui.label(egui::RichText::new("Libraries found:")
-                .color(c.info).size(12.0).monospace().strong());
+            ui.label(
+                egui::RichText::new("Libraries found:")
+                    .color(c.info)
+                    .size(12.0)
+                    .monospace()
+                    .strong(),
+            );
             for lib in &result.libraries_found {
-                ui.label(egui::RichText::new(format!("  • {}", lib))
-                    .color(c.func_color).size(11.0).monospace());
+                ui.label(
+                    egui::RichText::new(format!("  • {}", lib))
+                        .color(c.func_color)
+                        .size(11.0)
+                        .monospace(),
+                );
             }
             ui.add_space(8.0);
         }
 
-        ui.label(egui::RichText::new("Matched functions:")
-            .color(c.info).size(12.0).monospace().strong());
+        ui.label(
+            egui::RichText::new("Matched functions:")
+                .color(c.info)
+                .size(12.0)
+                .monospace()
+                .strong(),
+        );
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             for m in &result.matches {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("{:08X} ", m.offset))
-                        .color(c.addr_color).size(11.0).monospace());
-                    ui.label(egui::RichText::new(format!("{}::{}", m.signature.library, m.signature.function_name))
-                        .color(c.func_color).size(11.0).monospace());
-                    ui.label(egui::RichText::new(format!(" [{:.0}%]", m.confidence * 100.0))
-                        .color(c.text_secondary).size(11.0).monospace());
+                    ui.label(
+                        egui::RichText::new(format!("{:08X} ", m.offset))
+                            .color(c.addr_color)
+                            .size(11.0)
+                            .monospace(),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}::{}",
+                            m.signature.library, m.signature.function_name
+                        ))
+                        .color(c.func_color)
+                        .size(11.0)
+                        .monospace(),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(" [{:.0}%]", m.confidence * 100.0))
+                            .color(c.text_secondary)
+                            .size(11.0)
+                            .monospace(),
+                    );
+                    if !m.semantic_role.is_empty() {
+                        ui.label(
+                            egui::RichText::new(format!(" <{}>", m.semantic_role))
+                                .color(c.info)
+                                .size(10.0)
+                                .monospace(),
+                        );
+                    }
                 });
+                if !m.sources.is_empty() || !m.sinks.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "    sources: [{}] sinks: [{}]",
+                            m.sources.join(", "),
+                            m.sinks.join(", ")
+                        ))
+                        .color(c.text_secondary)
+                        .size(10.0)
+                        .monospace(),
+                    );
+                }
             }
         });
     } else {
-        ui.label(egui::RichText::new("No signature scan yet. Auto-runs on file load.")
-            .color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("No signature scan yet. Auto-runs on file load.")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
     }
 }
 
 // ─── Modal Dialogs ─────────────────────────────────────────────────
 
 pub fn goto_dialog(ctx: &egui::Context, app: &mut FreakREApp) {
-    if !app.show_goto { return; }
+    if !app.show_goto {
+        return;
+    }
 
     let mut open = app.show_goto;
     egui::Window::new("Go to Address")
@@ -1566,7 +2478,8 @@ pub fn goto_dialog(ctx: &egui::Context, app: &mut FreakREApp) {
                     || ui.button("Go").clicked()
                 {
                     let input = app.goto_input.trim();
-                    let parsed = input.strip_prefix("0x")
+                    let parsed = input
+                        .strip_prefix("0x")
                         .or_else(|| input.strip_prefix("0X"))
                         .unwrap_or(input);
                     if let Ok(addr) = u64::from_str_radix(parsed, 16) {
@@ -1576,11 +2489,18 @@ pub fn goto_dialog(ctx: &egui::Context, app: &mut FreakREApp) {
                         app.show_goto = false;
                     } else {
                         let lower = input.to_lowercase();
-                        let idx = app.selected_report
-                            .or_else(|| if app.reports.is_empty() { None } else { Some(app.reports.len() - 1) });
+                        let idx = app.selected_report.or_else(|| {
+                            if app.reports.is_empty() {
+                                None
+                            } else {
+                                Some(app.reports.len() - 1)
+                            }
+                        });
                         if let Some(idx) = idx {
                             if let Some(report) = app.reports.get(idx) {
-                                let found_addr = report.functions.iter()
+                                let found_addr = report
+                                    .functions
+                                    .iter()
                                     .find(|f| f.name.to_lowercase() == lower)
                                     .map(|f| f.address);
                                 if let Some(addr) = found_addr {
@@ -1599,7 +2519,9 @@ pub fn goto_dialog(ctx: &egui::Context, app: &mut FreakREApp) {
 }
 
 pub fn rename_dialog(ctx: &egui::Context, app: &mut FreakREApp) {
-    if !app.show_rename { return; }
+    if !app.show_rename {
+        return;
+    }
 
     let mut open = app.show_rename;
     egui::Window::new("Rename")
@@ -1610,8 +2532,12 @@ pub fn rename_dialog(ctx: &egui::Context, app: &mut FreakREApp) {
         .fixed_size(egui::vec2(360.0, 100.0))
         .show(ctx, |ui| {
             let addr = app.rename_target_addr.unwrap_or(0);
-            ui.label(egui::RichText::new(format!("Rename at {:08X}:", addr))
-                .monospace().size(11.0).color(app.colors.text_secondary));
+            ui.label(
+                egui::RichText::new(format!("Rename at {:08X}:", addr))
+                    .monospace()
+                    .size(11.0)
+                    .color(app.colors.text_secondary),
+            );
             ui.add_space(4.0);
 
             ui.horizontal(|ui| {
@@ -1633,10 +2559,15 @@ pub fn rename_dialog(ctx: &egui::Context, app: &mut FreakREApp) {
                     if let Some(addr) = app.rename_target_addr {
                         app.custom_names.insert(addr, app.rename_input.clone());
                         app.log(format!("Renamed {:08X} → {}", addr, app.rename_input));
-                        app.toasts.add(format!("Renamed to {}", app.rename_input), ToastKind::Success);
+                        app.toasts.add(
+                            format!("Renamed to {}", app.rename_input),
+                            ToastKind::Success,
+                        );
 
                         // Persist to project-db (blocking write on worker thread)
-                        let _ = app.db_tx.send(DbCommand::SetLabel(addr, app.rename_input.clone()));
+                        let _ = app
+                            .db_tx
+                            .send(DbCommand::SetLabel(addr, app.rename_input.clone()));
                     }
                     app.show_rename = false;
                 }
@@ -1646,7 +2577,9 @@ pub fn rename_dialog(ctx: &egui::Context, app: &mut FreakREApp) {
 }
 
 pub fn comment_dialog(ctx: &egui::Context, app: &mut FreakREApp) {
-    if !app.show_comment_edit { return; }
+    if !app.show_comment_edit {
+        return;
+    }
 
     let mut open = app.show_comment_edit;
     egui::Window::new("Edit Comment")
@@ -1657,8 +2590,12 @@ pub fn comment_dialog(ctx: &egui::Context, app: &mut FreakREApp) {
         .fixed_size(egui::vec2(400.0, 120.0))
         .show(ctx, |ui| {
             let addr = app.comment_target_addr.unwrap_or(0);
-            ui.label(egui::RichText::new(format!("Comment at {:08X}:", addr))
-                .monospace().size(11.0).color(app.colors.text_secondary));
+            ui.label(
+                egui::RichText::new(format!("Comment at {:08X}:", addr))
+                    .monospace()
+                    .size(11.0)
+                    .color(app.colors.text_secondary),
+            );
             ui.add_space(4.0);
 
             let resp = ui.add_sized(
@@ -1707,14 +2644,25 @@ fn current_report(app: &FreakREApp) -> Option<&FileReport> {
 }
 
 fn get_current_data(app: &FreakREApp) -> Option<Arc<Vec<u8>>> {
-    let idx = app.selected_report
-        .or_else(|| if app.reports.is_empty() { None } else { Some(app.reports.len() - 1) })?;
+    let idx = app.selected_report.or_else(|| {
+        if app.reports.is_empty() {
+            None
+        } else {
+            Some(app.reports.len() - 1)
+        }
+    })?;
     app.report_data.get(idx).cloned()
 }
 
 fn entry_point_str(report: &FileReport) -> Option<&str> {
-    report.pe_info.as_ref().and_then(|p| p.entry_point.as_deref())
-        .or(report.macho_info.as_ref().and_then(|m| m.entry_point.as_deref()))
+    report
+        .pe_info
+        .as_ref()
+        .and_then(|p| p.entry_point.as_deref())
+        .or(report
+            .macho_info
+            .as_ref()
+            .and_then(|m| m.entry_point.as_deref()))
         .or(report.elf_info.as_ref().map(|e| e.entry_point.as_str()))
 }
 
@@ -1744,26 +2692,43 @@ fn info_row(ui: &mut egui::Ui, label: &str, value: &str, colors: &crate::theme::
             egui::vec2(160.0, 16.0),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                ui.label(egui::RichText::new(label)
-                    .color(colors.text_secondary).size(11.0).monospace());
+                ui.label(
+                    egui::RichText::new(label)
+                        .color(colors.text_secondary)
+                        .size(11.0)
+                        .monospace(),
+                );
             },
         );
-        ui.label(egui::RichText::new(value)
-            .color(colors.text_primary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new(value)
+                .color(colors.text_primary)
+                .size(11.0)
+                .monospace(),
+        );
     });
 }
 
 fn section_header(ui: &mut egui::Ui, title: &str, colors: &crate::theme::ThemeColors) {
     ui.separator();
     ui.add_space(4.0);
-    ui.label(egui::RichText::new(title)
-        .color(colors.info).size(12.0).monospace().strong());
+    ui.label(
+        egui::RichText::new(title)
+            .color(colors.info)
+            .size(12.0)
+            .monospace()
+            .strong(),
+    );
     ui.add_space(4.0);
 }
 
 fn mitre_tag(ui: &mut egui::Ui, technique: &str, colors: &crate::theme::ThemeColors) {
-    ui.label(egui::RichText::new(format!("[{}]", technique))
-        .color(colors.info).size(10.0).monospace());
+    ui.label(
+        egui::RichText::new(format!("[{}]", technique))
+            .color(colors.info)
+            .size(10.0)
+            .monospace(),
+    );
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -1780,16 +2745,31 @@ fn format_bytes(bytes: u64) -> String {
 
 fn show_report_detail(ui: &mut egui::Ui, report: &FileReport, colors: &crate::theme::ThemeColors) {
     egui::ScrollArea::vertical().show(ui, |ui| {
-        let file_name = report.path.file_name()
+        let file_name = report
+            .path
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".into());
 
-        ui.label(egui::RichText::new(&file_name)
-            .color(colors.text_primary).size(14.0).monospace().strong());
+        ui.label(
+            egui::RichText::new(&file_name)
+                .color(colors.text_primary)
+                .size(14.0)
+                .monospace()
+                .strong(),
+        );
 
         let verdict_color = theme::verdict_color(&report.verdict);
-        ui.label(egui::RichText::new(format!("Verdict: {} ({:.1}%)", report.verdict, report.suspicion_score * 100.0))
-            .color(verdict_color).size(12.0).monospace());
+        ui.label(
+            egui::RichText::new(format!(
+                "Verdict: {} ({:.1}%)",
+                report.verdict,
+                report.suspicion_score * 100.0
+            ))
+            .color(verdict_color)
+            .size(12.0)
+            .monospace(),
+        );
 
         ui.separator();
 
@@ -1797,7 +2777,12 @@ fn show_report_detail(ui: &mut egui::Ui, report: &FileReport, colors: &crate::th
         info_row(ui, "MD5", &report.md5, colors);
         info_row(ui, "Size", &format_bytes(report.size), colors);
         info_row(ui, "Type", &report.file_type, colors);
-        info_row(ui, "Scan Time", &format!("{} ms", report.scan_duration_ms), colors);
+        info_row(
+            ui,
+            "Scan Time",
+            &format!("{} ms", report.scan_duration_ms),
+            colors,
+        );
         info_row(ui, "Strings", &report.strings_found.to_string(), colors);
 
         if let Some(ref pe) = report.pe_info {
@@ -1806,8 +2791,12 @@ fn show_report_detail(ui: &mut egui::Ui, report: &FileReport, colors: &crate::th
             info_row(ui, "Sections", &pe.num_sections.to_string(), colors);
             info_row(ui, "Timestamp", &pe.timestamp.to_string(), colors);
             for w in &pe.warnings {
-                ui.label(egui::RichText::new(format!("  ! {}", w))
-                    .color(colors.warn).size(11.0).monospace());
+                ui.label(
+                    egui::RichText::new(format!("  ! {}", w))
+                        .color(colors.warn)
+                        .size(11.0)
+                        .monospace(),
+                );
             }
         }
 
@@ -1835,22 +2824,39 @@ fn show_report_detail(ui: &mut egui::Ui, report: &FileReport, colors: &crate::th
                 info_row(ui, "Entry Point", ep, colors);
             }
             for lib in &macho.imported_dylibs {
-                ui.label(egui::RichText::new(format!("  dylib: {}", lib))
-                    .color(colors.func_color).size(11.0).monospace());
+                ui.label(
+                    egui::RichText::new(format!("  dylib: {}", lib))
+                        .color(colors.func_color)
+                        .size(11.0)
+                        .monospace(),
+                );
             }
             for seg in &macho.rwx_segments {
-                ui.label(egui::RichText::new(format!("  ! RWX: {}", seg))
-                    .color(colors.danger).size(11.0).monospace());
+                ui.label(
+                    egui::RichText::new(format!("  ! RWX: {}", seg))
+                        .color(colors.danger)
+                        .size(11.0)
+                        .monospace(),
+                );
             }
             for w in &macho.warnings {
-                ui.label(egui::RichText::new(format!("  ! {}", w))
-                    .color(colors.warn).size(11.0).monospace());
+                ui.label(
+                    egui::RichText::new(format!("  ! {}", w))
+                        .color(colors.warn)
+                        .size(11.0)
+                        .monospace(),
+                );
             }
         }
 
         if let Some(ref bd) = report.backdoor_report {
             section_header(ui, "Backdoor Analysis", colors);
-            info_row(ui, "Risk Score", &format!("{:.1}%", bd.risk_score * 100.0), colors);
+            info_row(
+                ui,
+                "Risk Score",
+                &format!("{:.1}%", bd.risk_score * 100.0),
+                colors,
+            );
             info_row(ui, "Verdict", &bd.verdict, colors);
             info_row(ui, "Findings", &bd.num_findings.to_string(), colors);
             for t in &bd.mitre_techniques {
@@ -1863,8 +2869,12 @@ fn show_report_detail(ui: &mut egui::Ui, report: &FileReport, colors: &crate::th
             info_row(ui, "Verdict", &sc.verdict, colors);
             info_row(ui, "Findings", &sc.num_findings.to_string(), colors);
             for h in &sc.api_hashes_resolved {
-                ui.label(egui::RichText::new(format!("  hash: {}", h))
-                    .color(colors.func_color).size(11.0).monospace());
+                ui.label(
+                    egui::RichText::new(format!("  hash: {}", h))
+                        .color(colors.func_color)
+                        .size(11.0)
+                        .monospace(),
+                );
             }
         }
 
@@ -1872,11 +2882,20 @@ fn show_report_detail(ui: &mut egui::Ui, report: &FileReport, colors: &crate::th
             section_header(ui, "Control Flow Graph", colors);
             info_row(ui, "Blocks", &cfg.num_blocks.to_string(), colors);
             info_row(ui, "Edges", &cfg.num_edges.to_string(), colors);
-            info_row(ui, "Instructions", &cfg.total_instructions.to_string(), colors);
+            info_row(
+                ui,
+                "Instructions",
+                &cfg.total_instructions.to_string(),
+                colors,
+            );
             info_row(ui, "Anomalies", &cfg.num_anomalies.to_string(), colors);
             for a in &cfg.anomalies {
-                ui.label(egui::RichText::new(format!("  ! {}", a))
-                    .color(colors.warn).size(11.0).monospace());
+                ui.label(
+                    egui::RichText::new(format!("  ! {}", a))
+                        .color(colors.warn)
+                        .size(11.0)
+                        .monospace(),
+                );
             }
         }
 
@@ -1887,15 +2906,24 @@ fn show_report_detail(ui: &mut egui::Ui, report: &FileReport, colors: &crate::th
                 info_row(ui, "Compiler", compiler, colors);
             }
             for lib in &sig.libraries_found {
-                ui.label(egui::RichText::new(format!("  lib: {}", lib))
-                    .color(colors.func_color).size(11.0).monospace());
+                ui.label(
+                    egui::RichText::new(format!("  lib: {}", lib))
+                        .color(colors.func_color)
+                        .size(11.0)
+                        .monospace(),
+                );
             }
         }
 
         if let Some(ref xref) = report.xref_summary {
             section_header(ui, "Cross-References", colors);
             info_row(ui, "Total Xrefs", &xref.total_xrefs.to_string(), colors);
-            info_row(ui, "Unique Targets", &xref.unique_targets.to_string(), colors);
+            info_row(
+                ui,
+                "Unique Targets",
+                &xref.unique_targets.to_string(),
+                colors,
+            );
             info_row(ui, "String Xrefs", &xref.string_xrefs.to_string(), colors);
             info_row(ui, "Import Xrefs", &xref.import_xrefs.to_string(), colors);
         }
@@ -1911,31 +2939,55 @@ fn show_report_detail(ui: &mut egui::Ui, report: &FileReport, colors: &crate::th
 /// address range. Both panes render THE SAME range — that is the
 /// synchronization guarantee of Multi mode.
 fn multi_function_range(app: &FreakREApp) -> (u64, u64, String) {
-    let idx = app.selected_report
-        .or_else(|| if app.reports.is_empty() { None } else { Some(app.reports.len() - 1) });
+    let idx = app.selected_report.or_else(|| {
+        if app.reports.is_empty() {
+            None
+        } else {
+            Some(app.reports.len() - 1)
+        }
+    });
     if let Some(report) = idx.and_then(|i| app.reports.get(i)) {
         let cursor = app.disasm_offset;
-        if let Some(func) = report.functions.iter()
+        if let Some(func) = report
+            .functions
+            .iter()
             .find(|f| cursor >= f.address && cursor < f.address + f.size as u64)
         {
-            return (func.address, func.address + func.size as u64, func.name.clone());
+            return (
+                func.address,
+                func.address + func.size as u64,
+                func.name.clone(),
+            );
         }
     }
     // Unknown layout: fixed window at the cursor so the panes stay aligned.
-    (app.disasm_offset, app.disasm_offset + 0x400,
-     format!("sub_{:08X}", app.disasm_offset))
+    (
+        app.disasm_offset,
+        app.disasm_offset + 0x400,
+        format!("sub_{:08X}", app.disasm_offset),
+    )
 }
 
 /// Jump to the previous/next function relative to the current one.
 fn multi_step_function(app: &mut FreakREApp, forward: bool) {
-    let Some(idx) = app.selected_report
-        .or_else(|| if app.reports.is_empty() { None } else { Some(app.reports.len() - 1) })
-    else { return; };
-    let Some(report) = app.reports.get(idx) else { return; };
+    let Some(idx) = app.selected_report.or_else(|| {
+        if app.reports.is_empty() {
+            None
+        } else {
+            Some(app.reports.len() - 1)
+        }
+    }) else {
+        return;
+    };
+    let Some(report) = app.reports.get(idx) else {
+        return;
+    };
     let mut starts: Vec<u64> = report.functions.iter().map(|f| f.address).collect();
     starts.sort_unstable();
     starts.dedup();
-    if starts.is_empty() { return; }
+    if starts.is_empty() {
+        return;
+    }
 
     let cur = app.disasm_offset;
     let pos = match starts.binary_search(&cur) {
@@ -1965,22 +3017,43 @@ pub fn multi_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 
     // Shared header: one cursor, two synchronized panes.
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Function:")
-            .color(c.text_secondary).size(11.0).monospace());
-        ui.label(egui::RichText::new(format!("{} @ {:08X}", f_name, f_start))
-            .color(c.func_color).size(12.0).monospace().strong());
-        ui.label(egui::RichText::new(format!("[{:08X} – {:08X}]", f_start, f_end))
-            .color(c.text_secondary).size(10.0).monospace());
+        ui.label(
+            egui::RichText::new("Function:")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
+        ui.label(
+            egui::RichText::new(format!("{} @ {:08X}", f_name, f_start))
+                .color(c.func_color)
+                .size(12.0)
+                .monospace()
+                .strong(),
+        );
+        ui.label(
+            egui::RichText::new(format!("[{:08X} – {:08X}]", f_start, f_end))
+                .color(c.text_secondary)
+                .size(10.0)
+                .monospace(),
+        );
         ui.separator();
-        if ui.small_button("◀ Prev Func").clicked() { multi_step_function(app, false); }
-        if ui.small_button("Next Func ▶").clicked() { multi_step_function(app, true); }
+        if ui.small_button("◀ Prev Func").clicked() {
+            multi_step_function(app, false);
+        }
+        if ui.small_button("Next Func ▶").clicked() {
+            multi_step_function(app, true);
+        }
         if ui.small_button("Go to Head").clicked() {
             app.nav_push(app.disasm_offset);
             app.disasm_offset = f_start;
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new("both panes share the same address range & cursor")
-                .color(c.text_secondary.gamma_multiply(0.6)).size(9.5).monospace());
+            ui.label(
+                egui::RichText::new("both panes share the same address range & cursor")
+                    .color(c.text_secondary.gamma_multiply(0.6))
+                    .size(9.5)
+                    .monospace(),
+            );
         });
     });
     ui.separator();
@@ -1996,8 +3069,13 @@ pub fn multi_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 
         // ── Left pane: pseudocode ────────────────────────────────────
         let left = &mut cols[0];
-        left.label(egui::RichText::new("▼ PSEUDOCODE")
-            .color(c.info).size(10.0).monospace().strong());
+        left.label(
+            egui::RichText::new("▼ PSEUDOCODE")
+                .color(c.info)
+                .size(10.0)
+                .monospace()
+                .strong(),
+        );
         left.separator();
 
         let pseudocode = app.decompile_cache.get(&f_start).cloned();
@@ -2010,19 +3088,31 @@ pub fn multi_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                         ui.add_space(20.0);
                         ui.horizontal(|ui| {
                             ui.add(egui::Spinner::new().size(14.0));
-                            ui.label(egui::RichText::new(format!(
-                                "// Decompiling {} @ {:08X}…", f_name, f_start))
-                                .color(c.comment_color).size(fs).monospace());
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "// Decompiling {} @ {:08X}…",
+                                    f_name, f_start
+                                ))
+                                .color(c.comment_color)
+                                .size(fs)
+                                .monospace(),
+                            );
                         });
                     }
                     Some(text) => {
                         for (i, line) in text.lines().enumerate() {
                             let selected = app.multi_selected_line == i;
                             let row = ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(format!("{:4}", i + 1))
-                                    .monospace().size(fs - 1.0)
-                                    .color(if selected { c.text_white }
-                                           else { c.comment_color.gamma_multiply(0.8) }));
+                                ui.label(
+                                    egui::RichText::new(format!("{:4}", i + 1))
+                                        .monospace()
+                                        .size(fs - 1.0)
+                                        .color(if selected {
+                                            c.text_white
+                                        } else {
+                                            c.comment_color.gamma_multiply(0.8)
+                                        }),
+                                );
                                 ui.label(highlight_c_line(line, &c, fs));
                             });
                             // Click a pseudocode line → select it (the pane
@@ -2038,8 +3128,13 @@ pub fn multi_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
 
         // ── Right pane: assembly of the SAME address range ───────────
         let right = &mut cols[1];
-        right.label(egui::RichText::new("▼ DISASSEMBLY")
-            .color(c.mnemonic_color).size(10.0).monospace().strong());
+        right.label(
+            egui::RichText::new("▼ DISASSEMBLY")
+                .color(c.mnemonic_color)
+                .size(10.0)
+                .monospace()
+                .strong(),
+        );
         right.separator();
 
         egui::ScrollArea::vertical()
@@ -2048,13 +3143,21 @@ pub fn multi_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
             .show(right, |ui| {
                 let data = get_current_data(app);
                 let Some(data) = data else {
-                    ui.label(egui::RichText::new("No binary data.")
-                        .color(c.text_secondary).size(11.0).monospace());
+                    ui.label(
+                        egui::RichText::new("No binary data.")
+                            .color(c.text_secondary)
+                            .size(11.0)
+                            .monospace(),
+                    );
                     return;
                 };
                 if data.is_empty() {
-                    ui.label(egui::RichText::new("File is empty.")
-                        .color(c.text_secondary).size(11.0).monospace());
+                    ui.label(
+                        egui::RichText::new("File is empty.")
+                            .color(c.text_secondary)
+                            .size(11.0)
+                            .monospace(),
+                    );
                     return;
                 }
 
@@ -2063,34 +3166,63 @@ pub fn multi_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                 let window = end_us.saturating_sub(start_us).min(0x1000);
                 let code_region = &data[start_us..start_us + window];
 
-                let instructions = app.disasm.as_ref()
-                    .map(|d| d.disassemble_n(
-                        code_region,
-                        start_us as u64,
-                        app.settings.disasm_max_instructions.max(64),
-                    ))
+                let instructions = app
+                    .disasm
+                    .as_ref()
+                    .map(|d| {
+                        d.disassemble_n(
+                            code_region,
+                            start_us as u64,
+                            app.settings.disasm_max_instructions.max(64),
+                        )
+                    })
                     .unwrap_or_default();
 
                 if instructions.is_empty() {
-                    ui.label(egui::RichText::new("; no valid instructions in this range")
-                        .color(c.comment_color).size(fs).monospace());
+                    ui.label(
+                        egui::RichText::new("; no valid instructions in this range")
+                            .color(c.comment_color)
+                            .size(fs)
+                            .monospace(),
+                    );
                     return;
                 }
 
                 for inst in &instructions {
-                    let is_cursor = cursor >= inst.address
-                        && cursor < inst.address + inst.size as u64;
+                    let is_cursor =
+                        cursor >= inst.address && cursor < inst.address + inst.size as u64;
 
                     let row = ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(format!("{:08X}", inst.address))
-                            .monospace().size(fs)
-                            .color(if is_cursor { c.text_white } else { c.addr_color }));
-                        ui.label(egui::RichText::new(format!("{:<10}", inst.mnemonic))
-                            .monospace().size(fs)
-                            .color(if is_cursor { c.text_white } else { c.mnemonic_color }));
-                        ui.label(egui::RichText::new(&inst.operands)
-                            .monospace().size(fs)
-                            .color(if is_cursor { c.text_white } else { c.operand_color }));
+                        ui.label(
+                            egui::RichText::new(format!("{:08X}", inst.address))
+                                .monospace()
+                                .size(fs)
+                                .color(if is_cursor {
+                                    c.text_white
+                                } else {
+                                    c.addr_color
+                                }),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("{:<10}", inst.mnemonic))
+                                .monospace()
+                                .size(fs)
+                                .color(if is_cursor {
+                                    c.text_white
+                                } else {
+                                    c.mnemonic_color
+                                }),
+                        );
+                        ui.label(
+                            egui::RichText::new(&inst.operands)
+                                .monospace()
+                                .size(fs)
+                                .color(if is_cursor {
+                                    c.text_white
+                                } else {
+                                    c.operand_color
+                                }),
+                        );
                     });
 
                     // Whole-row hit target with explicit click sensing.
@@ -2135,8 +3267,12 @@ pub fn malware_detector_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let c = app.colors.clone();
 
     let Some(report) = current_report(app).cloned() else {
-        ui.label(egui::RichText::new("No file loaded.")
-            .color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("No file loaded.")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
         return;
     };
 
@@ -2151,18 +3287,36 @@ pub fn malware_detector_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.label(egui::RichText::new(format!("{}", report.verdict))
-                        .size(26.0).strong().color(vc));
-                    ui.label(egui::RichText::new(format!(
-                        "{} | scan {} ms", report.file_type, report.scan_duration_ms))
-                        .size(11.0).monospace().color(c.text_secondary));
+                    ui.label(
+                        egui::RichText::new(format!("{}", report.verdict))
+                            .size(26.0)
+                            .strong()
+                            .color(vc),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} | scan {} ms",
+                            report.file_type, report.scan_duration_ms
+                        ))
+                        .size(11.0)
+                        .monospace()
+                        .color(c.text_secondary),
+                    );
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(format!("{:.1}%", report.suspicion_score * 100.0))
-                            .size(22.0).strong().color(vc));
-                        ui.add(egui::ProgressBar::new(report.suspicion_score as f32)
-                            .desired_width(180.0).desired_height(6.0).fill(vc));
+                        ui.label(
+                            egui::RichText::new(format!("{:.1}%", report.suspicion_score * 100.0))
+                                .size(22.0)
+                                .strong()
+                                .color(vc),
+                        );
+                        ui.add(
+                            egui::ProgressBar::new(report.suspicion_score as f32)
+                                .desired_width(180.0)
+                                .desired_height(6.0)
+                                .fill(vc),
+                        );
                     });
                 });
             });
@@ -2207,64 +3361,129 @@ pub fn malware_detector_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                         _ => c.safe,
                     };
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(format!("{}", ml.class))
-                            .size(18.0).strong().color(mc));
+                        ui.label(
+                            egui::RichText::new(format!("{}", ml.class))
+                                .size(18.0)
+                                .strong()
+                                .color(mc),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(format!("{:.0}% conf.", ml.confidence * 100.0))
-                                .size(12.0).monospace().color(mc));
+                            ui.label(
+                                egui::RichText::new(format!("{:.0}% conf.", ml.confidence * 100.0))
+                                    .size(12.0)
+                                    .monospace()
+                                    .color(mc),
+                            );
                         });
                     });
-                    ui.add(egui::ProgressBar::new(ml.confidence)
-                        .desired_width(card_w - 30.0).desired_height(5.0).fill(mc));
+                    ui.add(
+                        egui::ProgressBar::new(ml.confidence)
+                            .desired_width(card_w - 30.0)
+                            .desired_height(5.0)
+                            .fill(mc),
+                    );
                     ui.separator();
                     let probs = &ml.probabilities;
                     for (name, v) in [
-                        ("clean", probs.clean), ("suspicious", probs.suspicious),
-                        ("malicious", probs.malicious), ("packed", probs.packed),
+                        ("clean", probs.clean),
+                        ("suspicious", probs.suspicious),
+                        ("malicious", probs.malicious),
+                        ("packed", probs.packed),
                         ("pua", probs.pua),
                     ] {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!("{:<10}", name))
-                                .size(10.0).monospace().color(c.text_secondary));
-                            ui.add(egui::ProgressBar::new(v)
-                                .desired_width(card_w - 130.0).desired_height(4.0));
+                            ui.label(
+                                egui::RichText::new(format!("{:<10}", name))
+                                    .size(10.0)
+                                    .monospace()
+                                    .color(c.text_secondary),
+                            );
+                            ui.add(
+                                egui::ProgressBar::new(v)
+                                    .desired_width(card_w - 130.0)
+                                    .desired_height(4.0),
+                            );
                         });
                     }
                     ui.separator();
-                    ui.label(egui::RichText::new(&ml.explanation)
-                        .size(10.5).monospace().color(c.text_primary));
+                    ui.label(
+                        egui::RichText::new(&ml.explanation)
+                            .size(10.5)
+                            .monospace()
+                            .color(c.text_primary),
+                    );
                 } else {
-                    ui.label(egui::RichText::new("Not classified yet.")
-                        .size(11.0).color(c.text_secondary).monospace());
-                    ui.label(egui::RichText::new("Click \"Run ML Classification\" above.")
-                        .size(10.0).color(c.text_secondary.gamma_multiply(0.7)));
+                    ui.label(
+                        egui::RichText::new("Not classified yet.")
+                            .size(11.0)
+                            .color(c.text_secondary)
+                            .monospace(),
+                    );
+                    ui.label(
+                        egui::RichText::new("Click \"Run ML Classification\" above.")
+                            .size(10.0)
+                            .color(c.text_secondary.gamma_multiply(0.7)),
+                    );
                 }
             });
 
             // Backdoor card
             card_frame(ui, &c, c.danger, "BACKDOOR ANALYSIS", |ui| {
                 if let Some(ref bd) = report.backdoor_report {
-                    let bc = if bd.risk_score >= 0.5 { c.danger }
-                             else if bd.risk_score >= 0.15 { c.warn }
-                             else { c.safe };
-                    ui.label(egui::RichText::new(&bd.verdict).size(18.0).strong().color(bc));
-                    ui.add(egui::ProgressBar::new(bd.risk_score as f32)
-                        .desired_width(card_w - 30.0).desired_height(5.0).fill(bc));
-                    ui.label(egui::RichText::new(format!(
-                        "{} finding(s) | risk {:.2}",
-                        bd.num_findings, bd.risk_score))
-                        .size(10.5).monospace().color(c.text_secondary));
+                    let bc = if bd.risk_score >= 0.5 {
+                        c.danger
+                    } else if bd.risk_score >= 0.15 {
+                        c.warn
+                    } else {
+                        c.safe
+                    };
+                    ui.label(
+                        egui::RichText::new(&bd.verdict)
+                            .size(18.0)
+                            .strong()
+                            .color(bc),
+                    );
+                    ui.add(
+                        egui::ProgressBar::new(bd.risk_score as f32)
+                            .desired_width(card_w - 30.0)
+                            .desired_height(5.0)
+                            .fill(bc),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} finding(s) | risk {:.2}",
+                            bd.num_findings, bd.risk_score
+                        ))
+                        .size(10.5)
+                        .monospace()
+                        .color(c.text_secondary),
+                    );
                     for cat in bd.categories.iter().take(8) {
-                        ui.label(egui::RichText::new(format!("• {}", cat))
-                            .size(10.5).monospace().color(bc));
+                        ui.label(
+                            egui::RichText::new(format!("• {}", cat))
+                                .size(10.5)
+                                .monospace()
+                                .color(bc),
+                        );
                     }
                     if !bd.mitre_techniques.is_empty() {
-                        ui.label(egui::RichText::new(format!("MITRE: {}", bd.mitre_techniques.join(", ")))
-                            .size(9.5).monospace().color(c.info));
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "MITRE: {}",
+                                bd.mitre_techniques.join(", ")
+                            ))
+                            .size(9.5)
+                            .monospace()
+                            .color(c.info),
+                        );
                     }
                 } else {
-                    ui.label(egui::RichText::new("No backdoor indicators found.")
-                        .size(11.0).color(c.safe).monospace());
+                    ui.label(
+                        egui::RichText::new("No backdoor indicators found.")
+                            .size(11.0)
+                            .color(c.safe)
+                            .monospace(),
+                    );
                 }
             });
 
@@ -2273,22 +3492,47 @@ pub fn malware_detector_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
             // Shellcode card
             card_frame(ui, &c, c.warn, "SHELLCODE", |ui| {
                 if let Some(ref sc) = report.shellcode_report {
-                    let scc = if sc.verdict.contains("SHELLCODE") || sc.verdict.contains("DETECTED") { c.danger }
-                              else { c.safe };
-                    ui.label(egui::RichText::new(&sc.verdict).size(18.0).strong().color(scc));
-                    ui.label(egui::RichText::new(format!("{} pattern(s)", sc.num_findings))
-                        .size(10.5).monospace().color(c.text_secondary));
+                    let scc = if sc.verdict.contains("SHELLCODE") || sc.verdict.contains("DETECTED")
+                    {
+                        c.danger
+                    } else {
+                        c.safe
+                    };
+                    ui.label(
+                        egui::RichText::new(&sc.verdict)
+                            .size(18.0)
+                            .strong()
+                            .color(scc),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("{} pattern(s)", sc.num_findings))
+                            .size(10.5)
+                            .monospace()
+                            .color(c.text_secondary),
+                    );
                     for p in sc.patterns_detected.iter().take(6) {
-                        ui.label(egui::RichText::new(format!("• {}", p))
-                            .size(10.5).monospace().color(scc));
+                        ui.label(
+                            egui::RichText::new(format!("• {}", p))
+                                .size(10.5)
+                                .monospace()
+                                .color(scc),
+                        );
                     }
                     for h in sc.api_hashes_resolved.iter().take(4) {
-                        ui.label(egui::RichText::new(format!("hash: {}", h))
-                            .size(10.0).monospace().color(c.func_color));
+                        ui.label(
+                            egui::RichText::new(format!("hash: {}", h))
+                                .size(10.0)
+                                .monospace()
+                                .color(c.func_color),
+                        );
                     }
                 } else {
-                    ui.label(egui::RichText::new("No shellcode detected.")
-                        .size(11.0).color(c.safe).monospace());
+                    ui.label(
+                        egui::RichText::new("No shellcode detected.")
+                            .size(11.0)
+                            .color(c.safe)
+                            .monospace(),
+                    );
                 }
             });
 
@@ -2307,23 +3551,43 @@ pub fn malware_detector_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                 }
                 let names = ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"];
                 let colors = [
-                    theme::INFO_COLOR, theme::ACCENT, theme::WARN,
-                    egui::Color32::from_rgb(255, 123, 79), theme::DANGER,
+                    theme::INFO_COLOR,
+                    theme::ACCENT,
+                    theme::WARN,
+                    egui::Color32::from_rgb(255, 123, 79),
+                    theme::DANGER,
                 ];
                 let max = counts.iter().copied().max().unwrap_or(0).max(1) as f32;
                 for (i, count) in counts.iter().enumerate() {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(format!("{:<8}", names[i]))
-                            .size(10.0).monospace().color(colors[i]));
-                        ui.add(egui::ProgressBar::new(*count as f32 / max)
-                            .desired_width(card_w - 140.0).desired_height(5.0).fill(colors[i]));
-                        ui.label(egui::RichText::new(count.to_string())
-                            .size(10.5).monospace().color(colors[i]).strong());
+                        ui.label(
+                            egui::RichText::new(format!("{:<8}", names[i]))
+                                .size(10.0)
+                                .monospace()
+                                .color(colors[i]),
+                        );
+                        ui.add(
+                            egui::ProgressBar::new(*count as f32 / max)
+                                .desired_width(card_w - 140.0)
+                                .desired_height(5.0)
+                                .fill(colors[i]),
+                        );
+                        ui.label(
+                            egui::RichText::new(count.to_string())
+                                .size(10.5)
+                                .monospace()
+                                .color(colors[i])
+                                .strong(),
+                        );
                     });
                 }
                 if report.findings.is_empty() {
-                    ui.label(egui::RichText::new("Clean — no findings.")
-                        .size(10.5).color(c.safe).monospace());
+                    ui.label(
+                        egui::RichText::new("Clean — no findings.")
+                            .size(10.5)
+                            .color(c.safe)
+                            .monospace(),
+                    );
                 }
             });
 
@@ -2331,23 +3595,42 @@ pub fn malware_detector_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
         });
 
     // ── Critical/high findings list ─────────────────────────────────
-    let serious: Vec<&freakre_scanner::report::Finding> = report.findings.iter()
-        .filter(|f| matches!(f.severity,
-            freakre_scanner::report::Severity::High | freakre_scanner::report::Severity::Critical))
+    let serious: Vec<&freakre_scanner::report::Finding> = report
+        .findings
+        .iter()
+        .filter(|f| {
+            matches!(
+                f.severity,
+                freakre_scanner::report::Severity::High
+                    | freakre_scanner::report::Severity::Critical
+            )
+        })
         .collect();
     if !serious.is_empty() {
         ui.add_space(6.0);
         ui.separator();
-        ui.label(egui::RichText::new(format!("Critical / High ({})", serious.len()))
-            .size(12.0).monospace().strong().color(c.danger));
+        ui.label(
+            egui::RichText::new(format!("Critical / High ({})", serious.len()))
+                .size(12.0)
+                .monospace()
+                .strong()
+                .color(c.danger),
+        );
         egui::ScrollArea::vertical()
             .id_salt("detector_serious")
             .max_height(220.0)
             .show(ui, |ui| {
                 for f in serious.iter().take(16) {
                     let sev_c = theme::severity_color(&f.severity);
-                    finding_card(ui, &c, sev_c, &f.severity.to_string(),
-                                 &f.rule_id, &f.description, f.details.as_deref());
+                    finding_card(
+                        ui,
+                        &c,
+                        sev_c,
+                        &f.severity.to_string(),
+                        &f.rule_id,
+                        &f.description,
+                        f.details.as_deref(),
+                    );
                 }
             });
     }
@@ -2367,8 +3650,13 @@ fn card_frame(
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.label(egui::RichText::new(title)
-                .size(10.0).monospace().strong().color(accent));
+            ui.label(
+                egui::RichText::new(title)
+                    .size(10.0)
+                    .monospace()
+                    .strong()
+                    .color(accent),
+            );
             ui.add_space(4.0);
             add(ui);
         });
@@ -2398,29 +3686,54 @@ fn finding_card(
                     .corner_radius(egui::CornerRadius::same(2))
                     .inner_margin(egui::Margin::symmetric(6, 1));
                 chip.show(ui, |ui| {
-                    ui.label(egui::RichText::new(severity)
-                        .size(9.5).monospace().strong().color(accent));
+                    ui.label(
+                        egui::RichText::new(severity)
+                            .size(9.5)
+                            .monospace()
+                            .strong()
+                            .color(accent),
+                    );
                 });
-                ui.label(egui::RichText::new(rule_id.replace('_', " "))
-                    .size(11.5).monospace().strong().color(c.text_white));
+                ui.label(
+                    egui::RichText::new(rule_id.replace('_', " "))
+                        .size(11.5)
+                        .monospace()
+                        .strong()
+                        .color(c.text_white),
+                );
             });
-            ui.label(egui::RichText::new(description)
-                .size(10.5).color(c.text_primary));
+            ui.label(
+                egui::RichText::new(description)
+                    .size(10.5)
+                    .color(c.text_primary),
+            );
             if let Some(details) = details {
                 // Details arrive as "MITRE: T…, T… | Evidence: a, b".
                 let mut mitre = "";
                 let mut evidence = "";
                 for part in details.split(" | ") {
-                    if let Some(m) = part.strip_prefix("MITRE: ") { mitre = m; }
-                    if let Some(e) = part.strip_prefix("Evidence: ") { evidence = e; }
+                    if let Some(m) = part.strip_prefix("MITRE: ") {
+                        mitre = m;
+                    }
+                    if let Some(e) = part.strip_prefix("Evidence: ") {
+                        evidence = e;
+                    }
                 }
                 if !mitre.is_empty() {
-                    ui.label(egui::RichText::new(format!("MITRE: {}", mitre))
-                        .size(9.5).monospace().color(c.info));
+                    ui.label(
+                        egui::RichText::new(format!("MITRE: {}", mitre))
+                            .size(9.5)
+                            .monospace()
+                            .color(c.info),
+                    );
                 }
                 if !evidence.is_empty() {
-                    ui.label(egui::RichText::new(format!("Evidence: {}", evidence))
-                        .size(9.5).monospace().color(c.string_color));
+                    ui.label(
+                        egui::RichText::new(format!("Evidence: {}", evidence))
+                            .size(9.5)
+                            .monospace()
+                            .color(c.string_color),
+                    );
                 }
             }
         });
@@ -2429,53 +3742,98 @@ fn finding_card(
 
 /// Backdoor profile filter tokens (rule-id substrings).
 const BACKDOOR_APP_RULES: &[&str] = &[
-    "WebShell", "AuthBypass", "HiddenAccount",
-    "DllHijacking", "RegistryPersistence", "ServiceBackdoor",
+    "WebShell",
+    "AuthBypass",
+    "HiddenAccount",
+    "DllHijacking",
+    "RegistryPersistence",
+    "ServiceBackdoor",
 ];
 const BACKDOOR_MALWARE_RULES: &[&str] = &[
-    "ReverseShell", "BindShell", "C2Beacon",
-    "EncryptedConfig", "FirmwareIndicator", "NamedPipeBackdoor",
+    "ReverseShell",
+    "BindShell",
+    "C2Beacon",
+    "EncryptedConfig",
+    "FirmwareIndicator",
+    "NamedPipeBackdoor",
 ];
 
 pub fn backdoor_analyzer_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let c = app.colors.clone();
 
     let Some(report) = current_report(app).cloned() else {
-        ui.label(egui::RichText::new("No file loaded.")
-            .color(c.text_secondary).size(11.0).monospace());
+        ui.label(
+            egui::RichText::new("No file loaded.")
+                .color(c.text_secondary)
+                .size(11.0)
+                .monospace(),
+        );
         return;
     };
 
     // Summary strip from the scanner's backdoor report.
     if let Some(ref bd) = report.backdoor_report {
-        let bc = if bd.risk_score >= 0.5 { c.danger }
-                 else if bd.risk_score >= 0.15 { c.warn }
-                 else { c.safe };
+        let bc = if bd.risk_score >= 0.5 {
+            c.danger
+        } else if bd.risk_score >= 0.15 {
+            c.warn
+        } else {
+            c.safe
+        };
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("RISK")
-                .size(10.0).monospace().strong().color(c.text_secondary));
-            ui.add(egui::ProgressBar::new(bd.risk_score as f32)
-                .desired_width(200.0).desired_height(8.0).fill(bc));
-            ui.label(egui::RichText::new(format!("{:.0}%  {}", bd.risk_score * 100.0, bd.verdict))
-                .size(12.0).monospace().strong().color(bc));
+            ui.label(
+                egui::RichText::new("RISK")
+                    .size(10.0)
+                    .monospace()
+                    .strong()
+                    .color(c.text_secondary),
+            );
+            ui.add(
+                egui::ProgressBar::new(bd.risk_score as f32)
+                    .desired_width(200.0)
+                    .desired_height(8.0)
+                    .fill(bc),
+            );
+            ui.label(
+                egui::RichText::new(format!("{:.0}%  {}", bd.risk_score * 100.0, bd.verdict))
+                    .size(12.0)
+                    .monospace()
+                    .strong()
+                    .color(bc),
+            );
             ui.separator();
             for t in bd.mitre_techniques.iter().take(6) {
-                ui.label(egui::RichText::new(format!("[{}]", t))
-                    .size(9.5).monospace().color(c.info));
+                ui.label(
+                    egui::RichText::new(format!("[{}]", t))
+                        .size(9.5)
+                        .monospace()
+                        .color(c.info),
+                );
             }
         });
         ui.separator();
     }
 
     // Collect backdoor-analyzer findings once.
-    let all: Vec<&freakre_scanner::report::Finding> = report.findings.iter()
-        .filter(|f| f.module == "backdoor-analyzer")
+    let all: Vec<&freakre_scanner::report::Finding> = report
+        .findings
+        .iter()
+        .filter(|f| {
+            f.module == "backdoor-analyzer"
+                && !app.settings.suppressed_rules.iter().any(|rule| rule == &f.rule_id)
+        })
         .collect();
     let matches_profile = |f: &&freakre_scanner::report::Finding, tokens: &[&str]| {
         tokens.iter().any(|t| f.rule_id.contains(t))
     };
-    let apps_count = all.iter().filter(|f| matches_profile(f, BACKDOOR_APP_RULES)).count();
-    let mal_count = all.iter().filter(|f| matches_profile(f, BACKDOOR_MALWARE_RULES)).count();
+    let apps_count = all
+        .iter()
+        .filter(|f| matches_profile(f, BACKDOOR_APP_RULES))
+        .count();
+    let mal_count = all
+        .iter()
+        .filter(|f| matches_profile(f, BACKDOOR_MALWARE_RULES))
+        .count();
 
     // Sub-tabs: Applications | Malware | Multi
     ui.horizontal(|ui| {
@@ -2494,7 +3852,11 @@ pub fn backdoor_analyzer_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                 text.color(c.text_secondary)
             })
             .selected(active)
-            .fill(if active { c.bg_selection } else { egui::Color32::TRANSPARENT })
+            .fill(if active {
+                c.bg_selection
+            } else {
+                egui::Color32::TRANSPARENT
+            })
             .min_size(egui::vec2(0.0, 22.0));
             if ui.add(btn).clicked() {
                 app.backdoor_subtab = idx;
@@ -2503,9 +3865,31 @@ pub fn backdoor_analyzer_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     });
     ui.separator();
 
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Persistent baseline").size(10.0).color(c.text_secondary));
+        if ui.small_button("Baseline current hash").clicked()
+            && !app.settings.baseline_hashes.contains(&report.sha256)
+        {
+            app.settings.baseline_hashes.push(report.sha256.clone());
+            app.settings.save();
+        }
+        if ui.small_button("Clear suppressions").clicked() {
+            app.settings.suppressed_rules.clear();
+            app.settings.save();
+        }
+        ui.label(format!("{} suppressed · {} baseline", app.settings.suppressed_rules.len(), app.settings.baseline_hashes.len()));
+    });
+    ui.separator();
+
     let selected: Vec<&freakre_scanner::report::Finding> = match app.backdoor_subtab {
-        0 => all.into_iter().filter(|f| matches_profile(f, BACKDOOR_APP_RULES)).collect(),
-        1 => all.into_iter().filter(|f| matches_profile(f, BACKDOOR_MALWARE_RULES)).collect(),
+        0 => all
+            .into_iter()
+            .filter(|f| matches_profile(f, BACKDOOR_APP_RULES))
+            .collect(),
+        1 => all
+            .into_iter()
+            .filter(|f| matches_profile(f, BACKDOOR_MALWARE_RULES))
+            .collect(),
         _ => all,
     };
 
@@ -2532,6 +3916,12 @@ pub fn backdoor_analyzer_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                 let sev_c = theme::severity_color(&f.severity);
                 finding_card(ui, &c, sev_c, &f.severity.to_string(),
                              &f.rule_id, &f.description, f.details.as_deref());
+                if ui.small_button(format!("Suppress {}", f.rule_id)).clicked()
+                    && !app.settings.suppressed_rules.contains(&f.rule_id)
+                {
+                    app.settings.suppressed_rules.push(f.rule_id.clone());
+                    app.settings.save();
+                }
             }
         });
 }
@@ -2552,44 +3942,69 @@ pub fn full_source_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
     let processed = app.full_source.next;
     let done = app.full_source.done;
     let failed = app.full_source.failed;
-    let frac = if total == 0 { 1.0 } else { processed as f32 / total as f32 };
+    let frac = if total == 0 {
+        1.0
+    } else {
+        processed as f32 / total as f32
+    };
 
     // Toolbar
     ui.horizontal(|ui| {
         if state_running {
             ui.add(egui::Spinner::new().size(14.0));
-            ui.label(egui::RichText::new("decompiling…")
-                .size(11.0).monospace().color(c.text_secondary));
+            ui.label(
+                egui::RichText::new("decompiling…")
+                    .size(11.0)
+                    .monospace()
+                    .color(c.text_secondary),
+            );
         }
-        ui.add(egui::ProgressBar::new(frac)
-            .desired_width(ui.available_width().min(320.0))
-            .desired_height(10.0)
-            .show_percentage());
-        ui.label(egui::RichText::new(format!("{}/{} ok · {} failed",
-                done, total, failed))
-            .size(10.5).monospace().color(if failed > 0 { c.warn } else { c.text_secondary }));
+        ui.add(
+            egui::ProgressBar::new(frac)
+                .desired_width(ui.available_width().min(320.0))
+                .desired_height(10.0)
+                .show_percentage(),
+        );
+        ui.label(
+            egui::RichText::new(format!("{}/{} ok · {} failed", done, total, failed))
+                .size(10.5)
+                .monospace()
+                .color(if failed > 0 { c.warn } else { c.text_secondary }),
+        );
         if let Some(started) = app.full_source.started_at {
             let e = started.elapsed().as_secs_f64();
-            ui.label(egui::RichText::new(format!("{:02}:{:05.2}", (e / 60.0) as u64, e % 60.0))
-                .size(10.5).monospace().color(c.text_secondary));
+            ui.label(
+                egui::RichText::new(format!("{:02}:{:05.2}", (e / 60.0) as u64, e % 60.0))
+                    .size(10.5)
+                    .monospace()
+                    .color(c.text_secondary),
+            );
         }
         if ui.small_button("Restart").clicked() {
             app.full_source = crate::app::FullSourceState::default();
             app.start_full_source();
         }
         if ui.small_button("Copy All").clicked() {
-            let text: String = app.full_source.chunks.iter()
+            let text: String = app
+                .full_source
+                .chunks
+                .iter()
                 .map(|(name, body)| format!("// ════ {} ════\n{}", name, body))
                 .collect::<Vec<_>>()
                 .join("\n\n");
             ui.ctx().copy_text(text);
-            app.toasts.add("Full source copied to clipboard", ToastKind::Success);
+            app.toasts
+                .add("Full source copied to clipboard", ToastKind::Success);
         }
     });
 
     if let Some(ref note) = app.full_source.truncated_note {
-        ui.label(egui::RichText::new(note.clone())
-            .size(10.0).monospace().color(c.warn));
+        ui.label(
+            egui::RichText::new(note.clone())
+                .size(10.0)
+                .monospace()
+                .color(c.warn),
+        );
     }
     ui.separator();
 
@@ -2605,13 +4020,22 @@ pub fn full_source_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
                 ui.add_space(20.0);
                 ui.vertical_centered(|ui| {
                     if total > 0 {
-                        ui.label(egui::RichText::new(format!(
-                            "Preparing {} functions… results appear here as they finish.",
-                            total))
-                            .size(11.0).color(c.text_secondary).monospace());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Preparing {} functions… results appear here as they finish.",
+                                total
+                            ))
+                            .size(11.0)
+                            .color(c.text_secondary)
+                            .monospace(),
+                        );
                     } else {
-                        ui.label(egui::RichText::new("No functions to decompile.")
-                            .size(11.0).color(c.text_secondary).monospace());
+                        ui.label(
+                            egui::RichText::new("No functions to decompile.")
+                                .size(11.0)
+                                .color(c.text_secondary)
+                                .monospace(),
+                        );
                         if ui.button("Start Full Source").clicked() {
                             app.start_full_source();
                         }
@@ -2623,25 +4047,28 @@ pub fn full_source_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
             for (i, (name, body)) in app.full_source.chunks.iter().enumerate() {
                 let failed_chunk = body.starts_with("// [FAILED]");
                 let header = egui::RichText::new(format!("{} · {:04}", name, i + 1))
-                    .monospace().size(11.5).strong()
+                    .monospace()
+                    .size(11.5)
+                    .strong()
                     .color(if failed_chunk { c.warn } else { c.func_color });
                 egui::CollapsingHeader::new(header)
                     .id_salt(("full_source_fn", i))
                     .default_open(false)
                     .show(ui, |ui| {
                         for line in body.lines() {
-                            ui.label(egui::RichText::new(line)
-                                .monospace().size(fs - 1.0)
-                                .color(if line.starts_with("// [FAILED]") || line.starts_with("// Falling back") {
+                            ui.label(egui::RichText::new(line).monospace().size(fs - 1.0).color(
+                                if line.starts_with("// [FAILED]")
+                                    || line.starts_with("// Falling back")
+                                {
                                     c.danger
                                 } else if line.trim_start().starts_with("//") {
                                     c.comment_color
                                 } else {
                                     c.text_primary
-                                }));
+                                },
+                            ));
                         }
                     });
             }
         });
 }
-

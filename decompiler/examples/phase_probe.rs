@@ -8,7 +8,11 @@ fn count_stmts(stmts: &[Stmt]) -> usize {
         .iter()
         .map(|s| {
             let inner = match s {
-                Stmt::If { then_body, else_body, .. } => {
+                Stmt::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
                     count_stmts(then_body) + else_body.as_ref().map(|b| count_stmts(b)).unwrap_or(0)
                 }
                 Stmt::While { body, .. } | Stmt::DoWhile { body, .. } | Stmt::For { body, .. } => {
@@ -19,9 +23,11 @@ fn count_stmts(stmts: &[Stmt]) -> usize {
                         + default.as_ref().map(|b| count_stmts(b)).unwrap_or(0)
                 }
                 Stmt::Block(b) => count_stmts(b),
-                Stmt::TryCatch { try_body, catch_body, .. } => {
-                    count_stmts(try_body) + count_stmts(catch_body)
-                }
+                Stmt::TryCatch {
+                    try_body,
+                    catch_body,
+                    ..
+                } => count_stmts(try_body) + count_stmts(catch_body),
                 _ => 0,
             };
             1 + inner
@@ -43,7 +49,11 @@ fn has_call(stmts: &[Stmt]) -> bool {
         for e in exprs {
             match e {
                 Expr::Call { .. } => found = true,
-                Expr::Binary { lhs, rhs, .. } | Expr::Index { base: lhs, index: rhs } => {
+                Expr::Binary { lhs, rhs, .. }
+                | Expr::Index {
+                    base: lhs,
+                    index: rhs,
+                } => {
                     found |= has_call(std::slice::from_ref(&Stmt::Expr((**lhs).clone())))
                         || has_call(std::slice::from_ref(&Stmt::Expr((**rhs).clone())));
                 }
@@ -55,16 +65,25 @@ fn has_call(stmts: &[Stmt]) -> bool {
 }
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: phase_probe <exe> <offset-hex>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: phase_probe <exe> <offset-hex>");
     let offset = usize::from_str_radix(
-        std::env::args().nth(2).expect("offset").trim_start_matches("0x"),
+        std::env::args()
+            .nth(2)
+            .expect("offset")
+            .trim_start_matches("0x"),
         16,
     )
     .expect("bad offset");
 
     let data = std::fs::read(&path).expect("read");
     let pe = pe_parser::PeFile::parse(&data).expect("pe");
-    let text = pe.sections.iter().find(|s| s.name_string() == ".text").expect(".text");
+    let text = pe
+        .sections
+        .iter()
+        .find(|s| s.name_string() == ".text")
+        .expect(".text");
     let raw = text.raw_data(&data);
     let mut off = offset.saturating_sub(text.raw_data_offset as usize);
     let prologues: [&[u8]; 4] = [
@@ -84,21 +103,38 @@ fn main() {
 
     let code = &raw[off..];
     let lifter = X86Lifter::new(true);
-    let func = lifter.lift_function(code, 0x140000C000u64, "probe").expect("lift");
+    let func = lifter
+        .lift_function(code, 0x140000C000u64, "probe")
+        .expect("lift");
     let total: usize = func.blocks.iter().map(|b| b.insts.len()).sum();
     let init_calls: usize = func
         .blocks
         .iter()
-        .map(|b| b.insts.iter().filter(|i| matches!(i, freakre_ir::IrInst::Call { .. })).count())
+        .map(|b| {
+            b.insts
+                .iter()
+                .filter(|i| matches!(i, freakre_ir::IrInst::Call { .. }))
+                .count()
+        })
         .sum();
-    eprintln!("[probe] blocks={} insts={} initial_calls={}", func.blocks.len(), total, init_calls);
+    eprintln!(
+        "[probe] blocks={} insts={} initial_calls={}",
+        func.blocks.len(),
+        total,
+        init_calls
+    );
 
     // Phase 0 variants
     let mut ir = func.clone();
     let count_calls = |ir: &freakre_ir::IrFunction| -> usize {
         ir.blocks
             .iter()
-            .map(|b| b.insts.iter().filter(|i| matches!(i, freakre_ir::IrInst::Call { .. })).count())
+            .map(|b| {
+                b.insts
+                    .iter()
+                    .filter(|i| matches!(i, freakre_ir::IrInst::Call { .. }))
+                    .count()
+            })
             .sum()
     };
     eprintln!("[calls] initial={}", count_calls(&ir));
@@ -108,13 +144,22 @@ fn main() {
     eprintln!("[calls] after propagate_block_temps={}", count_calls(&ir));
     decompiler::fold_flags::fuse_load_copies(&mut ir);
     let after_fuse: usize = ir.blocks.iter().map(|b| b.insts.len()).sum();
-    eprintln!("[phase] after fold/fuse insts={after_fuse} calls={}", count_calls(&ir));
+    eprintln!(
+        "[phase] after fold/fuse insts={after_fuse} calls={}",
+        count_calls(&ir)
+    );
     decompiler::stack_vars::recover_stack_vars(&mut ir);
     let after_sv: usize = ir.blocks.iter().map(|b| b.insts.len()).sum();
-    eprintln!("[phase] after stack_vars insts={after_sv} calls={}", count_calls(&ir));
+    eprintln!(
+        "[phase] after stack_vars insts={after_sv} calls={}",
+        count_calls(&ir)
+    );
     decompiler::fold_flags::eliminate_dead_flag_defs(&mut ir);
     let after_flags: usize = ir.blocks.iter().map(|b| b.insts.len()).sum();
-    eprintln!("[phase] after dead_flag insts={after_flags} calls={}", count_calls(&ir));
+    eprintln!(
+        "[phase] after dead_flag insts={after_flags} calls={}",
+        count_calls(&ir)
+    );
 
     // Phase 1
     let ast = decompiler::ir_to_ast::ir_to_ast(&ir);

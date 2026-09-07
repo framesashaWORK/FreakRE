@@ -4,10 +4,7 @@
 //! additional functions. This is the most reliable method because it only
 //! reports functions that are actually reachable.
 
-use crate::{
-    Architecture, BasicBlock, DiscoveredFunction, FinderConfig,
-    FunctionSource, Result,
-};
+use crate::{Architecture, BasicBlock, DiscoveredFunction, FinderConfig, FunctionSource, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Recursive descent analyzer
@@ -73,7 +70,10 @@ impl RecursiveAnalyzer {
     }
 
     /// Run the analysis on the given code regions
-    pub fn analyze(&mut self, code_regions: &[crate::CodeRegion]) -> Result<Vec<DiscoveredFunction>> {
+    pub fn analyze(
+        &mut self,
+        code_regions: &[crate::CodeRegion],
+    ) -> Result<Vec<DiscoveredFunction>> {
         // Build address-to-region mapping for fast lookup
         let region_map = self.build_region_map(code_regions);
 
@@ -93,7 +93,9 @@ impl RecursiveAnalyzer {
                 // Queue callees for analysis
                 for block in &func.blocks {
                     for callee in self.find_callees(block, &region_map) {
-                        if !self.known_functions.contains(&callee) && !self.visited.contains(&callee) {
+                        if !self.known_functions.contains(&callee)
+                            && !self.visited.contains(&callee)
+                        {
                             self.visited.insert(callee);
                             self.work_queue.push_back(WorkItem {
                                 address: callee,
@@ -113,7 +115,10 @@ impl RecursiveAnalyzer {
         Ok(result)
     }
 
-    fn build_region_map<'a>(&self, regions: &'a [crate::CodeRegion]) -> HashMap<u64, &'a crate::CodeRegion> {
+    fn build_region_map<'a>(
+        &self,
+        regions: &'a [crate::CodeRegion],
+    ) -> HashMap<u64, &'a crate::CodeRegion> {
         regions.iter().map(|r| (r.address, r)).collect()
     }
 
@@ -181,7 +186,12 @@ impl RecursiveAnalyzer {
         region_map: &'a HashMap<u64, &crate::CodeRegion>,
     ) -> Option<&'a crate::CodeRegion> {
         // Check each region
-        region_map.values().find(|&region| address >= region.address && address < region.address + region.data.len() as u64).map(|v| v as _)
+        region_map
+            .values()
+            .find(|&region| {
+                address >= region.address && address < region.address + region.data.len() as u64
+            })
+            .map(|v| v as _)
     }
 
     /// Quick check if bytes look like executable code
@@ -319,14 +329,24 @@ impl RecursiveAnalyzer {
             Architecture::X86_64 => self
                 .decode_x86_len(data, true)
                 .map_or(DecodeOutcome::Unknown, DecodeOutcome::Length),
-            Architecture::Arm | Architecture::Arm32 | Architecture::Arm32Thumb
-            | Architecture::Arm64 | Architecture::Arm64BE
-            | Architecture::Mips | Architecture::MipsEl
-            | Architecture::Mips32LE | Architecture::Mips32BE
-            | Architecture::Mips64LE | Architecture::Mips64BE
-            | Architecture::RiscV32 | Architecture::RiscV64
-            | Architecture::Ppc32 | Architecture::Ppc64 | Architecture::Ppc64LE
-            | Architecture::Sparc32 | Architecture::Sparc64 => DecodeOutcome::Length(4),
+            Architecture::Arm
+            | Architecture::Arm32
+            | Architecture::Arm32Thumb
+            | Architecture::Arm64
+            | Architecture::Arm64BE
+            | Architecture::Mips
+            | Architecture::MipsEl
+            | Architecture::Mips32LE
+            | Architecture::Mips32BE
+            | Architecture::Mips64LE
+            | Architecture::Mips64BE
+            | Architecture::RiscV32
+            | Architecture::RiscV64
+            | Architecture::Ppc32
+            | Architecture::Ppc64
+            | Architecture::Ppc64LE
+            | Architecture::Sparc32
+            | Architecture::Sparc64 => DecodeOutcome::Length(4),
         }
     }
 
@@ -337,8 +357,9 @@ impl RecursiveAnalyzer {
         let mut i = 0usize;
         while i < instr.len() {
             match instr[i] {
-                0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x66 | 0x67
-                | 0xF0 | 0xF2 | 0xF3 => i += 1,
+                0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x66 | 0x67 | 0xF0 | 0xF2 | 0xF3 => {
+                    i += 1
+                }
                 0x40..=0x4F if is_64bit => i += 1,
                 _ => break,
             }
@@ -363,8 +384,7 @@ impl RecursiveAnalyzer {
         // canonical order; we accept either interleaving since only lengths matter.
         while i < data.len() {
             match data[i] {
-                0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x67
-                | 0xF0 | 0xF2 | 0xF3 => i += 1,
+                0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x67 | 0xF0 | 0xF2 | 0xF3 => i += 1,
                 0x66 => {
                     o66 = true;
                     i += 1;
@@ -402,10 +422,23 @@ impl RecursiveAnalyzer {
                     // No-ModRM system/misc: syscall/sysret/clts/invd/wbinvd/
                     // ud*/femms, rdtsc family, sysenter/sysexit/getsec,
                     // push/pop fs/gs, cpuid, rsm, bswap
-                    0x05 | 0x06 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C
-                    | 0x0E | 0x0F
+                    0x05
+                    | 0x06
+                    | 0x07
+                    | 0x08
+                    | 0x09
+                    | 0x0A
+                    | 0x0B
+                    | 0x0C
+                    | 0x0E
+                    | 0x0F
                     | 0x30..=0x37
-                    | 0xA0 | 0xA1 | 0xA2 | 0xA8 | 0xA9 | 0xAA
+                    | 0xA0
+                    | 0xA1
+                    | 0xA2
+                    | 0xA8
+                    | 0xA9
+                    | 0xAA
                     | 0xC8..=0xCF => need(2),
                     // ModRM + trailing imm8: pshuf*/shift groups, shld/shrd imm8,
                     // bt group imm8, cmpps, pinsrw/pextrw/shufp*
@@ -425,12 +458,22 @@ impl RecursiveAnalyzer {
             // ─── One-byte ModRM operations ──────────────────────────────
             // ALU r/m,r and r,r/m families, bound/arpl, test/xchg/mov,
             // shifts by CL, FPU stack ops, inc/dec & call/jmp groups
-            0x00..=0x03 | 0x08..=0x0B | 0x10..=0x13 | 0x18..=0x1B
-            | 0x20..=0x23 | 0x28..=0x2B | 0x30..=0x33 | 0x38..=0x3B
-            | 0x62 | 0x63
-            | 0x84..=0x87 | 0x88..=0x8F
-            | 0xD0..=0xD3 | 0xD8..=0xDF
-            | 0xFE | 0xFF => mrm(1),
+            0x00..=0x03
+            | 0x08..=0x0B
+            | 0x10..=0x13
+            | 0x18..=0x1B
+            | 0x20..=0x23
+            | 0x28..=0x2B
+            | 0x30..=0x33
+            | 0x38..=0x3B
+            | 0x62
+            | 0x63
+            | 0x84..=0x87
+            | 0x88..=0x8F
+            | 0xD0..=0xD3
+            | 0xD8..=0xDF
+            | 0xFE
+            | 0xFF => mrm(1),
             // Group 1: ALU r/m, imm8/imm32 (add/or/adc/sbb/and/sub/xor/cmp)
             // (0x82 aliases 0x80 but is invalid in long mode)
             0x80 => {
@@ -506,8 +549,19 @@ impl RecursiveAnalyzer {
             0xB8..=0xBF => need(1 + imm32),
 
             // ─── Single-byte instructions ───────────────────────────────
-            0xCC | 0xCE | 0xCF | 0xD7 | 0xF1 | 0xF4 | 0xF5 | 0xF8..=0xFD
-            | 0x90 | 0x98 | 0x99 | 0x9B | 0x9C..=0x9F => need(1),
+            0xCC
+            | 0xCE
+            | 0xCF
+            | 0xD7
+            | 0xF1
+            | 0xF4
+            | 0xF5
+            | 0xF8..=0xFD
+            | 0x90
+            | 0x98
+            | 0x99
+            | 0x9B
+            | 0x9C..=0x9F => need(1),
             0xC2 | 0xCA => need(3),
             0xC3 | 0xCB => need(1),
             0xCD => need(2),
@@ -515,9 +569,12 @@ impl RecursiveAnalyzer {
 
             // ─── 32-bit-only encodings (invalid in long mode) ───────────
             0x40..=0x4F if !is_64bit => need(1),
-            0x06 | 0x07 | 0x0E | 0x16 | 0x17 | 0x1E | 0x1F
-            | 0x27 | 0x2F | 0x37 | 0x3F | 0x60 | 0x61
-            | 0xD4 | 0xD5 if !is_64bit => need(1),
+            0x06 | 0x07 | 0x0E | 0x16 | 0x17 | 0x1E | 0x1F | 0x27 | 0x2F | 0x37 | 0x3F | 0x60
+            | 0x61 | 0xD4 | 0xD5
+                if !is_64bit =>
+            {
+                need(1)
+            }
 
             _ => None,
         }
@@ -656,7 +713,8 @@ impl RecursiveAnalyzer {
             // JMP rel32
             0xE9 => {
                 let rel_bytes = data.get(pos + 1..pos + 5)?;
-                let rel = i32::from_le_bytes([rel_bytes[0], rel_bytes[1], rel_bytes[2], rel_bytes[3]]);
+                let rel =
+                    i32::from_le_bytes([rel_bytes[0], rel_bytes[1], rel_bytes[2], rel_bytes[3]]);
                 let target = (block.start as i64 + pos as i64 + 5 + rel as i64) as u64;
                 Some(target)
             }
@@ -670,7 +728,11 @@ impl RecursiveAnalyzer {
         }
     }
 
-    fn find_callees(&self, block: &BasicBlock, region_map: &HashMap<u64, &crate::CodeRegion>) -> Vec<u64> {
+    fn find_callees(
+        &self,
+        block: &BasicBlock,
+        region_map: &HashMap<u64, &crate::CodeRegion>,
+    ) -> Vec<u64> {
         let mut callees = Vec::new();
 
         // Find the region containing this block
@@ -763,13 +825,21 @@ mod tests {
             Architecture::Sparc32,
         ] {
             let data = [0u8; 32];
-            assert!(!analyzer(arch).looks_like_code(&data), "arch {}", arch.as_str());
+            assert!(
+                !analyzer(arch).looks_like_code(&data),
+                "arch {}",
+                arch.as_str()
+            );
         }
     }
 
     #[test]
     fn test_rejects_zero_density_over_50_percent() {
-        for arch in [Architecture::Arm32, Architecture::RiscV64, Architecture::X86_64] {
+        for arch in [
+            Architecture::Arm32,
+            Architecture::RiscV64,
+            Architecture::X86_64,
+        ] {
             let mut data = vec![0u8; 17];
             data.extend_from_slice(&[0xE1, 0xA0, 0xF0, 0x00]);
             assert!(
@@ -783,8 +853,8 @@ mod tests {
     #[test]
     fn test_accepts_plausible_non_x86_code() {
         let data = [
-            0x04, 0xB0, 0x2D, 0xE5, 0x00, 0x40, 0xA0, 0xE1, 0x01, 0x00, 0xA0, 0xE3,
-            0x08, 0xD0, 0x4B, 0xE2, 0x1E, 0xFF, 0x2F, 0xE1,
+            0x04, 0xB0, 0x2D, 0xE5, 0x00, 0x40, 0xA0, 0xE1, 0x01, 0x00, 0xA0, 0xE3, 0x08, 0xD0,
+            0x4B, 0xE2, 0x1E, 0xFF, 0x2F, 0xE1,
         ];
         assert!(analyzer(Architecture::Arm32).looks_like_code(&data));
         assert!(analyzer(Architecture::RiscV32).looks_like_code(&data));
@@ -816,26 +886,50 @@ mod tests {
     fn lde_movzx_movsx_setcc_cmov() {
         let a = analyzer(Architecture::X86_64);
         // movzx eax, byte [rbp+8] = 0F B6 45 08 (mod01 disp8) -> 4 bytes
-        assert_eq!(a.instruction_length(&[0x0F, 0xB6, 0x45, 0x08]), DecodeOutcome::Length(4));
+        assert_eq!(
+            a.instruction_length(&[0x0F, 0xB6, 0x45, 0x08]),
+            DecodeOutcome::Length(4)
+        );
         // movsx ecx, word [eax] = 0F BF 08 (mod00 reg-indirect) -> 3 bytes
-        assert_eq!(a.instruction_length(&[0x0F, 0xBF, 0x08]), DecodeOutcome::Length(3));
+        assert_eq!(
+            a.instruction_length(&[0x0F, 0xBF, 0x08]),
+            DecodeOutcome::Length(3)
+        );
         // setne al = 0F 95 C0 (register form) -> 3 bytes
-        assert_eq!(a.instruction_length(&[0x0F, 0x95, 0xC0]), DecodeOutcome::Length(3));
+        assert_eq!(
+            a.instruction_length(&[0x0F, 0x95, 0xC0]),
+            DecodeOutcome::Length(3)
+        );
         // cmovne ecx, eax = 0F 45 C8 -> 3 bytes
-        assert_eq!(a.instruction_length(&[0x0F, 0x45, 0xC8]), DecodeOutcome::Length(3));
+        assert_eq!(
+            a.instruction_length(&[0x0F, 0x45, 0xC8]),
+            DecodeOutcome::Length(3)
+        );
     }
 
     #[test]
     fn lde_two_byte_misc_and_truncation() {
         let a = analyzer(Architecture::X86_64);
         // bswap eax = 0F C8
-        assert_eq!(a.instruction_length(&[0x0F, 0xC8]), DecodeOutcome::Length(2));
+        assert_eq!(
+            a.instruction_length(&[0x0F, 0xC8]),
+            DecodeOutcome::Length(2)
+        );
         // rdtsc = 0F 31 (no ModRM)
-        assert_eq!(a.instruction_length(&[0x0F, 0x31]), DecodeOutcome::Length(2));
+        assert_eq!(
+            a.instruction_length(&[0x0F, 0x31]),
+            DecodeOutcome::Length(2)
+        );
         // imul ecx, [eax] = 0F AF 08 -> 3 bytes
-        assert_eq!(a.instruction_length(&[0x0F, 0xAF, 0x08]), DecodeOutcome::Length(3));
+        assert_eq!(
+            a.instruction_length(&[0x0F, 0xAF, 0x08]),
+            DecodeOutcome::Length(3)
+        );
         // Truncated jcc: only 0F 84 present -> Unknown, never a fake length
-        assert_eq!(a.instruction_length(&[0x0F, 0x84, 0x00, 0x00]), DecodeOutcome::Unknown);
+        assert_eq!(
+            a.instruction_length(&[0x0F, 0x84, 0x00, 0x00]),
+            DecodeOutcome::Unknown
+        );
     }
 
     // ─── LDE: prefixes ───────────────────────────────────────────────────
@@ -844,24 +938,42 @@ mod tests {
     fn lde_legacy_prefixes() {
         // mov eax, imm32 with operand-size override: 66 B8 xx xx -> 4 bytes total
         let a = analyzer(Architecture::X86);
-        assert_eq!(a.instruction_length(&[0x66, 0xB8, 0x34, 0x12]), DecodeOutcome::Length(4));
+        assert_eq!(
+            a.instruction_length(&[0x66, 0xB8, 0x34, 0x12]),
+            DecodeOutcome::Length(4)
+        );
         // rep nop (pause): F3 90 -> 2 bytes
-        assert_eq!(a.instruction_length(&[0xF3, 0x90]), DecodeOutcome::Length(2));
+        assert_eq!(
+            a.instruction_length(&[0xF3, 0x90]),
+            DecodeOutcome::Length(2)
+        );
         // CS-prefixed mov: 2E 89 D8 (mod11) -> 3 bytes
-        assert_eq!(a.instruction_length(&[0x2E, 0x89, 0xD8]), DecodeOutcome::Length(3));
+        assert_eq!(
+            a.instruction_length(&[0x2E, 0x89, 0xD8]),
+            DecodeOutcome::Length(3)
+        );
 
         // REX.W + mov r/m64, r64: 48 89 E5 -> 3 bytes
         let a64 = analyzer(Architecture::X86_64);
-        assert_eq!(a64.instruction_length(&[0x48, 0x89, 0xE5]), DecodeOutcome::Length(3));
+        assert_eq!(
+            a64.instruction_length(&[0x48, 0x89, 0xE5]),
+            DecodeOutcome::Length(3)
+        );
         // REX.W + sub rsp, imm8: 48 83 EC 20 -> 4 bytes
-        assert_eq!(a64.instruction_length(&[0x48, 0x83, 0xEC, 0x20]), DecodeOutcome::Length(4));
+        assert_eq!(
+            a64.instruction_length(&[0x48, 0x83, 0xEC, 0x20]),
+            DecodeOutcome::Length(4)
+        );
     }
 
     #[test]
     fn lde_modrm_sib_displacement() {
         let a = analyzer(Architecture::X86_64);
         // mov rax, [rsp+8] = 48 8B 44 24 08 (SIB + disp8) -> 5 bytes
-        assert_eq!(a.instruction_length(&[0x48, 0x8B, 0x44, 0x24, 0x08]), DecodeOutcome::Length(5));
+        assert_eq!(
+            a.instruction_length(&[0x48, 0x8B, 0x44, 0x24, 0x08]),
+            DecodeOutcome::Length(5)
+        );
         // mov rax, [rip+disp32] = 48 8B 05 de ad be ef -> 7 bytes
         assert_eq!(
             a.instruction_length(&[0x48, 0x8B, 0x05, 0xDE, 0xAD, 0xBE, 0xEF]),
@@ -876,11 +988,20 @@ mod tests {
         let a = analyzer(Architecture::X86_64);
         // VEX (AVX) prefix — unsupported, must be Unknown (stop with warning),
         // never a silent 0-length "end of function".
-        assert_eq!(a.instruction_length(&[0xC4, 0xE2, 0x7D, 0x00, 0x00]), DecodeOutcome::Unknown);
+        assert_eq!(
+            a.instruction_length(&[0xC4, 0xE2, 0x7D, 0x00, 0x00]),
+            DecodeOutcome::Unknown
+        );
         // Three-byte escape 0F 38 — refused rather than guessed.
-        assert_eq!(a.instruction_length(&[0x0F, 0x38, 0x00, 0xC0]), DecodeOutcome::Unknown);
+        assert_eq!(
+            a.instruction_length(&[0x0F, 0x38, 0x00, 0xC0]),
+            DecodeOutcome::Unknown
+        );
         // Truncated call rel32
-        assert_eq!(a.instruction_length(&[0xE8, 0x00, 0x00]), DecodeOutcome::Unknown);
+        assert_eq!(
+            a.instruction_length(&[0xE8, 0x00, 0x00]),
+            DecodeOutcome::Unknown
+        );
     }
 
     #[test]
@@ -889,14 +1010,18 @@ mod tests {
         // The sweep must stop at the undecodable byte and simply end the path;
         // blocks decoded so far are kept instead of silently mis-sized.
         let code = vec![
-            0x55,                         // push rbp
-            0x48, 0x89, 0xE5,             // mov rbp, rsp
+            0x55, // push rbp
+            0x48, 0x89, 0xE5, // mov rbp, rsp
             0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1
-            0x31, 0xC0,                   // xor eax, eax
+            0x31, 0xC0, // xor eax, eax
             0xC4, 0xE2, 0x7D, 0x00, 0xC0, // unsupported VEX instruction
-            0xC3,                         // ret (never reached by the sweep)
+            0xC3, // ret (never reached by the sweep)
         ];
-        let region = crate::CodeRegion { address: 0x401000, data: code, executable: true };
+        let region = crate::CodeRegion {
+            address: 0x401000,
+            data: code,
+            executable: true,
+        };
         let mut a = RecursiveAnalyzer::new(Architecture::X86_64, FinderConfig::default());
         a.add_entry_point(0x401000);
 
@@ -936,10 +1061,16 @@ mod tests {
         // as an unconditional terminator).
         let mut code = vec![0xFF, 0x25, 0x00, 0x00, 0x00, 0x00]; // jmp [rip]
         code.extend_from_slice(&[0xCC; 16]);
-        let region = crate::CodeRegion { address: 0x401000, data: code, executable: true };
+        let region = crate::CodeRegion {
+            address: 0x401000,
+            data: code,
+            executable: true,
+        };
 
         let a = analyzer(Architecture::X86_64);
-        let blocks = a.build_basic_blocks(0x401000, &region, &HashMap::new()).unwrap();
+        let blocks = a
+            .build_basic_blocks(0x401000, &region, &HashMap::new())
+            .unwrap();
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].start, 0x401000);
         // Function path ends right after the 6-byte jmp, never in the padding.

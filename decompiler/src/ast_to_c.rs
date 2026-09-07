@@ -1,6 +1,8 @@
 //! Convert AST to C pseudocode.
 
 use crate::ast::*;
+use crate::decompile::DecompilerConfig;
+use crate::ident::IdentMap;
 use freakre_ir::Ty;
 use std::collections::HashMap;
 
@@ -14,9 +16,17 @@ fn unsigned_cmp_str(op: &BinOp) -> Option<&'static str> {
     }
 }
 
-/// Convert an AST function to C pseudocode
+/// Convert an AST function to C pseudocode with default configuration
 pub fn ast_to_c(func: &AstFunction) -> String {
-    let mut emitter = CEmitter::new();
+    ast_to_c_with_config(func, &DecompilerConfig::default())
+}
+
+/// Convert an AST function to C pseudocode, honoring `DecompilerConfig`:
+/// `indent` sets the indentation unit, `include_declarations` toggles local
+/// variable declarations, `annotate_addresses` prepends an entry-address
+/// comment when the AST carries a nonzero entry address.
+pub fn ast_to_c_with_config(func: &AstFunction, config: &DecompilerConfig) -> String {
+    let mut emitter = CEmitter::new(config);
     emitter.emit_function(func);
     let mut out = String::with_capacity(emitter.output.len());
     for (i, line) in emitter.output.lines().enumerate() {
@@ -34,19 +44,39 @@ pub fn ast_to_c(func: &AstFunction) -> String {
 struct CEmitter {
     output: String,
     indent: usize,
+    /// Indentation unit from `DecompilerConfig::indent` (default: 4 spaces).
+    indent_str: String,
+    /// From `DecompilerConfig::include_declarations`: when false, local
+    /// variable declarations are omitted from the output.
+    include_declarations: bool,
+    /// From `DecompilerConfig::annotate_addresses`: emits an entry-address
+    /// comment above the signature when the function carries an address.
+    annotate_addresses: bool,
     /// Declared types for params and locals, used for cast hygiene and
     /// struct-field access printing. Lookups only — emission order never
     /// depends on map iteration, so output stays deterministic.
     var_types: HashMap<String, Ty>,
+    /// Raw identifier -> valid C identifier (keywords, illegal chars,
+    /// collisions). Deterministic per function.
+    idents: IdentMap,
 }
 
 impl CEmitter {
-    fn new() -> Self {
+    fn new(config: &DecompilerConfig) -> Self {
         CEmitter {
             output: String::new(),
             indent: 0,
+            indent_str: config.indent.clone(),
+            include_declarations: config.include_declarations,
+            annotate_addresses: config.annotate_addresses,
             var_types: HashMap::new(),
+            idents: IdentMap::new(),
         }
+    }
+
+    /// Sanitized form of a raw identifier (registers it on first use).
+    fn ident(&mut self, raw: &str) -> String {
+        self.idents.get_or_insert(raw)
     }
 
     fn emit_function(&mut self, func: &AstFunction) {
@@ -61,12 +91,18 @@ impl CEmitter {
         }
 
         // Function signature
+        if self.annotate_addresses && func.entry_address != 0 {
+            self.emit_indent();
+            self.output
+                .push_str(&format!("// address: 0x{:X}\n", func.entry_address));
+        }
         self.emit_indent();
         self.output.push_str(&self.type_to_c(&func.return_type));
         self.output.push(' ');
-        self.output.push_str(&func.name);
+        let func_name = self.ident(&func.name);
+        self.output.push_str(&func_name);
         self.output.push('(');
-        
+
         // Parameters
         for (i, param) in func.params.iter().enumerate() {
             if i > 0 {
@@ -74,46 +110,50 @@ impl CEmitter {
             }
             self.output.push_str(&self.type_to_c(&param.ty));
             self.output.push(' ');
-            self.output.push_str(&param.name);
+            let pname = self.ident(&param.name);
+            self.output.push_str(&pname);
         }
-        
+
         if func.params.is_empty() {
             self.output.push_str("void");
         }
-        
+
         self.output.push_str(") {\n");
         self.indent += 1;
-        
+
         // Local variable declarations (only names actually referenced)
-        let used = used_var_names(&func.body);
-        for local in &func.locals {
-            if local.is_used && used.contains(&local.name) {
-                self.emit_indent();
-                self.output.push_str(&self.type_to_c(&local.ty));
-                self.output.push(' ');
-                self.output.push_str(&local.name);
-                self.output.push_str(";\n");
+        if self.include_declarations {
+            let used = used_var_names(&func.body);
+            for local in &func.locals {
+                if local.is_used && used.contains(&local.name) {
+                    self.emit_indent();
+                    self.output.push_str(&self.type_to_c(&local.ty));
+                    self.output.push(' ');
+                    let lname = self.ident(&local.name);
+                    self.output.push_str(&lname);
+                    self.output.push_str(";\n");
+                }
+            }
+
+            let declared_any = func
+                .locals
+                .iter()
+                .any(|l| l.is_used && used.contains(&l.name));
+            if declared_any {
+                self.output.push('\n');
             }
         }
-        
-        let declared_any = func
-            .locals
-            .iter()
-            .any(|l| l.is_used && used.contains(&l.name));
-        if declared_any {
-            self.output.push('\n');
-        }
-        
+
         // Body
         for stmt in &func.body {
             self.emit_stmt(stmt);
         }
-        
+
         self.indent -= 1;
         self.emit_indent();
         self.output.push_str("}\n");
     }
-    
+
     fn emit_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Assign { target, value } => {
@@ -138,22 +178,26 @@ impl CEmitter {
                 }
                 self.output.push_str(";\n");
             }
-            
-            Stmt::If { cond, then_body, else_body } => {
+
+            Stmt::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
                 self.emit_indent();
                 self.output.push_str("if (");
                 self.emit_expr(cond, 0);
                 self.output.push_str(") {\n");
-                
+
                 self.indent += 1;
                 for s in then_body {
                     self.emit_stmt(s);
                 }
                 self.indent -= 1;
-                
+
                 self.emit_indent();
                 self.output.push('}');
-                
+
                 if let Some(else_stmts) = else_body {
                     self.output.push_str(" else {\n");
                     self.indent += 1;
@@ -164,85 +208,94 @@ impl CEmitter {
                     self.emit_indent();
                     self.output.push('}');
                 }
-                
+
                 self.output.push('\n');
             }
-            
+
             Stmt::While { cond, body } => {
                 self.emit_indent();
                 self.output.push_str("while (");
                 self.emit_expr(cond, 0);
                 self.output.push_str(") {\n");
-                
+
                 self.indent += 1;
                 for s in body {
                     self.emit_stmt(s);
                 }
                 self.indent -= 1;
-                
+
                 self.emit_indent();
                 self.output.push_str("}\n");
             }
-            
-            Stmt::For { init, cond, update, body } => {
+
+            Stmt::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
                 self.emit_indent();
                 self.output.push_str("for (");
-                
+
                 if let Some(init_stmt) = init {
                     self.emit_stmt_inline(init_stmt);
                 }
                 self.output.push_str("; ");
-                
+
                 if let Some(cond_expr) = cond {
                     self.emit_expr(cond_expr, 0);
                 }
                 self.output.push_str("; ");
-                
+
                 if let Some(update_stmt) = update {
                     self.emit_stmt_inline(update_stmt);
                 }
-                
+
                 self.output.push_str(") {\n");
-                
+
                 self.indent += 1;
                 for s in body {
                     self.emit_stmt(s);
                 }
                 self.indent -= 1;
-                
+
                 self.emit_indent();
                 self.output.push_str("}\n");
             }
-            
+
             Stmt::DoWhile { body, cond } => {
                 self.emit_indent();
                 self.output.push_str("do {\n");
-                
+
                 self.indent += 1;
                 for s in body {
                     self.emit_stmt(s);
                 }
                 self.indent -= 1;
-                
+
                 self.emit_indent();
                 self.output.push_str("} while (");
                 self.emit_expr(cond, 0);
                 self.output.push_str(");\n");
             }
-            
-            Stmt::Switch { expr, cases, default } => {
+
+            Stmt::Switch {
+                expr,
+                cases,
+                default,
+            } => {
                 self.emit_indent();
                 self.output.push_str("switch (");
                 self.emit_expr(expr, 0);
                 self.output.push_str(") {\n");
-                
+
                 self.indent += 1;
                 for case in cases {
                     self.emit_indent();
                     self.output.push_str("case ");
                     self.emit_expr(&case.value, 0);
                     self.output.push_str(":\n");
-                    
+
                     self.indent += 1;
                     for s in &case.body {
                         self.emit_stmt(s);
@@ -253,23 +306,23 @@ impl CEmitter {
                     }
                     self.indent -= 1;
                 }
-                
+
                 if let Some(default_stmts) = default {
                     self.emit_indent();
                     self.output.push_str("default:\n");
-                    
+
                     self.indent += 1;
                     for s in default_stmts {
                         self.emit_stmt(s);
                     }
                     self.indent -= 1;
                 }
-                
+
                 self.indent -= 1;
                 self.emit_indent();
                 self.output.push_str("}\n");
             }
-            
+
             Stmt::Return { value } => {
                 self.emit_indent();
                 self.output.push_str("return");
@@ -279,20 +332,21 @@ impl CEmitter {
                 }
                 self.output.push_str(";\n");
             }
-            
+
             Stmt::Break => {
                 self.emit_indent();
                 self.output.push_str("break;\n");
             }
-            
+
             Stmt::Continue => {
                 self.emit_indent();
                 self.output.push_str("continue;\n");
             }
-            
+
             Stmt::Call { func, args } => {
                 self.emit_indent();
-                self.output.push_str(func);
+                let fname = self.ident(func);
+                self.output.push_str(&fname);
                 self.output.push('(');
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
@@ -302,13 +356,24 @@ impl CEmitter {
                 }
                 self.output.push_str(");\n");
             }
-            
+
             Stmt::Expr(expr) => {
                 self.emit_indent();
+                // GCC/Clang's computed-goto extension is the only C-like
+                // representation that preserves an indirect branch. Emitting
+                // `goto(expr)` looks like a function call and is not valid C.
+                if let Expr::Call { func, args } = expr {
+                    if func == "goto" && args.len() == 1 {
+                        self.output.push_str("goto *(");
+                        self.emit_expr(&args[0], 0);
+                        self.output.push_str(");\n");
+                        return;
+                    }
+                }
                 self.emit_expr(expr, 0);
                 self.output.push_str(";\n");
             }
-            
+
             Stmt::Block(stmts) => {
                 self.emit_indent();
                 self.output.push_str("{\n");
@@ -320,12 +385,13 @@ impl CEmitter {
                 self.emit_indent();
                 self.output.push_str("}\n");
             }
-            
+
             Stmt::Decl { name, ty, init } => {
                 self.emit_indent();
                 self.output.push_str(&self.type_to_c(ty));
                 self.output.push(' ');
-                self.output.push_str(name);
+                let dname = self.ident(name);
+                self.output.push_str(&dname);
                 if let Some(init_expr) = init {
                     self.output.push_str(" = ");
                     match init_expr {
@@ -337,13 +403,17 @@ impl CEmitter {
                 }
                 self.output.push_str(";\n");
             }
-            
+
             Stmt::Empty => {
                 self.emit_indent();
                 self.output.push_str(";\n");
             }
-            
-            Stmt::TryCatch { try_body, catch_var, catch_body } => {
+
+            Stmt::TryCatch {
+                try_body,
+                catch_var,
+                catch_body,
+            } => {
                 self.emit_indent();
                 self.output.push_str("try {\n");
                 self.indent += 1;
@@ -354,7 +424,8 @@ impl CEmitter {
                 self.emit_indent();
                 self.output.push_str("} catch (");
                 if let Some(var) = catch_var {
-                    self.output.push_str(var);
+                    let vname = self.ident(var);
+                    self.output.push_str(&vname);
                 } else {
                     self.output.push_str("...");
                 }
@@ -371,14 +442,16 @@ impl CEmitter {
             Stmt::Goto { label } => {
                 self.emit_indent();
                 self.output.push_str("goto ");
-                self.output.push_str(label);
+                let lname = self.ident(label);
+                self.output.push_str(&lname);
                 self.output.push_str(";\n");
             }
 
             Stmt::Label { name } => {
                 // Labels are not indented — they sit at column 0 relative to current scope
                 self.emit_indent();
-                self.output.push_str(name);
+                let lname = self.ident(name);
+                self.output.push_str(&lname);
                 self.output.push_str(":\n");
             }
 
@@ -390,7 +463,7 @@ impl CEmitter {
             }
         }
     }
-    
+
     fn emit_stmt_inline(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Assign { target, value } => {
@@ -404,7 +477,7 @@ impl CEmitter {
             _ => {}
         }
     }
-    
+
     fn emit_expr(&mut self, expr: &Expr, parent_prec: u8) {
         match expr {
             Expr::IntLit(val) => {
@@ -414,7 +487,7 @@ impl CEmitter {
                     self.output.push_str(&format!("0x{:X}", val));
                 }
             }
-            
+
             Expr::FloatLit(val) => {
                 if val.is_nan() {
                     self.output.push_str("/* NaN */ 0.0");
@@ -432,7 +505,7 @@ impl CEmitter {
                     self.output.push_str(&format!("{:?}", val));
                 }
             }
-            
+
             Expr::StringLit(s) => {
                 self.output.push('"');
                 for ch in s.chars() {
@@ -452,15 +525,16 @@ impl CEmitter {
                 }
                 self.output.push('"');
             }
-            
+
             Expr::BoolLit(b) => {
                 self.output.push_str(if *b { "true" } else { "false" });
             }
-            
+
             Expr::Var(name) => {
-                self.output.push_str(name);
+                let n = self.ident(name);
+                self.output.push_str(&n);
             }
-            
+
             Expr::Binary { op, lhs, rhs } => {
                 if let Some(cmp) = unsigned_cmp_str(op) {
                     self.output.push_str("((uint64_t)(");
@@ -475,11 +549,11 @@ impl CEmitter {
 
                 let prec = op.precedence();
                 let need_parens = prec < parent_prec;
-                
+
                 if need_parens {
                     self.output.push('(');
                 }
-                
+
                 self.emit_expr(lhs, prec);
                 self.output.push(' ');
                 self.output.push_str(op.as_str());
@@ -496,19 +570,20 @@ impl CEmitter {
                     prec
                 };
                 self.emit_expr(rhs, right_prec);
-                
+
                 if need_parens {
                     self.output.push(')');
                 }
             }
-            
+
             Expr::Unary { op, operand } => {
                 self.output.push_str(op.as_str());
                 self.emit_expr(operand, 15);
             }
-            
+
             Expr::Call { func, args } => {
-                self.output.push_str(func);
+                let fname = self.ident(func);
+                self.output.push_str(&fname);
                 self.output.push('(');
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
@@ -518,20 +593,20 @@ impl CEmitter {
                 }
                 self.output.push(')');
             }
-            
+
             Expr::Index { base, index } => {
                 self.emit_postfix_base(base);
                 self.output.push('[');
                 self.emit_expr(index, 0);
                 self.output.push(']');
             }
-            
+
             Expr::Member { base, field } => {
                 self.emit_postfix_base(base);
                 self.output.push('.');
                 self.output.push_str(field);
             }
-            
+
             Expr::Deref(expr) => {
                 // Memory access through base±constant: print a named struct
                 // field when the base's recovered struct layout resolves the
@@ -543,20 +618,24 @@ impl CEmitter {
                 self.output.push('*');
                 self.emit_expr(expr, 15);
             }
-            
+
             Expr::AddrOf(expr) => {
                 self.output.push('&');
                 self.emit_expr(expr, 15);
             }
-            
+
             Expr::Cast { ty, expr } => {
                 self.output.push('(');
                 self.output.push_str(&self.type_to_c(ty));
                 self.output.push(')');
                 self.emit_expr(expr, 15);
             }
-            
-            Expr::Ternary { cond, then_expr, else_expr } => {
+
+            Expr::Ternary {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
                 let need_parens = 3 < parent_prec;
                 if need_parens {
                     self.output.push('(');
@@ -570,7 +649,7 @@ impl CEmitter {
                     self.output.push(')');
                 }
             }
-            
+
             Expr::Sizeof(expr) => {
                 self.output.push_str("sizeof(");
                 self.emit_expr(expr, 0);
@@ -578,7 +657,7 @@ impl CEmitter {
             }
         }
     }
-    
+
     fn type_to_c(&self, ty: &Ty) -> String {
         match ty {
             Ty::Bool => "bool".to_string(),
@@ -614,7 +693,7 @@ impl CEmitter {
             Ty::Float(n) => format!("float{}_t", n),
         }
     }
-    
+
     /// Emit the base of a postfix operation (`[...]`, `.field`). Deref and
     /// Cast bind looser than postfix operators, so they need parens:
     /// `(*p)[i]`, not `*p[i]`; `((T)p).f`, not `(T)p.f`.
@@ -647,7 +726,9 @@ impl CEmitter {
                 rhs,
             } => match (lhs.as_ref(), rhs.as_ref()) {
                 (Expr::Var(name), Expr::IntLit(off)) => (*bin_op, name, *off),
-                (Expr::IntLit(off), Expr::Var(name)) if *bin_op == BinOp::Add => (*bin_op, name, *off),
+                (Expr::IntLit(off), Expr::Var(name)) if *bin_op == BinOp::Add => {
+                    (*bin_op, name, *off)
+                }
                 _ => return false,
             },
             _ => return false,
@@ -679,7 +760,10 @@ impl CEmitter {
         // a *pointer* to that pointee, so render `*(T *)(base ± 0xOFF)`.
         let pointee = match base_ty.as_ref() {
             Some(Ty::Ptr(inner))
-                if matches!(inner.as_ref(), Ty::Int(_) | Ty::UInt(_) | Ty::Float(_) | Ty::Bool) =>
+                if matches!(
+                    inner.as_ref(),
+                    Ty::Int(_) | Ty::UInt(_) | Ty::Float(_) | Ty::Bool
+                ) =>
             {
                 inner.as_ref().clone()
             }
@@ -698,11 +782,10 @@ impl CEmitter {
 
     fn emit_indent(&mut self) {
         for _ in 0..self.indent {
-            self.output.push_str("    ");
+            self.output.push_str(&self.indent_str);
         }
     }
 }
-
 
 /// Resolve a byte offset to a field name in a recovered layout. Recovered
 /// fields are named `field_0x<HEX>`; offsets are read from the names so no
@@ -722,14 +805,33 @@ fn field_at_offset(fields: &[(String, Ty)], offset: u64) -> Option<&str> {
 
 fn collect_expr_names(e: &Expr, out: &mut std::collections::HashSet<String>) {
     match e {
-        Expr::Var(n) => { out.insert(n.clone()); }
-        Expr::Binary { lhs, rhs, .. } => { collect_expr_names(lhs, out); collect_expr_names(rhs, out); }
-        Expr::Unary { operand, .. } | Expr::Deref(operand) | Expr::AddrOf(operand) | Expr::Sizeof(operand) => collect_expr_names(operand, out),
-        Expr::Call { args, .. } => { for a in args { collect_expr_names(a, out); } }
-        Expr::Index { base, index, .. } => { collect_expr_names(base, out); collect_expr_names(index, out); }
+        Expr::Var(n) => {
+            out.insert(n.clone());
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_expr_names(lhs, out);
+            collect_expr_names(rhs, out);
+        }
+        Expr::Unary { operand, .. }
+        | Expr::Deref(operand)
+        | Expr::AddrOf(operand)
+        | Expr::Sizeof(operand) => collect_expr_names(operand, out),
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_expr_names(a, out);
+            }
+        }
+        Expr::Index { base, index, .. } => {
+            collect_expr_names(base, out);
+            collect_expr_names(index, out);
+        }
         Expr::Member { base, .. } => collect_expr_names(base, out),
         Expr::Cast { expr, .. } => collect_expr_names(expr, out),
-        Expr::Ternary { cond, then_expr, else_expr } => {
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             collect_expr_names(cond, out);
             collect_expr_names(then_expr, out);
             collect_expr_names(else_expr, out);
@@ -743,32 +845,72 @@ fn used_var_names(stmts: &[Stmt]) -> std::collections::HashSet<String> {
     fn walk(stmts: &[Stmt], out: &mut std::collections::HashSet<String>) {
         for s in stmts {
             match s {
-                Stmt::Assign { target, value } => { collect_expr_names(target, out); collect_expr_names(value, out); }
-                Stmt::If { cond, then_body, else_body } => {
+                Stmt::Assign { target, value } => {
+                    collect_expr_names(target, out);
+                    collect_expr_names(value, out);
+                }
+                Stmt::If {
+                    cond,
+                    then_body,
+                    else_body,
+                } => {
                     collect_expr_names(cond, out);
                     walk(then_body, out);
-                    if let Some(e) = else_body { walk(e, out); }
+                    if let Some(e) = else_body {
+                        walk(e, out);
+                    }
                 }
                 Stmt::While { cond, body } | Stmt::DoWhile { body, cond } => {
                     collect_expr_names(cond, out);
                     walk(body, out);
                 }
-                Stmt::For { init, cond, update, body } => {
-                    if let Some(i) = init { walk(std::slice::from_ref(i), out); }
-                    if let Some(c) = cond { collect_expr_names(c, out); }
-                    if let Some(u) = update { walk(std::slice::from_ref(u), out); }
+                Stmt::For {
+                    init,
+                    cond,
+                    update,
+                    body,
+                } => {
+                    if let Some(i) = init {
+                        walk(std::slice::from_ref(i), out);
+                    }
+                    if let Some(c) = cond {
+                        collect_expr_names(c, out);
+                    }
+                    if let Some(u) = update {
+                        walk(std::slice::from_ref(u), out);
+                    }
                     walk(body, out);
                 }
                 Stmt::Return { value: Some(v) } => collect_expr_names(v, out),
                 Stmt::Return { value: None } => {}
-                Stmt::Switch { expr, cases, default } => {
+                Stmt::Switch {
+                    expr,
+                    cases,
+                    default,
+                } => {
                     collect_expr_names(expr, out);
-                    for c in cases { collect_expr_names(&c.value, out); walk(&c.body, out); }
-                    if let Some(d) = default { walk(d, out); }
+                    for c in cases {
+                        collect_expr_names(&c.value, out);
+                        walk(&c.body, out);
+                    }
+                    if let Some(d) = default {
+                        walk(d, out);
+                    }
                 }
-                Stmt::TryCatch { try_body, catch_body, .. } => { walk(try_body, out); walk(catch_body, out); }
+                Stmt::TryCatch {
+                    try_body,
+                    catch_body,
+                    ..
+                } => {
+                    walk(try_body, out);
+                    walk(catch_body, out);
+                }
                 Stmt::Expr(e) => collect_expr_names(e, out),
-                Stmt::Call { args, .. } => { for a in args { collect_expr_names(a, out); } }
+                Stmt::Call { args, .. } => {
+                    for a in args {
+                        collect_expr_names(a, out);
+                    }
+                }
                 Stmt::Decl { init: Some(e), .. } => collect_expr_names(e, out),
                 Stmt::Block(b) => walk(b, out),
                 _ => {}
@@ -779,10 +921,123 @@ fn used_var_names(stmts: &[Stmt]) -> std::collections::HashSet<String> {
     out
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_func_with_local() -> AstFunction {
+        let mut func = AstFunction::new("cfg_func");
+        func.entry_address = 0x1400;
+        func.return_type = Ty::i32();
+        func.locals.push(LocalVar {
+            name: "v0".to_string(),
+            ty: Ty::i32(),
+            is_used: true,
+        });
+        func.body.push(Stmt::Assign {
+            target: Expr::Var("v0".to_string()),
+            value: Expr::IntLit(7),
+        });
+        func.body.push(Stmt::Return {
+            value: Some(Expr::Var("v0".to_string())),
+        });
+        func
+    }
+
+    #[test]
+    fn test_config_indent_is_used() {
+        let func = sample_func_with_local();
+        let cfg = DecompilerConfig {
+            indent: "  ".to_string(),
+            ..Default::default()
+        };
+        let c = ast_to_c_with_config(&func, &cfg);
+        assert!(c.contains("  return v0;"), "{}", c);
+        assert!(!c.contains("    return v0;"), "{}", c);
+        // Default config keeps the 4-space unit.
+        let c = ast_to_c(&func);
+        assert!(c.contains("    return v0;"), "{}", c);
+    }
+
+    #[test]
+    fn test_config_include_declarations_false_drops_locals() {
+        let func = sample_func_with_local();
+        let cfg = DecompilerConfig {
+            include_declarations: false,
+            ..Default::default()
+        };
+        let c = ast_to_c_with_config(&func, &cfg);
+        assert!(c.contains("return v0;"), "{}", c);
+        assert!(!c.contains("int32_t v0;"), "{}", c);
+        // Default keeps declarations.
+        let c = ast_to_c(&func);
+        assert!(c.contains("int32_t v0;"), "{}", c);
+    }
+
+    #[test]
+    fn test_config_annotate_addresses_emits_entry_comment() {
+        let func = sample_func_with_local();
+        let cfg = DecompilerConfig {
+            annotate_addresses: true,
+            ..Default::default()
+        };
+        let c = ast_to_c_with_config(&func, &cfg);
+        assert!(c.contains("// address: 0x1400"), "{}", c);
+        // Off by default and suppressed when the address is unknown (0).
+        let mut unnamed = func.clone();
+        unnamed.entry_address = 0;
+        let c = ast_to_c_with_config(&unnamed, &cfg);
+        assert!(!c.contains("// address:"), "{}", c);
+        let c = ast_to_c(&func);
+        assert!(!c.contains("// address:"), "{}", c);
+    }
+
+    #[test]
+    fn test_identifiers_are_sanitized_consistently() {
+        let mut func = AstFunction::new("int"); // keyword function name
+        func.locals.push(LocalVar {
+            name: "0bad".to_string(),
+            ty: Ty::i32(),
+            is_used: true,
+        });
+        func.locals.push(LocalVar {
+            name: "a-b".to_string(),
+            ty: Ty::i32(),
+            is_used: true,
+        });
+        func.locals.push(LocalVar {
+            name: "a_b".to_string(),
+            ty: Ty::i32(),
+            is_used: true,
+        });
+        func.body.push(Stmt::Decl {
+            name: "0bad".to_string(),
+            ty: Ty::i32(),
+            init: Some(Expr::IntLit(1)),
+        });
+        func.body.push(Stmt::Assign {
+            target: Expr::Var("a-b".to_string()),
+            value: Expr::Var("0bad".to_string()),
+        });
+        func.body.push(Stmt::Call {
+            func: "weird@call".to_string(),
+            args: vec![Expr::Var("a_b".to_string())],
+        });
+        func.body.push(Stmt::Return {
+            value: Some(Expr::Var("a-b".to_string())),
+        });
+
+        let c = ast_to_c(&func);
+        // Keyword function name, digit-leading and mangled locals renamed.
+        assert!(c.contains("int_("), "{}", c);
+        assert!(c.contains("int32_t _0bad = 0x1;"), "{}", c);
+        assert!(c.contains("a_b = _0bad;"), "{}", c);
+        assert!(c.contains("weird_call(a_b_1);"), "{}", c);
+        assert!(c.contains("return a_b;"), "{}", c);
+        // No raw illegal forms leak into the listing.
+        assert!(!c.contains("weird@call"), "{}", c);
+        assert!(!c.contains("a-b"), "{}", c);
+    }
 
     #[test]
     fn test_simple_function() {
@@ -795,13 +1050,13 @@ mod tests {
         func.body.push(Stmt::Return {
             value: Some(Expr::Var("x".to_string())),
         });
-        
+
         let c_code = ast_to_c(&func);
-        
+
         assert!(c_code.contains("int32_t test_func"));
         assert!(c_code.contains("return x"));
     }
-    
+
     #[test]
     fn test_if_statement() {
         let mut func = AstFunction::new("test");
@@ -810,13 +1065,25 @@ mod tests {
             then_body: vec![Stmt::Return { value: None }],
             else_body: None,
         });
-        
+
         let c_code = ast_to_c(&func);
-        
+
         assert!(c_code.contains("if (true)"));
         assert!(c_code.contains("return;"));
     }
-    
+
+    #[test]
+    fn test_indirect_branch_uses_computed_goto() {
+        let mut func = AstFunction::new("dispatch");
+        func.body.push(Stmt::Expr(Expr::Call {
+            func: "goto".to_string(),
+            args: vec![Expr::Var("target".to_string())],
+        }));
+        let c_code = ast_to_c(&func);
+        assert!(c_code.contains("goto *(target);"), "{}", c_code);
+        assert!(!c_code.contains("goto(target)"), "{}", c_code);
+    }
+
     #[test]
     fn test_binary_expression() {
         let expr = Expr::Binary {
@@ -824,16 +1091,16 @@ mod tests {
             lhs: Box::new(Expr::Var("x".to_string())),
             rhs: Box::new(Expr::IntLit(5)),
         };
-        
-        let mut emitter = CEmitter::new();
+
+        let mut emitter = CEmitter::new(&DecompilerConfig::default());
         emitter.emit_expr(&expr, 0);
-        
+
         assert_eq!(emitter.output, "x + 0x5");
     }
 
     #[test]
     fn test_unknown_type_is_valid_c() {
-        assert_eq!(CEmitter::new().type_to_c(&Ty::Unknown), "int");
+        assert_eq!(CEmitter::new(&DecompilerConfig::default()).type_to_c(&Ty::Unknown), "int");
     }
 
     #[test]
@@ -905,7 +1172,7 @@ mod tests {
 
         // Unresolved offset on an untyped base → cast + hex comment.
         let c = {
-            let mut emitter = CEmitter::new();
+            let mut emitter = CEmitter::new(&DecompilerConfig::default());
             emitter.emit_expr(
                 &Expr::Deref(Box::new(Expr::Binary {
                     op: BinOp::Add,

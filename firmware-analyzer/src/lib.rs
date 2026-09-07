@@ -44,7 +44,13 @@ pub enum FirmwareKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum FirmwareSeverity { Info, Low, Medium, High, Critical }
+pub enum FirmwareSeverity {
+    Info,
+    Low,
+    Medium,
+    High,
+    Critical,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirmwareFinding {
@@ -95,7 +101,9 @@ pub struct EmbeddedPe {
 /// Top-level entry point. Returns `Some(_)` whenever the input looks like
 /// firmware; `None` for unrelated content.
 pub fn analyze_firmware(data: &[u8]) -> Option<FirmwareReport> {
-    if data.len() < 512 { return None; }
+    if data.len() < 512 {
+        return None;
+    }
 
     let mut report = FirmwareReport {
         kind: FirmwareKind::Unknown,
@@ -117,13 +125,21 @@ pub fn analyze_firmware(data: &[u8]) -> Option<FirmwareReport> {
         report.mbr_partitions = parse_mbr(data);
         if matches!(kind, FirmwareKind::GptDisk) {
             report.gpt_partitions = parse_gpt(data);
-            push_finding(&mut report.findings, FirmwareSeverity::Info, "FW_GPT",
+            push_finding(
+                &mut report.findings,
+                FirmwareSeverity::Info,
+                "FW_GPT",
                 format!("GPT disk with {} partitions", report.gpt_partitions.len()),
-                0x200);
+                0x200,
+            );
         } else {
-            push_finding(&mut report.findings, FirmwareSeverity::Info, "FW_MBR",
+            push_finding(
+                &mut report.findings,
+                FirmwareSeverity::Info,
+                "FW_MBR",
                 format!("MBR disk with {} partitions", report.mbr_partitions.len()),
-                0);
+                0,
+            );
         }
     }
 
@@ -133,10 +149,16 @@ pub fn analyze_firmware(data: &[u8]) -> Option<FirmwareReport> {
         if &data[p..p + 4] == b"_FVH" {
             if let Some(v) = parse_firmware_volume(data, p) {
                 report.volumes.push(v.clone());
-                push_finding(&mut report.findings, FirmwareSeverity::Info, "FW_FVH",
-                    format!("UEFI Firmware Volume at 0x{:X} ({} bytes, {} FFS files)",
-                        v.offset, v.size, v.ffs_count),
-                    p);
+                push_finding(
+                    &mut report.findings,
+                    FirmwareSeverity::Info,
+                    "FW_FVH",
+                    format!(
+                        "UEFI Firmware Volume at 0x{:X} ({} bytes, {} FFS files)",
+                        v.offset, v.size, v.ffs_count
+                    ),
+                    p,
+                );
                 if let Some(pe) = find_embedded_pe(&data[p..p + v.size]) {
                     report.embedded_pe.push(pe);
                 }
@@ -150,28 +172,50 @@ pub fn analyze_firmware(data: &[u8]) -> Option<FirmwareReport> {
         report.kind = FirmwareKind::UefiFirmwareVolume;
     }
 
-    if report.kind == FirmwareKind::Unknown && report.volumes.is_empty()
-        && report.mbr_partitions.is_empty() {
+    if report.kind == FirmwareKind::Unknown
+        && report.volumes.is_empty()
+        && report.mbr_partitions.is_empty()
+    {
         return None;
     }
     Some(report)
 }
 
-fn push_finding(out: &mut Vec<FirmwareFinding>, severity: FirmwareSeverity, rule_id: &str,
-                description: String, offset: usize) {
-    out.push(FirmwareFinding { severity, rule_id: rule_id.to_string(), description, offset });
+fn push_finding(
+    out: &mut Vec<FirmwareFinding>,
+    severity: FirmwareSeverity,
+    rule_id: &str,
+    description: String,
+    offset: usize,
+) {
+    out.push(FirmwareFinding {
+        severity,
+        rule_id: rule_id.to_string(),
+        description,
+        offset,
+    });
 }
 
 fn parse_mbr(data: &[u8]) -> Vec<MbrPartition> {
     let mut out = Vec::new();
-    if data.len() < 0x1BE { return out; }
+    if data.len() < 0x1BE {
+        return out;
+    }
     for i in 0..4 {
         let off = 0x1BE + i * 16;
         let status = data[off];
         let ptype = data[off + 4];
-        if ptype == 0 { continue; }
-        let lba_start = u32::from_le_bytes([data[off + 8], data[off + 9], data[off + 10], data[off + 11]]);
-        let lba_count = u32::from_le_bytes([data[off + 12], data[off + 13], data[off + 14], data[off + 15]]);
+        if ptype == 0 {
+            continue;
+        }
+        let lba_start =
+            u32::from_le_bytes([data[off + 8], data[off + 9], data[off + 10], data[off + 11]]);
+        let lba_count = u32::from_le_bytes([
+            data[off + 12],
+            data[off + 13],
+            data[off + 14],
+            data[off + 15],
+        ]);
         out.push(MbrPartition {
             index: i as u8,
             status,
@@ -186,34 +230,48 @@ fn parse_mbr(data: &[u8]) -> Vec<MbrPartition> {
 
 fn parse_gpt(data: &[u8]) -> Vec<GptPartition> {
     let mut out = Vec::new();
-    if data.len() < 0x400 { return out; }
+    if data.len() < 0x400 {
+        return out;
+    }
     let header = &data[0x200..];
-    if &header[0..8] != b"EFI PART" { return out; }
+    if &header[0..8] != b"EFI PART" {
+        return out;
+    }
     let part_entry_lba = u64::from_le_bytes([
-        header[0x48], header[0x49], header[0x4A], header[0x4B],
-        header[0x4C], header[0x4D], header[0x4E], header[0x4F],
+        header[0x48],
+        header[0x49],
+        header[0x4A],
+        header[0x4B],
+        header[0x4C],
+        header[0x4D],
+        header[0x4E],
+        header[0x4F],
     ]);
-    let part_count = u32::from_le_bytes([header[0x50], header[0x51], header[0x52], header[0x53]]) as usize;
-    let part_size = u32::from_le_bytes([header[0x54], header[0x55], header[0x56], header[0x57]]) as usize;
-    if part_entry_lba == 0 || part_size < 128 { return out; }
+    let part_count =
+        u32::from_le_bytes([header[0x50], header[0x51], header[0x52], header[0x53]]) as usize;
+    let part_size =
+        u32::from_le_bytes([header[0x54], header[0x55], header[0x56], header[0x57]]) as usize;
+    if part_entry_lba == 0 || part_size < 128 {
+        return out;
+    }
     let start_off = (part_entry_lba as usize) * 512;
     for i in 0..part_count {
         let off = start_off + i * part_size;
-        if off + part_size > data.len() { break; }
+        if off + part_size > data.len() {
+            break;
+        }
         let e = &data[off..off + part_size];
         // Empty entry: all zero type GUID
-        if e[0..16].iter().all(|&b| b == 0) { continue; }
+        if e[0..16].iter().all(|&b| b == 0) {
+            continue;
+        }
         let type_guid = format_guid(&e[0..16]);
         let unique_guid = format_guid(&e[16..32]);
-        let first_lba = u64::from_le_bytes([
-            e[32], e[33], e[34], e[35], e[36], e[37], e[38], e[39],
-        ]);
-        let last_lba = u64::from_le_bytes([
-            e[40], e[41], e[42], e[43], e[44], e[45], e[46], e[47],
-        ]);
-        let attributes = u64::from_le_bytes([
-            e[48], e[49], e[50], e[51], e[52], e[53], e[54], e[55],
-        ]);
+        let first_lba =
+            u64::from_le_bytes([e[32], e[33], e[34], e[35], e[36], e[37], e[38], e[39]]);
+        let last_lba = u64::from_le_bytes([e[40], e[41], e[42], e[43], e[44], e[45], e[46], e[47]]);
+        let attributes =
+            u64::from_le_bytes([e[48], e[49], e[50], e[51], e[52], e[53], e[54], e[55]]);
         let name_bytes = &e[56..128];
         let name: String = name_bytes
             .chunks(2)
@@ -235,25 +293,33 @@ fn parse_gpt(data: &[u8]) -> Vec<GptPartition> {
 
 fn parse_firmware_volume(data: &[u8], off: usize) -> Option<VolumeInfo> {
     // EFI_FIRMWARE_VOLUME_HEADER
-    if off + 56 > data.len() { return None; }
+    if off + 56 > data.len() {
+        return None;
+    }
     let h = &data[off..off + 56];
-    if &h[0..4] != b"_FVH" { return None; }
+    if &h[0..4] != b"_FVH" {
+        return None;
+    }
     let _rsvd0 = &h[4..16];
     let header_length = u32::from_le_bytes([h[16], h[17], h[18], h[19]]) as usize;
     let sig = u32::from_le_bytes([h[20], h[21], h[22], h[23]]);
     let _attr = u32::from_le_bytes([h[24], h[25], h[26], h[27]]);
-    let header_length = if header_length == 0 { 56 } else { header_length };
+    let header_length = if header_length == 0 {
+        56
+    } else {
+        header_length
+    };
     let header_length = header_length.min(data.len() - off);
-    let fv_length = u64::from_le_bytes([
-        h[32], h[33], h[34], h[35], h[36], h[37], h[38], h[39],
-    ]) as usize;
+    let fv_length =
+        u64::from_le_bytes([h[32], h[33], h[34], h[35], h[36], h[37], h[38], h[39]]) as usize;
     let _rev = u32::from_le_bytes([h[40], h[41], h[42], h[43]]);
     let _block_map_off = h[44];
 
     let signature = match sig {
         0x4856465F => "EFI_FVH",
         _ => "UNKNOWN",
-    }.to_string();
+    }
+    .to_string();
 
     // Walk the FFS files inside. FFS header is 24 bytes, aligned to 8.
     let mut p = off + header_length;
@@ -263,10 +329,18 @@ fn parse_firmware_volume(data: &[u8], off: usize) -> Option<VolumeInfo> {
     while p + 24 <= end {
         let f = &data[p..p + 24];
         // FFS file name: 16-byte GUID
-        if f[0..16].iter().all(|&b| b == 0xFF) { p += 8; continue; }
-        if f[0..16].iter().all(|&b| b == 0) { p += 8; continue; }
+        if f[0..16].iter().all(|&b| b == 0xFF) {
+            p += 8;
+            continue;
+        }
+        if f[0..16].iter().all(|&b| b == 0) {
+            p += 8;
+            continue;
+        }
         let size = u32::from_le_bytes([f[16], f[17], f[18], f[19]]) as usize;
-        if size < 24 || p + size > end { break; }
+        if size < 24 || p + size > end {
+            break;
+        }
         let guid = format_guid(&f[0..16]);
         ffs_guids.push(guid);
         ffs_count += 1;
@@ -295,11 +369,14 @@ fn find_embedded_pe(data: &[u8]) -> Option<EmbeddedPe> {
                     if opt_off + 2 < data.len() {
                         let magic = u16::from_le_bytes([data[opt_off], data[opt_off + 1]]);
                         if matches!(magic, 0x10B | 0x20B) {
-                            let opt_size = u16::from_le_bytes([data[opt_off + 16], data[opt_off + 17]]) as usize;
+                            let opt_size =
+                                u16::from_le_bytes([data[opt_off + 16], data[opt_off + 17]])
+                                    as usize;
                             // Subsystem at +68 within optional header (PE32)
                             let subs_off = opt_off + 68;
                             if subs_off + 2 < data.len() {
-                                let subsystem = u16::from_le_bytes([data[subs_off], data[subs_off + 1]]);
+                                let subsystem =
+                                    u16::from_le_bytes([data[subs_off], data[subs_off + 1]]);
                                 let name = match subsystem {
                                     0x0B => "EFI_APPLICATION",
                                     0x0C => "EFI_BOOT_SERVICE_DRIVER",
@@ -325,17 +402,28 @@ fn find_embedded_pe(data: &[u8]) -> Option<EmbeddedPe> {
 }
 
 fn format_guid(g: &[u8]) -> String {
-    if g.len() < 16 { return String::new(); }
+    if g.len() < 16 {
+        return String::new();
+    }
     let d1 = u32::from_le_bytes([g[0], g[1], g[2], g[3]]);
     let d2 = u16::from_le_bytes([g[4], g[5]]);
     let d3 = u16::from_le_bytes([g[6], g[7]]);
-    format!("{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
-        d1, d2, d3, g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15])
+    format!(
+        "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+        d1, d2, d3, g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]
+    )
 }
 
 fn read_u32(data: &[u8], off: usize) -> Option<u32> {
-    if off + 4 > data.len() { return None; }
-    Some(u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]))
+    if off + 4 > data.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        data[off],
+        data[off + 1],
+        data[off + 2],
+        data[off + 3],
+    ]))
 }
 
 #[cfg(test)]
@@ -347,7 +435,8 @@ mod tests {
         v[0x1FE] = 0x55;
         v[0x1FF] = 0xAA;
         // partition entry 0: status=0x80, type=0x83, start LBA=2048, size 0x10000
-        v[0x1BE] = 0x80; v[0x1BE + 4] = 0x83;
+        v[0x1BE] = 0x80;
+        v[0x1BE + 4] = 0x83;
         v[0x1BE + 8..0x1BE + 12].copy_from_slice(&2048u32.to_le_bytes());
         v[0x1BE + 12..0x1BE + 16].copy_from_slice(&0x10000u32.to_le_bytes());
         v
@@ -366,14 +455,15 @@ mod tests {
     fn test_gpt() {
         let mut data = vec![0u8; 0x10000];
         // MBR signature
-        data[0x1FE] = 0x55; data[0x1FF] = 0xAA;
+        data[0x1FE] = 0x55;
+        data[0x1FF] = 0xAA;
         // GPT header at LBA1
         let h = 0x200;
         data[h..h + 8].copy_from_slice(b"EFI PART");
         data[h + 0x48..h + 0x50].copy_from_slice(&2u64.to_le_bytes()); // partition array LBA
-        data[h + 0x50..h + 0x54].copy_from_slice(&4u32.to_le_bytes());  // count
+        data[h + 0x50..h + 0x54].copy_from_slice(&4u32.to_le_bytes()); // count
         data[h + 0x54..h + 0x58].copy_from_slice(&128u32.to_le_bytes()); // size
-        // one partition at LBA 2
+                                                                         // one partition at LBA 2
         let e = 2 * 512;
         data[e..e + 16].copy_from_slice(&[1u8; 16]);
         data[e + 16..e + 32].copy_from_slice(&[2u8; 16]);

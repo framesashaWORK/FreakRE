@@ -20,18 +20,19 @@
 //! - **Expression simplification**: Combine simple operations
 
 pub mod ast;
-pub mod fold_flags;
-pub mod ir_to_ast;
 pub mod ast_to_c;
-pub mod structuring;
-pub mod decompile;
-pub mod simplify;
-pub mod types;
-pub mod interproc;
-pub mod patterns;
-pub mod stack_vars;
 pub mod call_naming;
 pub mod common_api;
+pub mod decompile;
+pub mod fold_flags;
+pub mod ident;
+pub mod interproc;
+pub mod ir_to_ast;
+pub mod patterns;
+pub mod simplify;
+pub mod stack_vars;
+pub mod structuring;
+pub mod types;
 
 use freakre_ir::BlockId;
 
@@ -51,7 +52,7 @@ pub struct IfElsePattern {
 }
 
 pub use decompile::{
-    decompile_function, decompile_function_with_config, DecompilerConfig, DecompileError,
+    decompile_exports, decompile_exports_with_config, decompile_exports_with_diagnostics,
+    decompile_function, decompile_function_with_config, DecompileDiagnostic,
+    DecompileDiagnosticKind, DecompileError, DecompilerConfig,
 };
-
-

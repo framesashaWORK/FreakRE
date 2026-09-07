@@ -287,7 +287,9 @@ fn plan_recovery(func: &IrFunction) -> Option<RecoveryPlan> {
             let (offset, via_def) = match addr {
                 v if is_stack_reg(v) => (delta, None),
                 Value::Var { id, .. } => match (addr_defs.get(id), def_deltas.get(id)) {
-                    (Some(&lit), Some(&def_delta)) if def_delta == delta => (lit + delta, Some(*id)),
+                    (Some(&lit), Some(&def_delta)) if def_delta == delta => {
+                        (lit + delta, Some(*id))
+                    }
                     (Some(_), Some(_)) => return None,
                     _ => continue,
                 },
@@ -390,7 +392,8 @@ fn is_direct_setup_shape(inst: &IrInst) -> bool {
 }
 
 /// What the analyser does with one instruction while walking a block.
-enum Step {    /// Nothing special.
+enum Step {
+    /// Nothing special.
     Other,
     /// Canonical stack-pointer update shifting rsp by the given amount.
     Update(i64),
@@ -422,8 +425,13 @@ fn step_of(inst: &IrInst, defs: &HashMap<u32, &IrInst>, refs: &HashMap<u32, usiz
             ..
         } => {
             let off = match (lhs, rhs) {
-                (l, Value::Const(c)) => chain_offset(l, defs, refs)
-                    .map(|base| if *bin_op == OpCode::Sub { base - c } else { base + c }),
+                (l, Value::Const(c)) => chain_offset(l, defs, refs).map(|base| {
+                    if *bin_op == OpCode::Sub {
+                        base - c
+                    } else {
+                        base + c
+                    }
+                }),
                 (Value::Const(c), r) if *bin_op == OpCode::Add => {
                     chain_offset(r, defs, refs).map(|base| base + c)
                 }
@@ -475,7 +483,11 @@ fn chain_offset_at(
                         _ => return None,
                     };
                     let lower = chain_offset_at(base, defs, refs, depth - 1)?;
-                    Some(if *bin_op == OpCode::Sub { lower - off } else { lower + off })
+                    Some(if *bin_op == OpCode::Sub {
+                        lower - off
+                    } else {
+                        lower + off
+                    })
                 }
                 _ => None,
             }
@@ -728,12 +740,12 @@ fn int_ty_for(size: u32) -> Ty {
 }
 
 /// Generate meaningful name for stack variable based on offset and type.
-/// 
+///
 /// Naming convention:
 /// - Negative offsets (arguments): arg_<offset>, ptr_<offset>, etc.
 /// - Positive offsets (locals): local_<offset>, var_<offset>, etc.
 /// - Type prefixes: byte_, word_, dword_, qword_, float_, double_, ptr_
-/// 
+///
 /// Examples:
 /// - arg_10 (function argument at offset -0x10)
 /// - ptr_20 (pointer at offset 0x20)
@@ -742,7 +754,7 @@ fn int_ty_for(size: u32) -> Ty {
 fn slot_name(offset: i64, ty: &Ty) -> String {
     let prefix = type_prefix(ty);
     let is_arg = offset < 0;
-    
+
     if is_arg {
         // Function arguments (negative offsets from base pointer)
         if prefix == "ptr" {
@@ -871,7 +883,9 @@ fn rename_stmt(stmt: &mut Stmt, names: &StackVarNames) {
         }
         Stmt::Expr(expr) => rename_expr(expr, names),
         Stmt::Block(body) => rename_stmts(body, names),
-        Stmt::Decl { init: Some(expr), .. } => rename_expr(expr, names),
+        Stmt::Decl {
+            init: Some(expr), ..
+        } => rename_expr(expr, names),
         Stmt::TryCatch {
             try_body,
             catch_body,
@@ -1013,7 +1027,15 @@ mod tests {
         let copies: Vec<_> = func.blocks[0]
             .insts
             .iter()
-            .filter(|i| matches!(i, IrInst::Unary { op: OpCode::Copy, .. }))
+            .filter(|i| {
+                matches!(
+                    i,
+                    IrInst::Unary {
+                        op: OpCode::Copy,
+                        ..
+                    }
+                )
+            })
             .collect();
         assert_eq!(copies.len(), 2, "both accesses become copies");
 
@@ -1225,12 +1247,12 @@ mod tests {
         assert_eq!(slot_name(0x20, &Ty::u32()), "dword_20");
         assert_eq!(slot_name(0x10, &Ty::u16()), "word_10");
         assert_eq!(slot_name(0x08, &Ty::u8()), "byte_8");
-        
+
         // Negative offsets (arguments)
         assert_eq!(slot_name(-8, &Ty::u64()), "arg_8");
         assert_eq!(slot_name(-0x10, &Ty::u64()), "arg_10");
         assert_eq!(slot_name(-0x20, &Ty::Ptr(Box::new(Ty::u8()))), "arg_ptr_20");
-        
+
         // Pointer types
         assert_eq!(slot_name(0x30, &Ty::Ptr(Box::new(Ty::u8()))), "ptr_30");
     }
@@ -1243,7 +1265,11 @@ mod tests {
         let offset = usize::from_str_radix(&off_hex, 16).unwrap();
         let data = std::fs::read(path).expect("read");
         let pe = pe_parser::PeFile::parse(&data).expect("pe");
-        let text = pe.sections.iter().find(|s| s.name_string() == ".text").expect(".text");
+        let text = pe
+            .sections
+            .iter()
+            .find(|s| s.name_string() == ".text")
+            .expect(".text");
         let raw = text.raw_data(&data);
         let mut off = offset.saturating_sub(text.raw_data_offset as usize);
         let prologues: [&[u8]; 4] = [
@@ -1266,7 +1292,9 @@ mod tests {
         }
         let code = &raw[off..];
         let lifter = X86Lifter::new(true);
-        let func = lifter.lift_function(code, 0x140001000u64, "dbg").expect("lift");
+        let func = lifter
+            .lift_function(code, 0x140001000u64, "dbg")
+            .expect("lift");
         eprintln!("=== RAW IR @ {:#x} ===\n{}", offset, func.display());
     }
 
@@ -1283,7 +1311,9 @@ mod tests {
         let lifter = X86Lifter::new(true);
 
         // First lift: dump the raw IR shape and recover in place.
-        let mut func = lifter.lift_function(&code, 0x140001000, "shape").expect("lift");
+        let mut func = lifter
+            .lift_function(&code, 0x140001000, "shape")
+            .expect("lift");
         eprintln!("=== lifted IR ===\n{}", func.display());
         let names = recover_stack_vars(&mut func);
         eprintln!("=== recovered: {:?} ===", names);
@@ -1299,7 +1329,9 @@ mod tests {
         // its immediate reload are legitimately folded into one variable
         // (or dropped as redundant) by later passes; what matters is that
         // no raw stack derefs remain and recovered names appear.
-        let fresh = lifter.lift_function(&code, 0x140001000, "shape").expect("lift");
+        let fresh = lifter
+            .lift_function(&code, 0x140001000, "shape")
+            .expect("lift");
         let c = crate::decompile_function(&fresh).unwrap();
         eprintln!("=== decompiled ===\n{}", c);
         assert!(!c.contains("*(rsp"), "{}", c);

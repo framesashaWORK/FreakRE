@@ -1,7 +1,7 @@
 use pe_parser::PeFile;
 
-use crate::types::{AnalysisReport, ImportDescriptor, ImportedFunction, ImportedModule};
 use crate::rules;
+use crate::types::{AnalysisReport, ImportDescriptor, ImportedFunction, ImportedModule};
 
 /// Safety cap on parsed import descriptors (prevents DoS on crafted IDTs).
 const MAX_IMPORT_DESCRIPTORS: usize = 1024;
@@ -31,7 +31,9 @@ impl<'a> ImportAnalyzer<'a> {
                 self.parse_import_descriptors(rva, size, &mut report)
             }
             _ => {
-                report.warnings.push("Import Directory not found in DataDirectory".into());
+                report
+                    .warnings
+                    .push("Import Directory not found in DataDirectory".into());
                 Vec::new()
             }
         };
@@ -120,8 +122,8 @@ impl<'a> ImportAnalyzer<'a> {
             }
         };
 
-        let max_descriptors = ((import_size as usize) / ImportDescriptor::SIZE)
-            .min(MAX_IMPORT_DESCRIPTORS);
+        let max_descriptors =
+            ((import_size as usize) / ImportDescriptor::SIZE).min(MAX_IMPORT_DESCRIPTORS);
 
         for i in 0..max_descriptors {
             let offset = base_offset + i * ImportDescriptor::SIZE;
@@ -149,7 +151,9 @@ impl<'a> ImportAnalyzer<'a> {
         if descriptors.len() == MAX_IMPORT_DESCRIPTORS {
             let next = base_offset + MAX_IMPORT_DESCRIPTORS * ImportDescriptor::SIZE;
             if next + ImportDescriptor::SIZE <= self.data.len()
-                && self.data[next..next + ImportDescriptor::SIZE].iter().any(|&b| b != 0)
+                && self.data[next..next + ImportDescriptor::SIZE]
+                    .iter()
+                    .any(|&b| b != 0)
             {
                 report.warnings.push(format!(
                     "Import descriptor limit ({}) reached; additional descriptors ignored",
@@ -167,10 +171,9 @@ impl<'a> ImportAnalyzer<'a> {
         report: &mut AnalysisReport,
     ) -> Option<ImportedModule> {
         let name = self.read_string_at_rva(desc.name_rva).unwrap_or_else(|| {
-            report.warnings.push(format!(
-                "Cannot read DLL name at RVA {:#x}",
-                desc.name_rva
-            ));
+            report
+                .warnings
+                .push(format!("Cannot read DLL name at RVA {:#x}", desc.name_rva));
             format!("<unknown@{:#x}>", desc.name_rva)
         });
 
@@ -229,15 +232,21 @@ impl<'a> ImportAnalyzer<'a> {
 
             let raw_value: u64 = if self.pe.is_64bit {
                 u64::from_le_bytes([
-                    self.data[offset], self.data[offset + 1],
-                    self.data[offset + 2], self.data[offset + 3],
-                    self.data[offset + 4], self.data[offset + 5],
-                    self.data[offset + 6], self.data[offset + 7],
+                    self.data[offset],
+                    self.data[offset + 1],
+                    self.data[offset + 2],
+                    self.data[offset + 3],
+                    self.data[offset + 4],
+                    self.data[offset + 5],
+                    self.data[offset + 6],
+                    self.data[offset + 7],
                 ])
             } else {
                 u32::from_le_bytes([
-                    self.data[offset], self.data[offset + 1],
-                    self.data[offset + 2], self.data[offset + 3],
+                    self.data[offset],
+                    self.data[offset + 1],
+                    self.data[offset + 2],
+                    self.data[offset + 3],
                 ]) as u64
             };
 
@@ -407,7 +416,10 @@ mod tests {
             .find(|m| m.name == "test.dll")
             .expect("module must parse");
         assert_eq!(m.functions.len(), 1);
-        assert_eq!(m.functions[0].hint, 0x0012, "last-two-byte hint must be read");
+        assert_eq!(
+            m.functions[0].hint, 0x0012,
+            "last-two-byte hint must be read"
+        );
         assert!(m.functions[0].name.is_none()); // no room for a name — expected
         assert!(m.functions[0].ordinal.is_none());
     }
@@ -439,7 +451,10 @@ mod tests {
             .iter()
             .find(|m| m.name == "version.dll")
             .expect("delay-loaded DLL must be merged into modules");
-        assert!(delay_mod.is_delay_load, "merged module must be marked as delay-load");
+        assert!(
+            delay_mod.is_delay_load,
+            "merged module must be marked as delay-load"
+        );
 
         let dll_match = report
             .rule_matches
@@ -447,7 +462,10 @@ mod tests {
             .find(|m| m.rule_id == "DLL_SUSPICIOUS")
             .expect("suspicious delay-loaded DLL must trigger DLL_SUSPICIOUS");
         assert!(
-            dll_match.triggered_by.iter().any(|t| t.contains("version.dll") && t.contains("[delay-load]")),
+            dll_match
+                .triggered_by
+                .iter()
+                .any(|t| t.contains("version.dll") && t.contains("[delay-load]")),
             "evidence must show the delay-load source, got: {:?}",
             dll_match.triggered_by
         );
@@ -465,7 +483,12 @@ mod tests {
         let mut data = build_test_pe(buf_len, raw_size);
 
         // Import dir covers all descriptors so min(size/SIZE, cap) hits the cap.
-        set_data_dir(&mut data, 1, 0x1000, (total * ImportDescriptor::SIZE) as u32);
+        set_data_dir(
+            &mut data,
+            1,
+            0x1000,
+            (total * ImportDescriptor::SIZE) as u32,
+        );
 
         for i in 0..total {
             let off = 0x600 + i * ImportDescriptor::SIZE;
@@ -482,7 +505,10 @@ mod tests {
 
         assert_eq!(report.modules.len(), MAX_IMPORT_DESCRIPTORS);
         assert!(
-            report.warnings.iter().any(|w| w.contains("descriptor limit")),
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("descriptor limit")),
             "cap truncation must produce a warning, got: {:?}",
             report.warnings
         );
@@ -532,7 +558,10 @@ mod tests {
             .expect("module must parse");
         assert_eq!(m.functions.len(), 8192);
         assert!(
-            report.warnings.iter().any(|w| w.contains("thunk limit") && w.contains("big.dll")),
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("thunk limit") && w.contains("big.dll")),
             "thunk cap must produce a warning, got: {:?}",
             report.warnings
         );

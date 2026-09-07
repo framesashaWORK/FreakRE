@@ -17,10 +17,14 @@ pub enum MemStatus {
 
 impl MemStatus {
     /// Map onto the executor's budget taxonomy.
-    pub fn budget_kind(self) -> crate::exec::BudgetKind {
+    ///
+    /// Returns `None` for a successful write (no budget was consumed beyond
+    /// the limit) instead of panicking — the old `unreachable!` arm was a
+    /// public-API footgun.
+    pub fn budget_kind(self) -> Option<crate::exec::BudgetKind> {
         match self {
-            MemStatus::Ok => unreachable!("budget_kind on successful write"),
-            MemStatus::OutOfBudget => crate::exec::BudgetKind::Memory,
+            MemStatus::Ok => None,
+            MemStatus::OutOfBudget => Some(crate::exec::BudgetKind::Memory),
         }
     }
 }
@@ -34,7 +38,13 @@ pub struct MemRegion {
 
 impl std::fmt::Display for MemRegion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[0x{:X}..0x{:X}) ({} B)", self.start, self.start + self.len, self.len)
+        write!(
+            f,
+            "[0x{:X}..0x{:X}) ({} B)",
+            self.start,
+            self.start + self.len,
+            self.len
+        )
     }
 }
 
@@ -154,7 +164,10 @@ impl Memory {
     pub fn written_regions(&self) -> Vec<MemRegion> {
         self.regions
             .iter()
-            .map(|(&s, &e)| MemRegion { start: s, len: e - s })
+            .map(|(&s, &e)| MemRegion {
+                start: s,
+                len: e - s,
+            })
             .collect()
     }
 
@@ -215,10 +228,7 @@ mod tests {
     #[test]
     fn budget_enforced() {
         let mut m = Memory::new(PAGE_SIZE as u64);
-        assert_eq!(
-            m.write_bytes(0x0, &[1; 8]),
-            MemStatus::Ok
-        );
+        assert_eq!(m.write_bytes(0x0, &[1; 8]), MemStatus::Ok);
         assert_eq!(
             m.write_bytes(PAGE_SIZE as u64 * 10, &[2; 8]),
             MemStatus::OutOfBudget
@@ -236,9 +246,18 @@ mod tests {
         assert_eq!(
             rs,
             vec![
-                MemRegion { start: 0xF0, len: 8 },
-                MemRegion { start: 0x100, len: 8 },
-                MemRegion { start: 0x120, len: 8 },
+                MemRegion {
+                    start: 0xF0,
+                    len: 8
+                },
+                MemRegion {
+                    start: 0x100,
+                    len: 8
+                },
+                MemRegion {
+                    start: 0x120,
+                    len: 8
+                },
             ]
         );
     }
@@ -248,10 +267,7 @@ mod tests {
         let mut m = Memory::new(0);
         m.load_image(0x400000, &[0x90; 16]);
         assert_eq!(m.usage_bytes(), PAGE_SIZE as u64);
-        assert_eq!(
-            m.write_bytes(0x800000, &[1]),
-            MemStatus::OutOfBudget
-        );
+        assert_eq!(m.write_bytes(0x800000, &[1]), MemStatus::OutOfBudget);
     }
 
     trait AssertOk {

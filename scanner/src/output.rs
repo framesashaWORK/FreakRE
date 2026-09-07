@@ -58,14 +58,24 @@ pub fn print_report(report: &FileReport) {
 
     // Backdoor summary
     if let Some(ref bd) = report.backdoor_report {
-        let bd_color = if bd.risk_score >= 0.7 { "red" } else if bd.risk_score >= 0.3 { "yellow" } else { "green" };
+        let bd_color = if bd.risk_score >= 0.7 {
+            "red"
+        } else if bd.risk_score >= 0.3 {
+            "yellow"
+        } else {
+            "green"
+        };
         println!(
             "  {} Backdoor: risk={:.2} | {} | {} finding(s) | MITRE: {}",
             "🚪".dimmed(),
             bd.risk_score,
             bd.verdict.color(bd_color).bold(),
             bd.num_findings,
-            if bd.mitre_techniques.is_empty() { "—".to_string() } else { bd.mitre_techniques.join(", ") }
+            if bd.mitre_techniques.is_empty() {
+                "—".to_string()
+            } else {
+                bd.mitre_techniques.join(", ")
+            }
         );
     }
 
@@ -79,7 +89,10 @@ pub fn print_report(report: &FileReport) {
             sc.api_hashes_resolved.len()
         );
         if !sc.patterns_detected.is_empty() {
-            println!("     Patterns: {}", sc.patterns_detected.join(", ").dimmed());
+            println!(
+                "     Patterns: {}",
+                sc.patterns_detected.join(", ").dimmed()
+            );
         }
     }
 
@@ -116,7 +129,10 @@ pub fn print_report(report: &FileReport) {
             println!("     Dylibs: {}", macho.imported_dylibs.join(", ").dimmed());
         }
         if !macho.rwx_segments.is_empty() {
-            println!("     ⚠ RWX segments: {}", macho.rwx_segments.join(", ").red());
+            println!(
+                "     ⚠ RWX segments: {}",
+                macho.rwx_segments.join(", ").red()
+            );
         }
     }
 
@@ -170,8 +186,7 @@ pub fn print_summary(summary: &ScanSummary) {
     );
     println!(
         "  Findings: {} total | {} critical",
-        summary.total_findings,
-        summary.critical_findings
+        summary.total_findings, summary.critical_findings
     );
     println!("  Duration: {} ms", summary.scan_duration_ms);
     println!("{}", "═".repeat(60).dimmed());

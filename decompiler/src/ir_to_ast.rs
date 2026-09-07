@@ -10,6 +10,23 @@ pub fn ir_to_ast(func: &IrFunction) -> AstFunction {
     converter.convert()
 }
 
+/// Map an IR access size in bytes to the AST type of the pointee.
+///
+/// `4 => None` keeps the historical bare `Deref` form for the default slot
+/// size, so existing output is unchanged; downstream passes treat a bare
+/// deref as exactly 4 bytes. Other well-known widths (1, 2, 8) become an
+/// explicit pointee cast so pattern passes stay sound. Unmapped sizes keep
+/// the bare form rather than guessing a width.
+fn access_width_ty(size_bytes: u32) -> Option<Ty> {
+    match size_bytes {
+        1 => Some(Ty::UInt(8)),
+        2 => Some(Ty::UInt(16)),
+        4 => None,
+        8 => Some(Ty::Int(64)),
+        _ => None,
+    }
+}
+
 pub struct IrToAstConverter<'a> {
     func: &'a IrFunction,
     var_names: HashMap<Value, String>,
@@ -24,9 +41,10 @@ impl<'a> IrToAstConverter<'a> {
             var_counter: 0,
         }
     }
-    
+
     fn convert(&mut self) -> AstFunction {
         let mut ast_func = AstFunction::new(&self.func.name);
+        ast_func.entry_address = self.func.entry_address;
 
         // Структурировать контрольный поток.
         // Вызывающий (decompile.rs) обязан передать phi-free IR;
@@ -80,7 +98,11 @@ impl<'a> IrToAstConverter<'a> {
                 }
             }
             for inst in block.insts.iter() {
-                if let freakre_ir::IrInst::CBranch { cond: Value::Var { id, ty }, .. } = inst {
+                if let freakre_ir::IrInst::CBranch {
+                    cond: Value::Var { id, ty },
+                    ..
+                } = inst
+                {
                     if seen.insert(format!("v{}", id)) {
                         locals.push(LocalVar {
                             name: format!("v{}", id),
@@ -199,7 +221,10 @@ impl<'a> IrToAstConverter<'a> {
                     OpCode::FloatToFloat | OpCode::IntToFloat | OpCode::FloatToInt => {
                         let ty = dst.ty();
                         if ty.is_float() || ty.is_integer() {
-                            Expr::Cast { ty, expr: Box::new(src_expr) }
+                            Expr::Cast {
+                                ty,
+                                expr: Box::new(src_expr),
+                            }
                         } else {
                             src_expr
                         }
@@ -208,21 +233,34 @@ impl<'a> IrToAstConverter<'a> {
                 };
                 vec![Stmt::Assign { target, value }]
             }
-            IrInst::Load { dst, addr, size: _ } => {
+            IrInst::Load { dst, addr, size } => {
                 let target = self.convert_value_to_expr(dst);
                 let addr_expr = self.convert_value_to_expr(addr);
-                vec![Stmt::Assign {
-                    target,
-                    value: Expr::Deref(Box::new(addr_expr)),
-                }]
+                // Preserve the access width when it differs from the default
+                // 4-byte slot: `*(uint8_t *)addr` etc. Pattern passes rely on
+                // this to stay sound (a 1-byte load is not a 4-byte value).
+                let value = match access_width_ty(*size) {
+                    Some(w) => Expr::Deref(Box::new(Expr::Cast {
+                        ty: Ty::Ptr(Box::new(w)),
+                        expr: Box::new(addr_expr),
+                    })),
+                    None => Expr::Deref(Box::new(addr_expr)),
+                };
+                vec![Stmt::Assign { target, value }]
             }
-            IrInst::Store { addr, value, size: _ } => {
+            IrInst::Store { addr, value, size } => {
                 let addr_expr = self.convert_value_to_expr(addr);
                 let value_expr = self.convert_value_to_expr(value);
-                vec![Stmt::Assign {
-                    target: Expr::Deref(Box::new(addr_expr)),
-                    value: value_expr,
-                }]
+                // Mirror the Load arm: a narrow store must not be read back
+                // as a 4-byte slot by later pattern passes.
+                let target = match access_width_ty(*size) {
+                    Some(w) => Expr::Deref(Box::new(Expr::Cast {
+                        ty: Ty::Ptr(Box::new(w)),
+                        expr: Box::new(addr_expr),
+                    })),
+                    None => Expr::Deref(Box::new(addr_expr)),
+                };
+                vec![Stmt::Assign { target, value: value_expr }]
             }
             IrInst::Call { dst, target, args } => {
                 let func_name = match target {
@@ -230,16 +268,23 @@ impl<'a> IrToAstConverter<'a> {
                     Value::Const(addr) => format!("func_0x{:X}", addr),
                     _ => self.get_var_name(target),
                 };
-                let arg_exprs: Vec<Expr> = args.iter()
+                let arg_exprs: Vec<Expr> = args
+                    .iter()
                     .map(|arg| self.convert_value_to_expr(arg))
                     .collect();
                 if let Some(dst_val) = dst {
                     vec![Stmt::Assign {
                         target: self.convert_value_to_expr(dst_val),
-                        value: Expr::Call { func: func_name, args: arg_exprs },
+                        value: Expr::Call {
+                            func: func_name,
+                            args: arg_exprs,
+                        },
                     }]
                 } else {
-                    vec![Stmt::Call { func: func_name, args: arg_exprs }]
+                    vec![Stmt::Call {
+                        func: func_name,
+                        args: arg_exprs,
+                    }]
                 }
             }
             IrInst::Return { value } => {
@@ -250,7 +295,8 @@ impl<'a> IrToAstConverter<'a> {
             IrInst::Branch { .. } | IrInst::CBranch { .. } => vec![],
             IrInst::Nop => vec![Stmt::Empty],
             IrInst::Syscall { number, args } => {
-                let arg_exprs: Vec<Expr> = args.iter()
+                let arg_exprs: Vec<Expr> = args
+                    .iter()
                     .map(|arg| self.convert_value_to_expr(arg))
                     .collect();
                 let func_name = if let Some(num) = number {
@@ -258,12 +304,23 @@ impl<'a> IrToAstConverter<'a> {
                 } else {
                     "syscall".to_string()
                 };
-                vec![Stmt::Call { func: func_name, args: arg_exprs }]
+                vec![Stmt::Call {
+                    func: func_name,
+                    args: arg_exprs,
+                }]
             }
             IrInst::IndirectBranch { target } => {
                 vec![Stmt::Expr(Expr::Call {
                     func: "goto".to_string(),
                     args: vec![self.convert_value_to_expr(target)],
+                })]
+            }
+            // Normally consumed by the structurer (→ Stmt::Switch). This
+            // fallback keeps unstructured pipelines well-defined.
+            IrInst::Switch { index, .. } => {
+                vec![Stmt::Expr(Expr::Call {
+                    func: "switch".to_string(),
+                    args: vec![self.convert_value_to_expr(index)],
                 })]
             }
             IrInst::Phi { .. } => vec![],
@@ -281,7 +338,9 @@ impl<'a> IrToAstConverter<'a> {
                         result |= (b as i64) << (i * 8);
                     }
                     result
-                } else { 0 };
+                } else {
+                    0
+                };
                 Expr::IntLit(val)
             }
             Value::StringRef(s) => Expr::StringLit(s.clone()),
@@ -325,26 +384,32 @@ impl<'a> IrToAstConverter<'a> {
 mod tests {
     use super::*;
     use freakre_ir::{OpCode, Ty};
-    
+
     #[test]
     fn test_simple_conversion() {
         let mut func = IrFunction::new("test_func", 0x1000);
         let v0 = func.alloc_var(Ty::i32());
         let v1 = func.alloc_var(Ty::i32());
         let v2 = func.alloc_var(Ty::i32());
-        
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v2.clone(),
-            op: OpCode::Add,
-            lhs: v0.clone(),
-            rhs: v1.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Return {
-            value: Some(v2.clone()),
-        });
-        
+
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v2.clone(),
+                op: OpCode::Add,
+                lhs: v0.clone(),
+                rhs: v1.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Return {
+                value: Some(v2.clone()),
+            },
+        );
+
         let ast = ir_to_ast(&func);
-        
+
         assert_eq!(ast.name, "test_func");
         assert!(!ast.body.is_empty());
     }

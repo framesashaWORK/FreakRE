@@ -1,11 +1,11 @@
 //! freakre-hash: Audit-friendly cryptographic hash implementations.
 //! Zero external dependencies, no_std compatible.
 
+pub mod crc32;
 pub mod md5;
+pub mod murmur3;
 pub mod sha1;
 pub mod sha256;
-pub mod crc32;
-pub mod murmur3;
 
 /// Common trait for all hash implementations.
 pub trait Hasher {

@@ -91,7 +91,11 @@ pub fn parse_program_headers_64<const BE: bool>(
         return Vec::new();
     }
 
-    let entry_size = if ph_entsize == 0 { 56usize } else { ph_entsize as usize };
+    let entry_size = if ph_entsize == 0 {
+        56usize
+    } else {
+        ph_entsize as usize
+    };
     let total = match entry_size.checked_mul(ph_num as usize) {
         Some(t) => t,
         None => {
@@ -103,7 +107,10 @@ pub fn parse_program_headers_64<const BE: bool>(
         }
     };
 
-    if (ph_offset as usize).checked_add(total).is_none_or(|end| end > data.len()) {
+    if (ph_offset as usize)
+        .checked_add(total)
+        .is_none_or(|end| end > data.len())
+    {
         warnings.push(ElfWarning {
             kind: ElfWarningKind::OverlappingRegions,
             message: format!(
@@ -117,7 +124,8 @@ pub fn parse_program_headers_64<const BE: bool>(
     let mut headers = Vec::with_capacity(ph_num as usize);
 
     for i in 0..ph_num as usize {
-        let Some(base) = i.checked_mul(entry_size)
+        let Some(base) = i
+            .checked_mul(entry_size)
             .and_then(|o| (ph_offset as usize).checked_add(o))
         else {
             break;
@@ -195,7 +203,11 @@ pub fn parse_program_headers_32<const BE: bool>(
         return Vec::new();
     }
 
-    let entry_size = if ph_entsize == 0 { 32usize } else { ph_entsize as usize };
+    let entry_size = if ph_entsize == 0 {
+        32usize
+    } else {
+        ph_entsize as usize
+    };
     let total = match entry_size.checked_mul(ph_num as usize) {
         Some(t) => t,
         None => {
@@ -207,7 +219,10 @@ pub fn parse_program_headers_32<const BE: bool>(
         }
     };
 
-    if (ph_offset as usize).checked_add(total).is_none_or(|end| end > data.len()) {
+    if (ph_offset as usize)
+        .checked_add(total)
+        .is_none_or(|end| end > data.len())
+    {
         warnings.push(ElfWarning {
             kind: ElfWarningKind::OverlappingRegions,
             message: format!(
@@ -221,7 +236,8 @@ pub fn parse_program_headers_32<const BE: bool>(
     let mut headers = Vec::with_capacity(ph_num as usize);
 
     for i in 0..ph_num as usize {
-        let Some(base) = i.checked_mul(entry_size)
+        let Some(base) = i
+            .checked_mul(entry_size)
             .and_then(|o| (ph_offset as usize).checked_add(o))
         else {
             break;

@@ -1,10 +1,10 @@
 //! Sandboxed interpreter for the DSL.
 
-use std::collections::HashMap;
 use crate::ast::*;
-use crate::sandbox::{SandboxConfig, Capabilities};
 use crate::lexer::LexError;
 use crate::parser::ParseError;
+use crate::sandbox::{Capabilities, SandboxConfig};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -133,17 +133,41 @@ type Env = HashMap<String, Value>;
 /// the interpreter through the `_` catch-all arm of the builtin dispatch.
 /// Every name here is gated by `Capabilities::can_call`.
 const HOST_BUILTINS: &[&str] = &[
-    "print", "type", "tostring", "read_bytes", "write_bytes",
+    "print",
+    "type",
+    "tostring",
+    "read_bytes",
+    "write_bytes",
     // String utils
-    "len", "sub", "find", "replace", "upper", "lower", "trim",
-    "split", "join", "format_number",
+    "len",
+    "sub",
+    "find",
+    "replace",
+    "upper",
+    "lower",
+    "trim",
+    "split",
+    "join",
+    "format_number",
     // Data helpers (strings as bytes)
-    "hex_encode", "hex_decode", "bytes_to_u32_le", "u32_to_bytes_le",
-    "base64_encode", "base64_decode", "crc32", "xor_bytes",
+    "hex_encode",
+    "hex_decode",
+    "bytes_to_u32_le",
+    "u32_to_bytes_le",
+    "base64_encode",
+    "base64_decode",
+    "crc32",
+    "xor_bytes",
     // Pattern helpers
-    "contains_any", "count_occurrences", "extract_between",
+    "contains_any",
+    "count_occurrences",
+    "extract_between",
     // Math/misc
-    "min", "max", "abs", "floor", "ceil",
+    "min",
+    "max",
+    "abs",
+    "floor",
+    "ceil",
 ];
 
 /// One segment of a compound assignment target (`t.a[i].b`).
@@ -184,7 +208,11 @@ impl Interpreter {
         match self.exec_block(stmts) {
             Ok(val) => Ok(val),
             Err(ScriptError::Return(mut vals)) => {
-                if vals.is_empty() { Ok(Value::Nil) } else { Ok(vals.remove(0)) }
+                if vals.is_empty() {
+                    Ok(Value::Nil)
+                } else {
+                    Ok(vals.remove(0))
+                }
             }
             Err(e) => Err(e),
         }
@@ -327,7 +355,12 @@ impl Interpreter {
                 self.define_local(name, val.clone());
                 Ok(val)
             }
-            Stmt::If { cond, then_body, elseifs, else_body } => {
+            Stmt::If {
+                cond,
+                then_body,
+                elseifs,
+                else_body,
+            } => {
                 let c = self.eval_expr(cond)?;
                 if c.is_truthy() {
                     return self.exec_scoped_block(then_body);
@@ -347,7 +380,9 @@ impl Interpreter {
                 loop {
                     self.tick()?;
                     let c = self.eval_expr(cond)?;
-                    if !c.is_truthy() { break; }
+                    if !c.is_truthy() {
+                        break;
+                    }
                     match self.exec_scoped_block(body) {
                         Ok(_) => {}
                         Err(ScriptError::Return(v)) => return Err(ScriptError::Return(v)),
@@ -357,13 +392,25 @@ impl Interpreter {
                 }
                 Ok(Value::Nil)
             }
-            Stmt::ForNumeric { var, start, stop, step, body } => {
-                let s = self.eval_expr(start)?.as_integer()
+            Stmt::ForNumeric {
+                var,
+                start,
+                stop,
+                step,
+                body,
+            } => {
+                let s = self
+                    .eval_expr(start)?
+                    .as_integer()
                     .ok_or_else(|| ScriptError::TypeError("for start must be integer".into()))?;
-                let e = self.eval_expr(stop)?.as_integer()
+                let e = self
+                    .eval_expr(stop)?
+                    .as_integer()
                     .ok_or_else(|| ScriptError::TypeError("for stop must be integer".into()))?;
                 let st = match step {
-                    Some(se) => self.eval_expr(se)?.as_integer()
+                    Some(se) => self
+                        .eval_expr(se)?
+                        .as_integer()
                         .ok_or_else(|| ScriptError::TypeError("for step must be integer".into()))?,
                     None => 1,
                 };
@@ -464,12 +511,16 @@ impl Interpreter {
                 // Short-circuit for and/or
                 if *op == BinOp::And {
                     let l = self.eval_expr(left)?;
-                    if !l.is_truthy() { return Ok(l); }
+                    if !l.is_truthy() {
+                        return Ok(l);
+                    }
                     return self.eval_expr(right);
                 }
                 if *op == BinOp::Or {
                     let l = self.eval_expr(left)?;
-                    if l.is_truthy() { return Ok(l); }
+                    if l.is_truthy() {
+                        return Ok(l);
+                    }
                     return self.eval_expr(right);
                 }
 
@@ -481,7 +532,8 @@ impl Interpreter {
                 let val = self.eval_expr(operand)?;
                 match op {
                     UnOp::Neg => match val {
-                        Value::Integer(n) => n.checked_neg()
+                        Value::Integer(n) => n
+                            .checked_neg()
                             .map(Value::Integer)
                             .ok_or_else(|| ScriptError::RuntimeError("integer overflow".into())),
                         Value::Number(n) => Ok(Value::Number(-n)),
@@ -491,7 +543,9 @@ impl Interpreter {
                     UnOp::Len => match val {
                         Value::Str(ref s) => Ok(Value::Integer(s.len() as i64)),
                         Value::Table(ref t) => Ok(Value::Integer(t.len() as i64)),
-                        _ => Err(ScriptError::TypeError("cannot get length of non-string/table".into())),
+                        _ => Err(ScriptError::TypeError(
+                            "cannot get length of non-string/table".into(),
+                        )),
                     },
                 }
             }
@@ -515,7 +569,9 @@ impl Interpreter {
                             Callee::Builtin(b)
                         }
                         Some(_) => {
-                            return Err(ScriptError::TypeError("attempt to call non-function".into()));
+                            return Err(ScriptError::TypeError(
+                                "attempt to call non-function".into(),
+                            ));
                         }
                         None if HOST_BUILTINS.contains(&name.as_str()) => {
                             if !self.caps.can_call(name) {
@@ -540,18 +596,22 @@ impl Interpreter {
                             Callee::Builtin(b)
                         }
                         _ => {
-                            return Err(ScriptError::TypeError("attempt to call non-function".into()));
+                            return Err(ScriptError::TypeError(
+                                "attempt to call non-function".into(),
+                            ));
                         }
                     },
                 };
 
-                let evaluated_args: Result<Vec<_>, _> = args.iter().map(|a| self.eval_expr(a)).collect();
+                let evaluated_args: Result<Vec<_>, _> =
+                    args.iter().map(|a| self.eval_expr(a)).collect();
                 let evaluated_args = evaluated_args?;
 
                 match callee {
                     Callee::Builtin(name) => match name {
                         "print" => {
-                            let line: Vec<String> = evaluated_args.iter().map(value_to_string).collect();
+                            let line: Vec<String> =
+                                evaluated_args.iter().map(value_to_string).collect();
                             self.tick()?;
                             // Never panic on closed/invalid stderr (GUI hosts):
                             // ignore write errors instead of using eprintln!.
@@ -644,9 +704,9 @@ impl Interpreter {
                             // Function boundary for `break`: it must never act
                             // as cross-function control flow. (The parser also
                             // rejects this at compile time; kept as defense.)
-                            Err(ScriptError::LoopBreak) => Err(ScriptError::RuntimeError(
-                                "break outside loop".into(),
-                            )),
+                            Err(ScriptError::LoopBreak) => {
+                                Err(ScriptError::RuntimeError("break outside loop".into()))
+                            }
                             Err(e) => Err(e),
                         };
                         self.call_depth -= 1;
@@ -665,10 +725,7 @@ impl Interpreter {
                 // are the script's own property.
                 if let (Expr::Ident(root), Value::Str(field)) = (table.as_ref(), &k) {
                     if !self.is_defined(root) && !self.caps.can_access_field(root, field) {
-                        return Err(ScriptError::CapabilityDenied(format!(
-                            "{}.{}",
-                            root, field
-                        )));
+                        return Err(ScriptError::CapabilityDenied(format!("{}.{}", root, field)));
                     }
                 }
                 match t {
@@ -735,7 +792,9 @@ impl Interpreter {
             BinOp::Mul => checked_binop(left, right, i64::checked_mul, |a, b| a * b),
             BinOp::Div => {
                 if let (Some(a), Some(b)) = (left.as_number(), right.as_number()) {
-                    if b == 0.0 { return Err(ScriptError::RuntimeError("division by zero".into())); }
+                    if b == 0.0 {
+                        return Err(ScriptError::RuntimeError("division by zero".into()));
+                    }
                     Ok(Value::Number(a / b))
                 } else {
                     Err(ScriptError::TypeError("arithmetic on non-numbers".into()))
@@ -807,7 +866,9 @@ impl Interpreter {
         let meta = std::fs::metadata(&full)
             .map_err(|e| ScriptError::RuntimeError(format!("read_bytes failed: {}", e)))?;
         if !meta.is_file() {
-            return Err(ScriptError::RuntimeError("read_bytes: not a regular file".into()));
+            return Err(ScriptError::RuntimeError(
+                "read_bytes: not a regular file".into(),
+            ));
         }
         if meta.len() > self.config.max_string_len as u64 {
             return Err(ScriptError::StringLengthLimit);
@@ -837,7 +898,8 @@ impl Interpreter {
 }
 
 fn checked_binop(
-    left: &Value, right: &Value,
+    left: &Value,
+    right: &Value,
     int_op: fn(i64, i64) -> Option<i64>,
     float_op: fn(f64, f64) -> f64,
 ) -> Result<Value, ScriptError> {
@@ -877,32 +939,30 @@ fn flatten_target(expr: &Expr) -> Option<(String, Vec<PathSeg>)> {
 /// Recursive upsert: descend `slot` through `keys`, writing `val` at the end.
 /// Intermediate tables are auto-created (Lua semantics).
 fn set_value_path(slot: &mut Value, keys: &[Value], val: Value) -> Result<(), ScriptError> {
-    let (key, rest) = keys.split_first().ok_or_else(|| {
-        ScriptError::RuntimeError("invalid assignment target".into())
-    })?;
+    let (key, rest) = keys
+        .split_first()
+        .ok_or_else(|| ScriptError::RuntimeError("invalid assignment target".into()))?;
     match slot {
-        Value::Table(entries) => {
-            match entries.iter().position(|(k, _)| values_equal(k, key)) {
-                Some(pos) => {
-                    if rest.is_empty() {
-                        entries[pos].1 = val;
-                        Ok(())
-                    } else {
-                        set_value_path(&mut entries[pos].1, rest, val)
-                    }
-                }
-                None => {
-                    if rest.is_empty() {
-                        entries.push((key.clone(), val));
-                        Ok(())
-                    } else {
-                        entries.push((key.clone(), Value::Table(Vec::new())));
-                        let last = entries.len() - 1;
-                        set_value_path(&mut entries[last].1, rest, val)
-                    }
+        Value::Table(entries) => match entries.iter().position(|(k, _)| values_equal(k, key)) {
+            Some(pos) => {
+                if rest.is_empty() {
+                    entries[pos].1 = val;
+                    Ok(())
+                } else {
+                    set_value_path(&mut entries[pos].1, rest, val)
                 }
             }
-        }
+            None => {
+                if rest.is_empty() {
+                    entries.push((key.clone(), val));
+                    Ok(())
+                } else {
+                    entries.push((key.clone(), Value::Table(Vec::new())));
+                    let last = entries.len() - 1;
+                    set_value_path(&mut entries[last].1, rest, val)
+                }
+            }
+        },
         other => Err(ScriptError::TypeError(format!(
             "attempt to index a {} value",
             other.type_name()
@@ -938,7 +998,9 @@ fn compare_values(a: &Value, b: &Value) -> Result<Option<core::cmp::Ordering>, S
         (Value::Integer(a), Value::Integer(b)) => Ok(Some(a.cmp(b))),
         (Value::Number(a), Value::Number(b)) => Ok(a.partial_cmp(b)),
         (Value::Str(a), Value::Str(b)) => Ok(Some(a.cmp(b))),
-        _ => Err(ScriptError::TypeError("comparison of incompatible types".into())),
+        _ => Err(ScriptError::TypeError(
+            "comparison of incompatible types".into(),
+        )),
     }
 }
 
@@ -1002,10 +1064,11 @@ fn resolve_script_path(path: &str) -> Result<std::path::PathBuf, ScriptError> {
     let parent = absolute
         .parent()
         .ok_or_else(|| ScriptError::RuntimeError("invalid path".into()))?;
-    let canonical_parent =
-        strip_verbatim_prefix(parent.canonicalize().map_err(|e| {
-            ScriptError::RuntimeError(format!("path resolution failed: {}", e))
-        })?);
+    let canonical_parent = strip_verbatim_prefix(
+        parent
+            .canonicalize()
+            .map_err(|e| ScriptError::RuntimeError(format!("path resolution failed: {}", e)))?,
+    );
 
     if !canonical_parent.starts_with(&cwd) {
         return Err(ScriptError::CapabilityDenied(
@@ -1023,41 +1086,70 @@ mod tests {
 
     #[test]
     fn test_basic_arithmetic() {
-        let result = run("local x = 2 + 3\nreturn x", &SandboxConfig::default(), &Capabilities::default()).unwrap();
+        let result = run(
+            "local x = 2 + 3\nreturn x",
+            &SandboxConfig::default(),
+            &Capabilities::default(),
+        )
+        .unwrap();
         assert_eq!(result.as_integer(), Some(5));
     }
 
     #[test]
     fn test_instruction_limit() {
-        let config = SandboxConfig { max_instructions: 10, ..Default::default() };
+        let config = SandboxConfig {
+            max_instructions: 10,
+            ..Default::default()
+        };
         let result = run("while true do end", &config, &Capabilities::default());
         assert!(matches!(result, Err(ScriptError::InstructionLimit)));
     }
 
     #[test]
     fn test_capability_denied() {
-        let result = run("os.execute('rm -rf /')", &SandboxConfig::default(), &Capabilities::default());
+        let result = run(
+            "os.execute('rm -rf /')",
+            &SandboxConfig::default(),
+            &Capabilities::default(),
+        );
         assert!(result.is_err());
     }
 
     #[test]
     fn test_for_loop() {
-        let result = run("local sum = 0\nfor i = 1, 5 do\n  sum = sum + i\nend\nreturn sum",
-            &SandboxConfig::default(), &Capabilities::default()).unwrap();
+        let result = run(
+            "local sum = 0\nfor i = 1, 5 do\n  sum = sum + i\nend\nreturn sum",
+            &SandboxConfig::default(),
+            &Capabilities::default(),
+        )
+        .unwrap();
         assert_eq!(result.as_integer(), Some(15));
     }
 
     fn file_io_caps() -> Capabilities {
-        Capabilities { allow_file_io: true, ..Default::default() }
+        Capabilities {
+            allow_file_io: true,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn test_file_io_denied_by_default() {
-        let result = run("return read_bytes('whatever.txt')", &SandboxConfig::default(), &Capabilities::default());
+        let result = run(
+            "return read_bytes('whatever.txt')",
+            &SandboxConfig::default(),
+            &Capabilities::default(),
+        );
         assert!(matches!(result, Err(ScriptError::CapabilityDenied(name)) if name == "read_bytes"));
 
-        let result = run("return write_bytes('a.txt', 'x')", &SandboxConfig::default(), &Capabilities::default());
-        assert!(matches!(result, Err(ScriptError::CapabilityDenied(name)) if name == "write_bytes"));
+        let result = run(
+            "return write_bytes('a.txt', 'x')",
+            &SandboxConfig::default(),
+            &Capabilities::default(),
+        );
+        assert!(
+            matches!(result, Err(ScriptError::CapabilityDenied(name)) if name == "write_bytes")
+        );
     }
 
     #[test]
@@ -1087,7 +1179,11 @@ mod tests {
         for name in ["CON", "nul.txt", "COM1"] {
             let script = format!("return write_bytes('{}', 'x')", name);
             let result = run(&script, &SandboxConfig::default(), &file_io_caps());
-            assert!(matches!(result, Err(ScriptError::CapabilityDenied(_))), "path: {}", name);
+            assert!(
+                matches!(result, Err(ScriptError::CapabilityDenied(_))),
+                "path: {}",
+                name
+            );
         }
     }
 
@@ -1185,14 +1281,16 @@ mod tests {
         let mut caps = Capabilities::default();
         caps.allowed_functions.clear();
         assert!(run("print(1)", &SandboxConfig::default(), &caps).is_err());
-        assert!(run(
-            "function f() return 9 end\nreturn f()",
-            &SandboxConfig::default(),
-            &caps
-        )
-        .unwrap()
-        .as_integer()
-            == Some(9));
+        assert!(
+            run(
+                "function f() return 9 end\nreturn f()",
+                &SandboxConfig::default(),
+                &caps
+            )
+            .unwrap()
+            .as_integer()
+                == Some(9)
+        );
     }
 
     #[test]
@@ -1267,7 +1365,11 @@ mod tests {
 
     #[test]
     fn test_assign_to_undefined_table_field_rejected() {
-        let result = run("nope.x = 1", &SandboxConfig::default(), &Capabilities::default());
+        let result = run(
+            "nope.x = 1",
+            &SandboxConfig::default(),
+            &Capabilities::default(),
+        );
         assert!(matches!(result, Err(ScriptError::RuntimeError(ref m)) if m.contains("undefined")));
     }
 
@@ -1279,7 +1381,11 @@ mod tests {
             let res = Interpreter::new(SandboxConfig::default(), Capabilities::default())
                 .eval_binop(&nan, op, &nan)
                 .unwrap();
-            assert!(matches!(res, Value::Bool(false)), "{:?} on NaN must be false", op);
+            assert!(
+                matches!(res, Value::Bool(false)),
+                "{:?} on NaN must be false",
+                op
+            );
         }
         // != remains meaningful: NaN ~= NaN is true.
         let mut interp = Interpreter::new(SandboxConfig::default(), Capabilities::default());
@@ -1299,7 +1405,9 @@ mod tests {
             &SandboxConfig::default(),
             &Capabilities::default(),
         );
-        assert!(matches!(result, Err(ScriptError::RuntimeError(ref m)) if m.contains("break outside loop")));
+        assert!(
+            matches!(result, Err(ScriptError::RuntimeError(ref m)) if m.contains("break outside loop"))
+        );
     }
 
     #[test]
@@ -1335,7 +1443,10 @@ mod tests {
 
     #[test]
     fn test_call_depth_limit_intact() {
-        let config = SandboxConfig { max_call_depth: 8, ..Default::default() };
+        let config = SandboxConfig {
+            max_call_depth: 8,
+            ..Default::default()
+        };
         let result = run(
             "function f(n) return 1 + f(n) end\nreturn f(0)",
             &config,

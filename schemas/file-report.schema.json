@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://freakre.local/schema/file-report.json",
+  "title": "FreakRE File Report",
+  "type": "object",
+  "required": ["path", "size", "sha256", "file_type", "suspicion_score", "verdict", "findings"],
+  "properties": {
+    "path": { "type": ["string", "object"] },
+    "size": { "type": "integer", "minimum": 0 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+    "file_type": { "type": "string" },
+    "suspicion_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "verdict": { "enum": ["clean", "suspicious", "malicious", "error"] },
+    "findings": { "type": "array", "items": { "type": "object" } },
+    "backdoor_analysis": {
+      "anyOf": [
+        { "$ref": "backdoor-report.schema.json" },
+        { "type": "null" }
+      ]
+    }
+  }
+}

@@ -163,10 +163,7 @@ impl<'a> Parser<'a> {
             .map(|(i, _)| i)
             .unwrap_or(rest.len());
         if len == 0 {
-            return Err(ParseError::Syntax(
-                self.pos,
-                "expected identifier".into(),
-            ));
+            return Err(ParseError::Syntax(self.pos, "expected identifier".into()));
         }
         self.advance(len);
         Ok(self.input[start..start + len].to_string())
@@ -207,7 +204,10 @@ impl<'a> Parser<'a> {
             .map(|(i, _)| i)
             .unwrap_or(rest.len());
         if len == 0 {
-            return Err(ParseError::Syntax(self.pos, "empty string identifier".into()));
+            return Err(ParseError::Syntax(
+                self.pos,
+                "empty string identifier".into(),
+            ));
         }
         self.advance(len);
         Ok(self.input[start..self.pos].to_string())
@@ -256,7 +256,10 @@ impl<'a> Parser<'a> {
             } else {
                 return Err(ParseError::Syntax(
                     self.pos,
-                    format!("unexpected token in rule body: {}", self.peek_token_preview()),
+                    format!(
+                        "unexpected token in rule body: {}",
+                        self.peek_token_preview()
+                    ),
                 ));
             }
         }
@@ -370,6 +373,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_hex_pattern(&mut self) -> Result<HexPattern> {
+        // The hex matcher recurses once per token, so an uncapped token list
+        // is a stack-overflow primitive on hostile rules.
+        const MAX_HEX_TOKENS: usize = 4096;
         self.expect_char('{')?;
         let mut tokens = Vec::new();
         loop {
@@ -378,12 +384,30 @@ impl<'a> Parser<'a> {
                 self.advance(1);
                 break;
             }
+            if tokens.len() >= MAX_HEX_TOKENS {
+                return Err(ParseError::InvalidHex(
+                    self.pos,
+                    "hex pattern exceeds 4096 tokens".into(),
+                ));
+            }
             tokens.push(self.parse_hex_token()?);
         }
         Ok(HexPattern { tokens })
     }
 
     fn parse_hex_token(&mut self) -> Result<HexToken> {
+        self.parse_hex_token_inner(0)
+    }
+
+    fn parse_hex_token_inner(&mut self, depth: usize) -> Result<HexToken> {
+        // Nested `( ... )` alternations recurse — cap like conditions do.
+        const MAX_HEX_DEPTH: usize = 64;
+        if depth > MAX_HEX_DEPTH {
+            return Err(ParseError::InvalidHex(
+                self.pos,
+                "hex alternation nesting too deep".into(),
+            ));
+        }
         self.skip_ws();
         let rest = self.remaining();
 
@@ -397,7 +421,7 @@ impl<'a> Parser<'a> {
                     self.advance(1);
                     break;
                 }
-                let token = self.parse_hex_token()?;
+                let token = self.parse_hex_token_inner(depth + 1)?;
                 alternatives.push(token);
                 self.skip_ws();
                 if self.peek_char() == Some('|') {
@@ -435,7 +459,10 @@ impl<'a> Parser<'a> {
 
         // Regular hex tokens
         if rest.len() < 2 {
-            return Err(ParseError::InvalidHex(self.pos, "incomplete hex byte".into()));
+            return Err(ParseError::InvalidHex(
+                self.pos,
+                "incomplete hex byte".into(),
+            ));
         }
         let hi = rest.as_bytes()[0];
         let lo = rest.as_bytes()[1];
@@ -521,10 +548,7 @@ impl<'a> Parser<'a> {
                 // Section keywords legitimately follow a modifier list.
                 "condition" | "strings" => break,
                 unknown => {
-                    return Err(ParseError::UnknownModifier(
-                        unknown.to_string(),
-                        self.pos,
-                    ));
+                    return Err(ParseError::UnknownModifier(unknown.to_string(), self.pos));
                 }
             }
             self.advance(word_len);
@@ -549,7 +573,10 @@ impl<'a> Parser<'a> {
     fn parse_or_expr_inner(&mut self, depth: usize) -> Result<Condition> {
         const MAX_EXPR_DEPTH: usize = 64;
         if depth > MAX_EXPR_DEPTH {
-            return Err(ParseError::Syntax(self.pos, "expression nesting too deep".into()));
+            return Err(ParseError::Syntax(
+                self.pos,
+                "expression nesting too deep".into(),
+            ));
         }
         let mut left = self.parse_and_expr_inner(depth + 1)?;
         loop {
@@ -571,7 +598,10 @@ impl<'a> Parser<'a> {
     fn parse_and_expr_inner(&mut self, depth: usize) -> Result<Condition> {
         const MAX_EXPR_DEPTH: usize = 64;
         if depth > MAX_EXPR_DEPTH {
-            return Err(ParseError::Syntax(self.pos, "expression nesting too deep".into()));
+            return Err(ParseError::Syntax(
+                self.pos,
+                "expression nesting too deep".into(),
+            ));
         }
         let mut left = self.parse_not_expr_inner(depth + 1)?;
         loop {
@@ -593,7 +623,10 @@ impl<'a> Parser<'a> {
     fn parse_not_expr_inner(&mut self, depth: usize) -> Result<Condition> {
         const MAX_EXPR_DEPTH: usize = 64;
         if depth > MAX_EXPR_DEPTH {
-            return Err(ParseError::Syntax(self.pos, "expression nesting too deep (possible infinite recursion)".into()));
+            return Err(ParseError::Syntax(
+                self.pos,
+                "expression nesting too deep (possible infinite recursion)".into(),
+            ));
         }
         self.skip_ws();
         if self.try_keyword("not") {
@@ -629,7 +662,10 @@ impl<'a> Parser<'a> {
     fn parse_primary_inner(&mut self, depth: usize) -> Result<Condition> {
         const MAX_EXPR_DEPTH: usize = 64;
         if depth > MAX_EXPR_DEPTH {
-            return Err(ParseError::Syntax(self.pos, "expression nesting too deep".into()));
+            return Err(ParseError::Syntax(
+                self.pos,
+                "expression nesting too deep".into(),
+            ));
         }
         self.skip_ws();
 
@@ -661,7 +697,11 @@ impl<'a> Parser<'a> {
         if let Some(kind) = of_kind {
             return self.parse_of_suffix(kind);
         }
-        if self.peek_char().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        if self
+            .peek_char()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
+        {
             // Could be "N of them" or integer literal
             let saved = self.pos;
             let num = self.read_usize()?;
@@ -696,7 +736,10 @@ impl<'a> Parser<'a> {
             if self.try_keyword("at") {
                 self.skip_ws();
                 // Check if next token is a number literal or an int expression
-                if self.peek_char().map(|c| c.is_ascii_digit()).unwrap_or(false)
+                if self
+                    .peek_char()
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
                     || self.peek_char() == Some('#')
                     || self.peek_char() == Some('$')
                     || self.peek_char() == Some('@')
@@ -1022,7 +1065,11 @@ impl<'a> Parser<'a> {
             let len_expr = self.parse_int_expr_inner(depth + 1)?;
             self.expect_char(')')?;
             IntExpr::MathHash(Box::new(offset_expr), Box::new(len_expr))
-        } else if self.peek_char().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        } else if self
+            .peek_char()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
+        {
             let n = self.read_usize()?;
             self.skip_ws();
             let rest = self.remaining();
@@ -1045,7 +1092,10 @@ impl<'a> Parser<'a> {
         } else {
             return Err(ParseError::Syntax(
                 self.pos,
-                format!("expected integer expression, got '{}'", self.peek_token_preview()),
+                format!(
+                    "expected integer expression, got '{}'",
+                    self.peek_token_preview()
+                ),
             ));
         };
 
@@ -1063,8 +1113,9 @@ impl<'a> Parser<'a> {
                 *left = IntExpr::Add(Box::new(left.clone()), Box::new(rhs));
             } else if let Some(after_minus) = rest.strip_prefix('-') {
                 let first_non_ws = after_minus.trim_start();
-                if first_non_ws.starts_with(|c: char| c.is_ascii_digit() || c == '(' || c == '$' || c == '#' || c == '@')
-                    || first_non_ws.starts_with("uint8")
+                if first_non_ws.starts_with(|c: char| {
+                    c.is_ascii_digit() || c == '(' || c == '$' || c == '#' || c == '@'
+                }) || first_non_ws.starts_with("uint8")
                     || first_non_ws.starts_with("uint16")
                     || first_non_ws.starts_with("uint32")
                     || first_non_ws.starts_with("int8")
@@ -1112,7 +1163,10 @@ impl<'a> Parser<'a> {
                 .map(|(i, _)| i)
                 .unwrap_or(hex_rest.len());
             if len == 0 {
-                return Err(ParseError::Syntax(self.pos, "expected hex digits after 0x".into()));
+                return Err(ParseError::Syntax(
+                    self.pos,
+                    "expected hex digits after 0x".into(),
+                ));
             }
             self.advance(len);
             let hex_str = &self.input[hex_start..hex_start + len];
@@ -1139,15 +1193,18 @@ impl<'a> Parser<'a> {
         let rest_after = self.remaining();
         if rest_after.starts_with("KB") || rest_after.starts_with("kb") {
             self.advance(2);
-            val = val.checked_mul(1024)
+            val = val
+                .checked_mul(1024)
                 .ok_or_else(|| ParseError::Syntax(start, "size suffix overflow (KB)".into()))?;
         } else if rest_after.starts_with("MB") || rest_after.starts_with("mb") {
             self.advance(2);
-            val = val.checked_mul(1024 * 1024)
+            val = val
+                .checked_mul(1024 * 1024)
                 .ok_or_else(|| ParseError::Syntax(start, "size suffix overflow (MB)".into()))?;
         } else if rest_after.starts_with("GB") || rest_after.starts_with("gb") {
             self.advance(2);
-            val = val.checked_mul(1024 * 1024 * 1024)
+            val = val
+                .checked_mul(1024 * 1024 * 1024)
                 .ok_or_else(|| ParseError::Syntax(start, "size suffix overflow (GB)".into()))?;
         }
 
@@ -1157,7 +1214,11 @@ impl<'a> Parser<'a> {
     fn read_count_identifier(&mut self) -> Result<String> {
         self.skip_ws();
         if !self.remaining().starts_with('#') {
-            return Err(ParseError::Expected("#id".into(), self.peek_token_preview(), self.pos));
+            return Err(ParseError::Expected(
+                "#id".into(),
+                self.peek_token_preview(),
+                self.pos,
+            ));
         }
         self.advance(1);
         let start = self.pos;
@@ -1172,7 +1233,10 @@ impl<'a> Parser<'a> {
             .map(|(i, _)| i)
             .unwrap_or(rest.len());
         if len == 0 {
-            return Err(ParseError::Syntax(self.pos, "empty count identifier".into()));
+            return Err(ParseError::Syntax(
+                self.pos,
+                "empty count identifier".into(),
+            ));
         }
         self.advance(len);
         let raw = &self.input[start..self.pos];
@@ -1216,8 +1280,7 @@ fn unescape_string(s: &str) -> Vec<u8> {
                 Some('0') => out.push(0),
                 Some('x') => match (chars.next(), chars.next()) {
                     (Some(h), Some(l)) if h.is_ascii_hexdigit() && l.is_ascii_hexdigit() => {
-                        let byte =
-                            hex_digit(h as u8).unwrap() << 4 | hex_digit(l as u8).unwrap();
+                        let byte = hex_digit(h as u8).unwrap() << 4 | hex_digit(l as u8).unwrap();
                         out.push(byte);
                     }
                     // Malformed \x escape: emit it literally.
@@ -1372,6 +1435,37 @@ mod tests {
     }
 
     #[test]
+    fn test_hex_alternation_depth_limit() {
+        // 100 nested `( ... )` used to recurse without a limit (stack overflow).
+        let mut hex = String::from("{ ");
+        for _ in 0..100 {
+            hex.push_str("( ");
+        }
+        hex.push_str("11");
+        for _ in 0..100 {
+            hex.push_str(" )");
+        }
+        hex.push_str(" }");
+        let input = format!("rule deep {{ strings: $h = {} condition: $h }}", hex);
+        assert!(parse_rule(&input).is_err());
+
+        let shallow = "rule s { strings: $h = { ( 11 | 22 ) } condition: $h }";
+        assert!(parse_rule(shallow).is_ok());
+    }
+
+    #[test]
+    fn test_hex_token_count_limit() {
+        // The matcher recurses once per token — cap the token list.
+        let hex = format!("{{ {} }}", "11 ".repeat(5000));
+        let input = format!("rule big {{ strings: $h = {} condition: $h }}", hex);
+        assert!(parse_rule(&input).is_err());
+
+        let ok_hex = format!("{{ {} }}", "11 ".repeat(100));
+        let ok = format!("rule ok {{ strings: $h = {} condition: $h }}", ok_hex);
+        assert!(parse_rule(&ok).is_ok());
+    }
+
+    #[test]
     fn test_preview_multibyte_no_panic() {
         let input = format!("rule r {{ strings: {} }}", "б".repeat(30));
         assert!(parse_rule(&input).is_err());
@@ -1394,10 +1488,7 @@ mod tests {
         ));
 
         for bad in ["widex", "ascii2", "fullwords", "nocaseee"] {
-            let src = format!(
-                "rule m {{ strings: $s = \"x\" {} condition: $s }}",
-                bad
-            );
+            let src = format!("rule m {{ strings: $s = \"x\" {} condition: $s }}", bad);
             assert!(
                 matches!(parse_rule(&src), Err(ParseError::UnknownModifier(_, _))),
                 "'{}' should be rejected as an unknown modifier",

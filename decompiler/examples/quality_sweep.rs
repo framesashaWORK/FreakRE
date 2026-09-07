@@ -25,9 +25,12 @@ fn main() {
             .iter()
             .copied()
             .filter(|l| {
-                l.contains("*(rsp") || l.contains("flag_") || l.contains("goto bb")
-                    || l.contains("WARNING") || l.trim().starts_with("Label {") ||
-                    l.contains("func_0x") && false
+                l.contains("*(rsp")
+                    || l.contains("flag_")
+                    || l.contains("goto bb")
+                    || l.contains("WARNING")
+                    || l.trim().starts_with("Label {")
+                    || l.contains("func_0x") && false
             })
             .collect();
         if bad.is_empty() {
@@ -36,9 +39,14 @@ fn main() {
             garbage_hits.push((format!("0x{off:X}"), bad.len()));
         }
     }
-    println!("functions={total} clean={clean} with_garbage={} ({:.1}% clean)",
+    println!(
+        "functions={total} clean={clean} with_garbage={} ({:.1}% clean)",
         garbage_hits.len(),
-        if total > 0 { clean as f64 * 100.0 / total as f64 } else { 0.0 },
+        if total > 0 {
+            clean as f64 * 100.0 / total as f64
+        } else {
+            0.0
+        },
     );
     for (off, n) in garbage_hits.iter().take(40) {
         println!("  {off}: {n} garbage lines");

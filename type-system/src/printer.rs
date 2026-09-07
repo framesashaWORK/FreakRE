@@ -1,6 +1,6 @@
-﻿//! Type printer for C-like syntax
+//! Type printer for C-like syntax
 
-use crate::{Type, TypeDatabase, Result};
+use crate::{Result, Type, TypeDatabase};
 
 /// Print a type in C-like syntax.
 ///
@@ -172,7 +172,11 @@ pub fn print_function_signature(
     func_type: &crate::FunctionType,
 ) -> String {
     let ret = print_type(db, &func_type.return_type);
-    let params: Vec<String> = func_type.parameters.iter().map(|p| print_type(db, p)).collect();
+    let params: Vec<String> = func_type
+        .parameters
+        .iter()
+        .map(|p| print_type(db, p))
+        .collect();
     let params_str = if params.is_empty() {
         "void".to_string()
     } else {
@@ -252,7 +256,11 @@ mod tests {
             .add_field("matrix", Type::array(Type::array(Type::u32(), 3), 2))
             .build();
         let output = print_struct_def(&db, &s).unwrap();
-        assert!(output.contains("uint32_t matrix[2][3];"), "got:\n{}", output);
+        assert!(
+            output.contains("uint32_t matrix[2][3];"),
+            "got:\n{}",
+            output
+        );
     }
 
     #[test]

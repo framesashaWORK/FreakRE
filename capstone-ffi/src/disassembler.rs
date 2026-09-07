@@ -52,7 +52,11 @@ impl Disassembler {
 
     /// Create a disassembler with an explicit x86 output syntax
     /// (Intel default, ATT optional). Detail mode stays on.
-    pub fn with_syntax(arch: Arch, mode: Mode, syntax: crate::engine::Syntax) -> Result<Self, DisasmError> {
+    pub fn with_syntax(
+        arch: Arch,
+        mode: Mode,
+        syntax: crate::engine::Syntax,
+    ) -> Result<Self, DisasmError> {
         Self::with_options(arch, mode, arch.default_endian(), syntax, true)
     }
 
@@ -72,11 +76,7 @@ impl Disassembler {
         #[cfg(capstone_available)]
         {
             match crate::engine::capstone_backend::CapstoneEngine::with_options(
-                arch,
-                mode,
-                endian,
-                syntax,
-                detail,
+                arch, mode, endian, syntax, detail,
             ) {
                 Ok(engine) => {
                     return Ok(Self {
@@ -158,16 +158,28 @@ impl Disassembler {
     /// Disassemble a single instruction at the given offset.
     /// Returns None if the instruction cannot be decoded.
     pub fn disassemble_one(&self, code: &[u8], base_address: u64) -> Option<Instruction> {
-        self.disassemble_count(code, base_address, 1).into_iter().next()
+        self.disassemble_count(code, base_address, 1)
+            .into_iter()
+            .next()
     }
 
     /// Disassemble with a maximum count of instructions.
     /// `max_count == 0` means "no limit" (Capstone convention).
-    pub fn disassemble_n(&self, code: &[u8], base_address: u64, max_count: usize) -> Vec<Instruction> {
+    pub fn disassemble_n(
+        &self,
+        code: &[u8],
+        base_address: u64,
+        max_count: usize,
+    ) -> Vec<Instruction> {
         self.disassemble_count(code, base_address, max_count)
     }
 
-    fn disassemble_count(&self, code: &[u8], base_address: u64, max_count: usize) -> Vec<Instruction> {
+    fn disassemble_count(
+        &self,
+        code: &[u8],
+        base_address: u64,
+        max_count: usize,
+    ) -> Vec<Instruction> {
         #[cfg(capstone_available)]
         {
             if let Some(ref engine) = self.cs_engine {
@@ -235,7 +247,8 @@ fn convert_instruction(insn: freakre_x86::Instruction, bytes: Vec<u8>) -> Instru
     let address = insn.address;
     let branch_target = branch_target_lde(&insn, &bytes, address, size);
     let operand_list: Vec<Operand> = insn.operands.into_iter().map(convert_operand).collect();
-    let operands = operand_list.iter()
+    let operands = operand_list
+        .iter()
         .map(|o| format!("{}", o))
         .collect::<Vec<_>>()
         .join(", ");
@@ -360,22 +373,37 @@ impl std::fmt::Display for Operand {
         match self {
             Operand::Reg(id) => write!(f, "{}", id),
             Operand::Imm(v) => write!(f, "0x{:x}", v),
-            Operand::Mem { base, index, scale, disp } => {
+            Operand::Mem {
+                base,
+                index,
+                scale,
+                disp,
+            } => {
                 write!(f, "[")?;
                 let mut need_plus = false;
                 if let Some(b) = base {
-                    if b.is_valid() { write!(f, "{}", b)?; need_plus = true; }
+                    if b.is_valid() {
+                        write!(f, "{}", b)?;
+                        need_plus = true;
+                    }
                 }
                 if let Some(idx) = index {
                     if idx.is_valid() {
-                        if need_plus { write!(f, " + ")?; }
-                        if *scale > 1 { write!(f, "{}*{}", idx, scale)?; }
-                        else { write!(f, "{}", idx)?; }
+                        if need_plus {
+                            write!(f, " + ")?;
+                        }
+                        if *scale > 1 {
+                            write!(f, "{}*{}", idx, scale)?;
+                        } else {
+                            write!(f, "{}", idx)?;
+                        }
                         need_plus = true;
                     }
                 }
                 if *disp != 0 || !need_plus {
-                    if need_plus { write!(f, " + ")?; }
+                    if need_plus {
+                        write!(f, " + ")?;
+                    }
                     write!(f, "0x{:x}", *disp as u64)?;
                 }
                 write!(f, "]")
@@ -454,12 +482,9 @@ mod tests {
 
     #[test]
     fn test_with_syntax_and_count() {
-        let disasm = Disassembler::with_syntax(
-            Arch::X86,
-            Mode::Mode64,
-            crate::engine::Syntax::Intel,
-        )
-        .unwrap();
+        let disasm =
+            Disassembler::with_syntax(Arch::X86, Mode::Mode64, crate::engine::Syntax::Intel)
+                .unwrap();
         let code = [0x90, 0x90, 0x90, 0xC3];
         assert_eq!(disasm.disassemble_n(&code, 0, 2).len(), 2);
         assert_eq!(disasm.disassemble(&code, 0).len(), 4);

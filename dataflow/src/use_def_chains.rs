@@ -46,10 +46,8 @@ impl UseDefChains {
                     let reaching = reaching_defs.reaching_at(func, block.id, offset);
 
                     // Filter to definitions of the used variable
-                    let defs: BTreeSet<Definition> = reaching
-                        .into_iter()
-                        .filter(|def| def.var == *src)
-                        .collect();
+                    let defs: BTreeSet<Definition> =
+                        reaching.into_iter().filter(|def| def.var == *src).collect();
 
                     chains.insert(use_site, defs);
                 }
@@ -66,10 +64,7 @@ impl UseDefChains {
 
     /// Find all uses of a specific variable
     pub fn uses_of(&self, var: &Value) -> Vec<&Use> {
-        self.all_uses
-            .iter()
-            .filter(|u| u.var == *var)
-            .collect()
+        self.all_uses.iter().filter(|u| u.var == *var).collect()
     }
 
     /// Check if a use has no reaching definitions (use before def)
@@ -140,7 +135,10 @@ impl UseDefChains {
             if let Some(defs) = self.chains.get(use_site) {
                 patterns.push(format!(
                     "Ambiguous definition for {:?} at {}:{} ({} possible defs)",
-                    use_site.var, use_site.block_id, use_site.inst_offset, defs.len()
+                    use_site.var,
+                    use_site.block_id,
+                    use_site.inst_offset,
+                    defs.len()
                 ));
             }
         }
@@ -212,21 +210,30 @@ mod tests {
         let v2 = Value::reg("v2", Ty::i32());
         let v3 = func.alloc_var(Ty::i32());
 
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v0.clone(),
-            op: OpCode::Add,
-            lhs: v1.clone(),
-            rhs: v2.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v3.clone(),
-            op: OpCode::Add,
-            lhs: v0.clone(),
-            rhs: v1.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Return {
-            value: Some(v3.clone()),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v0.clone(),
+                op: OpCode::Add,
+                lhs: v1.clone(),
+                rhs: v2.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v3.clone(),
+                op: OpCode::Add,
+                lhs: v0.clone(),
+                rhs: v1.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Return {
+                value: Some(v3.clone()),
+            },
+        );
 
         let rd = ReachingDefinitions::analyze(&func);
         let ud = UseDefChains::build(&func, &rd);
@@ -257,21 +264,30 @@ mod tests {
         let v2 = Value::reg("v2", Ty::i32());
         let v3 = func.alloc_var(Ty::i32());
 
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v3.clone(),
-            op: OpCode::Add,
-            lhs: v0.clone(),
-            rhs: v1.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v0.clone(),
-            op: OpCode::Add,
-            lhs: v1.clone(),
-            rhs: v2.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Return {
-            value: Some(v3.clone()),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v3.clone(),
+                op: OpCode::Add,
+                lhs: v0.clone(),
+                rhs: v1.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v0.clone(),
+                op: OpCode::Add,
+                lhs: v1.clone(),
+                rhs: v2.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Return {
+                value: Some(v3.clone()),
+            },
+        );
 
         let rd = ReachingDefinitions::analyze(&func);
         let ud = UseDefChains::build(&func, &rd);
@@ -299,21 +315,30 @@ mod tests {
         let v2 = Value::reg("v2", Ty::i32());
         let v3 = func.alloc_var(Ty::i32());
 
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v0.clone(),
-            op: OpCode::Add,
-            lhs: v1.clone(),
-            rhs: v2.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v3.clone(),
-            op: OpCode::Add,
-            lhs: v0.clone(),
-            rhs: v1.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Return {
-            value: Some(v3.clone()),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v0.clone(),
+                op: OpCode::Add,
+                lhs: v1.clone(),
+                rhs: v2.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v3.clone(),
+                op: OpCode::Add,
+                lhs: v0.clone(),
+                rhs: v1.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Return {
+                value: Some(v3.clone()),
+            },
+        );
 
         let rd = ReachingDefinitions::analyze(&func);
         let ud = UseDefChains::build(&func, &rd);

@@ -7,17 +7,27 @@ pub fn format_instruction(insn: &Instruction) -> String {
     let mut out = String::with_capacity(64);
 
     // Prefixes
-    if insn.prefixes.lock { out.push_str("lock "); }
+    if insn.prefixes.lock {
+        out.push_str("lock ");
+    }
     let is_pause = matches!(insn.mnemonic, Mnemonic::Raw(ref s) if s == "pause");
-    if insn.prefixes.rep && !is_pause { out.push_str("rep "); }
-    if insn.prefixes.repne { out.push_str("repne "); }
+    if insn.prefixes.rep && !is_pause {
+        out.push_str("rep ");
+    }
+    if insn.prefixes.repne {
+        out.push_str("repne ");
+    }
 
     // Mnemonic
     out.push_str(&insn.mnemonic.as_str());
 
     // Operands
     for (i, op) in insn.operands.iter().enumerate() {
-        if i == 0 { out.push(' '); } else { out.push_str(", "); }
+        if i == 0 {
+            out.push(' ');
+        } else {
+            out.push_str(", ");
+        }
         format_operand(&mut out, op);
     }
 
@@ -67,7 +77,9 @@ fn format_operand(out: &mut String, op: &Operand) {
             }
 
             if let Some(index) = mem.index {
-                if need_plus { out.push('+'); }
+                if need_plus {
+                    out.push('+');
+                }
                 out.push_str(&index.name());
                 if mem.scale > 1 {
                     out.push_str(&format!("*{}", mem.scale));
@@ -79,7 +91,9 @@ fn format_operand(out: &mut String, op: &Operand) {
                 if mem.displacement < 0 {
                     out.push_str(&format!("-0x{:x}", mem.displacement.wrapping_neg() as u64));
                 } else {
-                    if need_plus { out.push('+'); }
+                    if need_plus {
+                        out.push('+');
+                    }
                     out.push_str(&format!("0x{:x}", mem.displacement));
                 }
             }
@@ -95,10 +109,16 @@ fn format_operand(out: &mut String, op: &Operand) {
 pub fn format_instruction_att(insn: &Instruction) -> String {
     let mut out = String::with_capacity(64);
 
-    if insn.prefixes.lock { out.push_str("lock "); }
+    if insn.prefixes.lock {
+        out.push_str("lock ");
+    }
     let is_pause = matches!(insn.mnemonic, Mnemonic::Raw(ref s) if s == "pause");
-    if insn.prefixes.rep && !is_pause { out.push_str("rep "); }
-    if insn.prefixes.repne { out.push_str("repne "); }
+    if insn.prefixes.rep && !is_pause {
+        out.push_str("rep ");
+    }
+    if insn.prefixes.repne {
+        out.push_str("repne ");
+    }
 
     out.push_str(&insn.mnemonic.as_str());
     if let Some(suf) = att_size_suffix(insn) {
@@ -108,7 +128,11 @@ pub fn format_instruction_att(insn: &Instruction) -> String {
     let n = insn.operands.len();
     for (i, _op) in insn.operands.iter().enumerate() {
         let op = &insn.operands[n - 1 - i];
-        if i == 0 { out.push(' '); } else { out.push_str(", "); }
+        if i == 0 {
+            out.push(' ');
+        } else {
+            out.push_str(", ");
+        }
         format_operand_att(&mut out, op);
     }
 
@@ -207,10 +231,7 @@ mod tests {
     fn test_format_mov_reg_imm() {
         let insn = Instruction {
             mnemonic: Mnemonic::Mov,
-            operands: vec![
-                Operand::Reg(Register::Eax),
-                Operand::Imm(0x12345678),
-            ],
+            operands: vec![Operand::Reg(Register::Eax), Operand::Imm(0x12345678)],
             prefixes: Prefixes::default(),
             rex: None,
             length: 5,

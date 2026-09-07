@@ -10,45 +10,45 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Arch {
     // ─── x86 family ──────────────────────────────────────
-    X86,          // 32-bit x86 (IA-32)
-    X86_64,       // 64-bit x86 (AMD64/Intel 64)
+    X86,    // 32-bit x86 (IA-32)
+    X86_64, // 64-bit x86 (AMD64/Intel 64)
 
     // ─── ARM family ──────────────────────────────────────
-    Arm32,        // ARM 32-bit (ARMv7-A, ARMv8-A AArch32)
-    Arm32Thumb,   // ARM Thumb/Thumb-2 mode
-    Arm64,        // AArch64 / ARMv8-A 64-bit
-    Arm64BE,      // AArch64 big-endian (rare but exists)
+    Arm32,      // ARM 32-bit (ARMv7-A, ARMv8-A AArch32)
+    Arm32Thumb, // ARM Thumb/Thumb-2 mode
+    Arm64,      // AArch64 / ARMv8-A 64-bit
+    Arm64BE,    // AArch64 big-endian (rare but exists)
 
     // ─── MIPS family ─────────────────────────────────────
-    Mips32LE,     // MIPS32 little-endian
-    Mips32BE,     // MIPS32 big-endian
-    Mips64LE,     // MIPS64 little-endian
-    Mips64BE,     // MIPS64 big-endian
+    Mips32LE, // MIPS32 little-endian
+    Mips32BE, // MIPS32 big-endian
+    Mips64LE, // MIPS64 little-endian
+    Mips64BE, // MIPS64 big-endian
 
     // ─── RISC-V ──────────────────────────────────────────
-    RiscV32,      // RV32I/M/A/F/C
-    RiscV64,      // RV64I/M/A/F/D/C
+    RiscV32, // RV32I/M/A/F/C
+    RiscV64, // RV64I/M/A/F/D/C
 
     // ─── PowerPC ─────────────────────────────────────────
-    Ppc32,        // PowerPC 32-bit (big-endian)
-    Ppc64,        // PowerPC 64-bit (big-endian)
-    Ppc64LE,      // PowerPC 64-bit little-endian (POWER8+)
+    Ppc32,   // PowerPC 32-bit (big-endian)
+    Ppc64,   // PowerPC 64-bit (big-endian)
+    Ppc64LE, // PowerPC 64-bit little-endian (POWER8+)
 
     // ─── SPARC ───────────────────────────────────────────
-    Sparc32,      // SPARC V8/V9 32-bit
-    Sparc64,      // SPARC V9 64-bit
+    Sparc32, // SPARC V8/V9 32-bit
+    Sparc64, // SPARC V9 64-bit
 
     // ─── Lightweight / Bytecode VMs ─────────────────────
-    Ebpf,         // Linux eBPF (stack-based VM, 64 fixed instructions)
-    Wasm32,       // WebAssembly 32-bit (stack-based VM)
-    Wasm64,       // WebAssembly 64-bit (memory64 proposal)
-    Dalvik,       // Android Dalvik VM (register-based, 16-bit regs)
-    Chip8,        // CHIP-8 toy VM (35 opcodes, simplest possible)
+    Ebpf,   // Linux eBPF (stack-based VM, 64 fixed instructions)
+    Wasm32, // WebAssembly 32-bit (stack-based VM)
+    Wasm64, // WebAssembly 64-bit (memory64 proposal)
+    Dalvik, // Android Dalvik VM (register-based, 16-bit regs)
+    Chip8,  // CHIP-8 toy VM (35 opcodes, simplest possible)
 
     // ─── Microcontrollers / Embedded ─────────────────────
-    Avr,          // Atmel AVR 8-bit (Arduino Uno, ATmega)
-    Msp430,       // TI MSP430 16-bit RISC MCU
-    Mos6502,      // MOS Technology 6502 (NES, C64, Apple II)
+    Avr,     // Atmel AVR 8-bit (Arduino Uno, ATmega)
+    Msp430,  // TI MSP430 16-bit RISC MCU
+    Mos6502, // MOS Technology 6502 (NES, C64, Apple II)
 }
 
 impl Arch {
@@ -85,25 +85,44 @@ impl Arch {
 
     /// Is this a 64-bit architecture?
     pub fn is_64bit(&self) -> bool {
-        matches!(self,
-            Arch::X86_64 | Arch::Arm64 | Arch::Arm64BE |
-            Arch::Mips64LE | Arch::Mips64BE |
-            Arch::RiscV64 | Arch::Ppc64 | Arch::Ppc64LE |
-            Arch::Sparc64 | Arch::Wasm64 | Arch::Ebpf
+        matches!(
+            self,
+            Arch::X86_64
+                | Arch::Arm64
+                | Arch::Arm64BE
+                | Arch::Mips64LE
+                | Arch::Mips64BE
+                | Arch::RiscV64
+                | Arch::Ppc64
+                | Arch::Ppc64LE
+                | Arch::Sparc64
+                | Arch::Wasm64
+                | Arch::Ebpf
         )
     }
 
     /// Is this little-endian?
     pub fn is_little_endian(&self) -> bool {
-        matches!(self,
-            Arch::X86 | Arch::X86_64 |
-            Arch::Arm32 | Arch::Arm32Thumb | Arch::Arm64 |
-            Arch::Mips32LE | Arch::Mips64LE |
-            Arch::RiscV32 | Arch::RiscV64 |
-            Arch::Ppc64LE |
-            Arch::Ebpf | Arch::Wasm32 | Arch::Wasm64 |
-            Arch::Dalvik | Arch::Chip8 |
-            Arch::Avr | Arch::Msp430 | Arch::Mos6502
+        matches!(
+            self,
+            Arch::X86
+                | Arch::X86_64
+                | Arch::Arm32
+                | Arch::Arm32Thumb
+                | Arch::Arm64
+                | Arch::Mips32LE
+                | Arch::Mips64LE
+                | Arch::RiscV32
+                | Arch::RiscV64
+                | Arch::Ppc64LE
+                | Arch::Ebpf
+                | Arch::Wasm32
+                | Arch::Wasm64
+                | Arch::Dalvik
+                | Arch::Chip8
+                | Arch::Avr
+                | Arch::Msp430
+                | Arch::Mos6502
         )
     }
 
@@ -126,20 +145,23 @@ impl Arch {
             Arch::RiscV32 | Arch::RiscV64 => 2, // compressed instructions
             Arch::Ppc32 | Arch::Ppc64 | Arch::Ppc64LE => 4,
             Arch::Sparc32 | Arch::Sparc64 => 4,
-            Arch::Ebpf => 8,     // eBPF instructions are 8 bytes
+            Arch::Ebpf => 8,                  // eBPF instructions are 8 bytes
             Arch::Wasm32 | Arch::Wasm64 => 1, // variable-length
-            Arch::Dalvik => 2,   // Dalvik instructions are 16-bit aligned
-            Arch::Chip8 => 2,    // CHIP-8 instructions are 2 bytes
-            Arch::Avr => 2,      // AVR most instructions are 16-bit (some 32-bit)
-            Arch::Msp430 => 2,   // MSP430 instructions are 16-bit aligned
-            Arch::Mos6502 => 1,  // 6502 variable-length (1-3 bytes)
-            _ => 1, // x86 variable-length
+            Arch::Dalvik => 2,                // Dalvik instructions are 16-bit aligned
+            Arch::Chip8 => 2,                 // CHIP-8 instructions are 2 bytes
+            Arch::Avr => 2,                   // AVR most instructions are 16-bit (some 32-bit)
+            Arch::Msp430 => 2,                // MSP430 instructions are 16-bit aligned
+            Arch::Mos6502 => 1,               // 6502 variable-length (1-3 bytes)
+            _ => 1,                           // x86 variable-length
         }
     }
 
     /// Does this arch have fixed-length instructions?
     pub fn is_fixed_length(&self) -> bool {
-        !matches!(self, Arch::X86 | Arch::X86_64 | Arch::Wasm32 | Arch::Wasm64 | Arch::Mos6502)
+        !matches!(
+            self,
+            Arch::X86 | Arch::X86_64 | Arch::Wasm32 | Arch::Wasm64 | Arch::Mos6502
+        )
     }
 
     /// Fixed instruction length in bytes (None for variable-length)
@@ -165,13 +187,13 @@ impl Arch {
             Arch::Ppc64 | Arch::Ppc64LE => 32,
             Arch::Sparc32 => 32, // 8 global + 8 out + 8 local + 8 in (windowed)
             Arch::Sparc64 => 32,
-            Arch::Ebpf => 11,    // R0-R10 (R10 is read-only frame pointer)
+            Arch::Ebpf => 11, // R0-R10 (R10 is read-only frame pointer)
             Arch::Wasm32 | Arch::Wasm64 => 0, // stack-based, no GPRs
-            Arch::Dalvik => 16,  // v0-v15 per method (register windowing)
-            Arch::Chip8 => 16,   // V0-VF
-            Arch::Avr => 32,     // r0-r31
-            Arch::Msp430 => 16,  // R0-R15
-            Arch::Mos6502 => 6,  // A, X, Y, S, P, PC
+            Arch::Dalvik => 16, // v0-v15 per method (register windowing)
+            Arch::Chip8 => 16, // V0-VF
+            Arch::Avr => 32,  // r0-r31
+            Arch::Msp430 => 16, // R0-R15
+            Arch::Mos6502 => 6, // A, X, Y, S, P, PC
         }
     }
 
@@ -183,7 +205,7 @@ impl Arch {
             0x28 => Some(Arch::Arm32),
             0xB7 => Some(Arch::Arm64),
             0x08 => Some(Arch::Mips32BE), // or LE depending on EI_DATA
-            0xF3 => Some(Arch::RiscV32), // RISC-V; distinguish 32/64 by ELF class (EI_CLASS)
+            0xF3 => Some(Arch::RiscV32),  // RISC-V; distinguish 32/64 by ELF class (EI_CLASS)
             // Note: RiscV64 shares e_machine=0xF3 with RiscV32.
             // Callers should check EI_CLASS to differentiate.
             // This match arm intentionally returns RiscV32 as default;
@@ -192,9 +214,9 @@ impl Arch {
             0x15 => Some(Arch::Ppc64),
             0x02 => Some(Arch::Sparc32),
             0x2B => Some(Arch::Sparc64),
-            0xF7 => Some(Arch::Ebpf),    // EM_BPF (eBPF)
-            0x53 => Some(Arch::Avr),     // EM_AVR
-            0x69 => Some(Arch::Msp430),  // EM_MSP430
+            0xF7 => Some(Arch::Ebpf),   // EM_BPF (eBPF)
+            0x53 => Some(Arch::Avr),    // EM_AVR
+            0x69 => Some(Arch::Msp430), // EM_MSP430
             _ => None,
         }
     }
@@ -224,30 +246,28 @@ impl Arch {
     /// Try to detect from PE Machine field
     pub fn from_pe_machine(machine: u16) -> Option<Self> {
         match machine {
-            0x014C => Some(Arch::X86),       // IMAGE_FILE_MACHINE_I386
-            0x8664 => Some(Arch::X86_64),    // IMAGE_FILE_MACHINE_AMD64
-            0x01C0 => Some(Arch::Arm32),     // IMAGE_FILE_MACHINE_ARM
-            0xAA64 => Some(Arch::Arm64),     // IMAGE_FILE_MACHINE_ARM64
-            0x0166 => Some(Arch::Mips32LE),  // IMAGE_FILE_MACHINE_R4000
-            0x01F0 => Some(Arch::Ppc32),     // IMAGE_FILE_MACHINE_POWERPC
-            0x0200 => Some(Arch::Sparc32),   // IMAGE_FILE_MACHINE_SPARC (unofficial)
+            0x014C => Some(Arch::X86),      // IMAGE_FILE_MACHINE_I386
+            0x8664 => Some(Arch::X86_64),   // IMAGE_FILE_MACHINE_AMD64
+            0x01C0 => Some(Arch::Arm32),    // IMAGE_FILE_MACHINE_ARM
+            0xAA64 => Some(Arch::Arm64),    // IMAGE_FILE_MACHINE_ARM64
+            0x0166 => Some(Arch::Mips32LE), // IMAGE_FILE_MACHINE_R4000
+            0x01F0 => Some(Arch::Ppc32),    // IMAGE_FILE_MACHINE_POWERPC
+            0x0200 => Some(Arch::Sparc32),  // IMAGE_FILE_MACHINE_SPARC (unofficial)
             _ => None,
         }
     }
 
     /// Is this a bytecode/VM architecture (not native CPU)?
     pub fn is_bytecode(&self) -> bool {
-        matches!(self,
-            Arch::Ebpf | Arch::Wasm32 | Arch::Wasm64 |
-            Arch::Dalvik | Arch::Chip8
+        matches!(
+            self,
+            Arch::Ebpf | Arch::Wasm32 | Arch::Wasm64 | Arch::Dalvik | Arch::Chip8
         )
     }
 
     /// Is this a microcontroller/embedded architecture?
     pub fn is_embedded(&self) -> bool {
-        matches!(self,
-            Arch::Avr | Arch::Msp430 | Arch::Mos6502 | Arch::Chip8
-        )
+        matches!(self, Arch::Avr | Arch::Msp430 | Arch::Mos6502 | Arch::Chip8)
     }
 
     /// Try to detect from magic bytes
@@ -267,35 +287,65 @@ impl Arch {
     /// All supported architectures
     pub fn all() -> &'static [Arch] {
         &[
-            Arch::X86, Arch::X86_64,
-            Arch::Arm32, Arch::Arm32Thumb, Arch::Arm64, Arch::Arm64BE,
-            Arch::Mips32LE, Arch::Mips32BE, Arch::Mips64LE, Arch::Mips64BE,
-            Arch::RiscV32, Arch::RiscV64,
-            Arch::Ppc32, Arch::Ppc64, Arch::Ppc64LE,
-            Arch::Sparc32, Arch::Sparc64,
+            Arch::X86,
+            Arch::X86_64,
+            Arch::Arm32,
+            Arch::Arm32Thumb,
+            Arch::Arm64,
+            Arch::Arm64BE,
+            Arch::Mips32LE,
+            Arch::Mips32BE,
+            Arch::Mips64LE,
+            Arch::Mips64BE,
+            Arch::RiscV32,
+            Arch::RiscV64,
+            Arch::Ppc32,
+            Arch::Ppc64,
+            Arch::Ppc64LE,
+            Arch::Sparc32,
+            Arch::Sparc64,
             // Lightweight / VM
-            Arch::Ebpf, Arch::Wasm32, Arch::Wasm64, Arch::Dalvik, Arch::Chip8,
+            Arch::Ebpf,
+            Arch::Wasm32,
+            Arch::Wasm64,
+            Arch::Dalvik,
+            Arch::Chip8,
             // Embedded
-            Arch::Avr, Arch::Msp430, Arch::Mos6502,
+            Arch::Avr,
+            Arch::Msp430,
+            Arch::Mos6502,
         ]
     }
 
     /// Lightweight architectures only (easy to analyse)
     pub fn lightweight() -> &'static [Arch] {
         &[
-            Arch::Ebpf, Arch::Wasm32, Arch::Wasm64,
-            Arch::Dalvik, Arch::Chip8,
-            Arch::Avr, Arch::Msp430, Arch::Mos6502,
+            Arch::Ebpf,
+            Arch::Wasm32,
+            Arch::Wasm64,
+            Arch::Dalvik,
+            Arch::Chip8,
+            Arch::Avr,
+            Arch::Msp430,
+            Arch::Mos6502,
         ]
     }
 
     /// Check if a lifter is implemented for this architecture
     pub fn has_lifter(&self) -> bool {
-        matches!(self,
-            Arch::X86 | Arch::X86_64 |
-            Arch::Arm32 | Arch::Arm32Thumb | Arch::Arm64 |
-            Arch::Mips32LE | Arch::Mips32BE | Arch::Mips64LE | Arch::Mips64BE |
-            Arch::RiscV32 | Arch::RiscV64
+        matches!(
+            self,
+            Arch::X86
+                | Arch::X86_64
+                | Arch::Arm32
+                | Arch::Arm32Thumb
+                | Arch::Arm64
+                | Arch::Mips32LE
+                | Arch::Mips32BE
+                | Arch::Mips64LE
+                | Arch::Mips64BE
+                | Arch::RiscV32
+                | Arch::RiscV64
         )
     }
 }
@@ -403,7 +453,10 @@ mod tests {
 
     #[test]
     fn test_wasm_magic_detection() {
-        assert_eq!(Arch::from_magic(b"\x00asm\x01\x00\x00\x00"), Some(Arch::Wasm32));
+        assert_eq!(
+            Arch::from_magic(b"\x00asm\x01\x00\x00\x00"),
+            Some(Arch::Wasm32)
+        );
         assert_eq!(Arch::from_magic(b"\x7fELF"), None);
         assert_eq!(Arch::from_magic(b"MZ"), None);
     }

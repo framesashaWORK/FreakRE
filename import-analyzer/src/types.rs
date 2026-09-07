@@ -96,7 +96,10 @@ impl AnalysisReport {
         lines.push(format!(
             "Imports: {} modules, {} functions",
             self.modules.len(),
-            self.modules.iter().map(|m| m.functions.len()).sum::<usize>()
+            self.modules
+                .iter()
+                .map(|m| m.functions.len())
+                .sum::<usize>()
         ));
         lines.push(format!("Suspicion Score: {:.2}", self.suspicion_score));
 

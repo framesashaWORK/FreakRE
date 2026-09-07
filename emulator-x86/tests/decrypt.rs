@@ -21,7 +21,9 @@ fn recovers_runtime_written_string() {
 
     let strings = recover_written_strings(&emu, 2);
     assert!(
-        strings.iter().any(|s| s.address == 0x2000 && s.text == "Hi!"),
+        strings
+            .iter()
+            .any(|s| s.address == 0x2000 && s.text == "Hi!"),
         "expected 'Hi!' @ 0x2000, got: {strings:?}"
     );
 }

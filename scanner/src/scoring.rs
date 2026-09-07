@@ -21,7 +21,7 @@ pub struct ScoringConfig {
     pub critical_weights: [f64; 4], // [0, 1, 2, 3+]
 
     /// High findings (index = count, diminishing returns)
-    pub high_weights: [f64; 6],     // [0, 1, 2, 3, 4, 5+]
+    pub high_weights: [f64; 6], // [0, 1, 2, 3, 4, 5+]
 
     /// Medium/Low per-finding weights and caps
     pub medium_per_finding: f64,
@@ -225,9 +225,9 @@ pub fn determine_verdict(
     // detection, YARA) force Malicious regardless of score.
     let has_critical = max_severity == Some(Severity::Critical);
     // Only a *strong* (High-severity) shellcode signal forces Malicious.
-    let has_shellcode_finding = findings.iter().any(|f| {
-        f.module == "shellcode-analyzer" && f.severity == Severity::High
-    });
+    let has_shellcode_finding = findings
+        .iter()
+        .any(|f| f.module == "shellcode-analyzer" && f.severity == Severity::High);
     let has_yara_match = findings
         .iter()
         .any(|f| f.module == "yara-lite" && !is_yara_budget_notice(f));
@@ -307,21 +307,33 @@ mod tests {
     fn test_single_critical_finding() {
         let findings = vec![make_finding(Severity::Critical, "pe-parser")];
         let score = calculate_suspicion_score(&findings, 0.0, 0.0, &[], false, 0, 0.0);
-        assert!(score >= 0.20, "Critical finding should give at least 0.20, got {}", score);
+        assert!(
+            score >= 0.20,
+            "Critical finding should give at least 0.20, got {}",
+            score
+        );
     }
 
     #[test]
     fn test_yara_match_boosts_score() {
         let findings = vec![make_finding(Severity::High, "yara-lite")];
         let score = calculate_suspicion_score(&findings, 0.0, 0.0, &[], false, 0, 0.0);
-        assert!(score >= 0.15, "YARA match should give at least 0.15, got {}", score);
+        assert!(
+            score >= 0.15,
+            "YARA match should give at least 0.15, got {}",
+            score
+        );
     }
 
     #[test]
     fn test_shellcode_gives_strong_signal() {
         let findings = vec![make_finding(Severity::High, "shellcode-analyzer")];
         let score = calculate_suspicion_score(&findings, 0.0, 0.0, &[], true, 0, 0.0);
-        assert!(score >= 0.25, "Shellcode should give at least 0.25, got {}", score);
+        assert!(
+            score >= 0.25,
+            "Shellcode should give at least 0.25, got {}",
+            score
+        );
     }
 
     #[test]
@@ -332,13 +344,21 @@ mod tests {
             classification: "high".into(),
         }];
         let score = calculate_suspicion_score(&[], 0.0, 0.0, &sections, false, 0, 0.0);
-        assert!(score >= 0.08, "High entropy in .text should add 0.08, got {}", score);
+        assert!(
+            score >= 0.08,
+            "High entropy in .text should add 0.08, got {}",
+            score
+        );
     }
 
     #[test]
     fn test_correlated_xref_pairs() {
         let score = calculate_suspicion_score(&[], 0.0, 0.0, &[], false, 2, 0.0);
-        assert!(score >= 0.10, "2 xref pairs should add ~0.10, got {}", score);
+        assert!(
+            score >= 0.10,
+            "2 xref pairs should add ~0.10, got {}",
+            score
+        );
     }
 
     #[test]
@@ -353,7 +373,10 @@ mod tests {
         ];
         let score_one = calculate_suspicion_score(&one_high, 0.0, 0.0, &[], false, 0, 0.0);
         let score_five = calculate_suspicion_score(&five_high, 0.0, 0.0, &[], false, 0, 0.0);
-        assert!(score_five < score_one * 3.0, "Diminishing returns not working");
+        assert!(
+            score_five < score_one * 3.0,
+            "Diminishing returns not working"
+        );
     }
 
     #[test]
@@ -368,13 +391,21 @@ mod tests {
             classification: "high".into(),
         }];
         let score = calculate_suspicion_score(&findings, 0.5, 0.3, &sections, true, 1, 0.0);
-        assert!(score >= 0.70, "Compounding should push score high, got {}", score);
+        assert!(
+            score >= 0.70,
+            "Compounding should push score high, got {}",
+            score
+        );
     }
 
     #[test]
     fn test_ml_signal_boosts_score() {
         let score = calculate_suspicion_score(&[], 0.0, 0.0, &[], false, 0, 0.9);
-        assert!(score >= 0.13, "ML signal (0.9 * 0.15) should add ~0.135, got {}", score);
+        assert!(
+            score >= 0.13,
+            "ML signal (0.9 * 0.15) should add ~0.135, got {}",
+            score
+        );
     }
 
     #[test]

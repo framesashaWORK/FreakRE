@@ -15,9 +15,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod analyzer;
 pub mod patterns;
 pub mod recursive;
-pub mod analyzer;
 
 #[derive(Error, Debug)]
 pub enum FinderError {
@@ -247,12 +247,7 @@ impl Pattern {
         if data.len() < self.bytes.len() {
             return false;
         }
-        for ((b, pb), m) in data
-            .iter()
-            .zip(self.bytes.iter())
-            .zip(self.mask.iter())
-            
-        {
+        for ((b, pb), m) in data.iter().zip(self.bytes.iter()).zip(self.mask.iter()) {
             if (b & m) != (pb & m) {
                 return false;
             }
@@ -295,13 +290,20 @@ impl FunctionFinder {
     fn patterns_for_arch(arch: &Architecture) -> (Vec<Pattern>, Vec<Pattern>) {
         match arch {
             Architecture::X86 | Architecture::X86_64 => Self::x86_patterns(),
-            Architecture::Arm | Architecture::Arm32 | Architecture::Arm32Thumb => Self::arm32_patterns(),
+            Architecture::Arm | Architecture::Arm32 | Architecture::Arm32Thumb => {
+                Self::arm32_patterns()
+            }
             Architecture::Arm64 | Architecture::Arm64BE => Self::arm64_patterns(),
-            Architecture::Mips | Architecture::MipsEl |
-            Architecture::Mips32LE | Architecture::Mips32BE |
-            Architecture::Mips64LE | Architecture::Mips64BE => Self::mips_patterns(),
+            Architecture::Mips
+            | Architecture::MipsEl
+            | Architecture::Mips32LE
+            | Architecture::Mips32BE
+            | Architecture::Mips64LE
+            | Architecture::Mips64BE => Self::mips_patterns(),
             Architecture::RiscV32 | Architecture::RiscV64 => Self::riscv_patterns(),
-            Architecture::Ppc32 | Architecture::Ppc64 | Architecture::Ppc64LE => Self::ppc_patterns(),
+            Architecture::Ppc32 | Architecture::Ppc64 | Architecture::Ppc64LE => {
+                Self::ppc_patterns()
+            }
             Architecture::Sparc32 | Architecture::Sparc64 => Self::sparc_patterns(),
         }
     }
@@ -460,17 +462,37 @@ impl FunctionFinder {
     fn mips_patterns() -> (Vec<Pattern>, Vec<Pattern>) {
         let prologues = vec![
             // addiu sp, sp, -N (LE: 0x27BDxxxx)
-            Pattern { bytes: vec![0xBD, 0x27], mask: vec![0xFF, 0xFF], description: "addiu sp,sp,-N" },
+            Pattern {
+                bytes: vec![0xBD, 0x27],
+                mask: vec![0xFF, 0xFF],
+                description: "addiu sp,sp,-N",
+            },
             // sw ra, N(sp) (LE: 0xAFBFxxxx)
-            Pattern { bytes: vec![0xBF, 0xAF], mask: vec![0xFF, 0xFF], description: "sw ra,N(sp)" },
+            Pattern {
+                bytes: vec![0xBF, 0xAF],
+                mask: vec![0xFF, 0xFF],
+                description: "sw ra,N(sp)",
+            },
             // BE variant: addiu sp,sp,-N (BE: 0x27BDxxxx)
-            Pattern { bytes: vec![0x27, 0xBD], mask: vec![0xFF, 0xFF], description: "addiu sp,sp,-N (BE)" },
+            Pattern {
+                bytes: vec![0x27, 0xBD],
+                mask: vec![0xFF, 0xFF],
+                description: "addiu sp,sp,-N (BE)",
+            },
         ];
         let epilogues = vec![
             // jr ra (LE: 0x03E00008)
-            Pattern { bytes: vec![0x08, 0x00, 0xE0, 0x03], mask: vec![0xFF, 0xFF, 0xFF, 0xFF], description: "jr ra" },
+            Pattern {
+                bytes: vec![0x08, 0x00, 0xE0, 0x03],
+                mask: vec![0xFF, 0xFF, 0xFF, 0xFF],
+                description: "jr ra",
+            },
             // jr ra (BE)
-            Pattern { bytes: vec![0x03, 0xE0, 0x00, 0x08], mask: vec![0xFF, 0xFF, 0xFF, 0xFF], description: "jr ra (BE)" },
+            Pattern {
+                bytes: vec![0x03, 0xE0, 0x00, 0x08],
+                mask: vec![0xFF, 0xFF, 0xFF, 0xFF],
+                description: "jr ra (BE)",
+            },
         ];
         (prologues, epilogues)
     }
@@ -478,17 +500,37 @@ impl FunctionFinder {
     fn riscv_patterns() -> (Vec<Pattern>, Vec<Pattern>) {
         let prologues = vec![
             // addi sp, sp, -N (compressed: c.addi16sp = 0x71xx)
-            Pattern { bytes: vec![0x71], mask: vec![0xFF], description: "c.addi16sp" },
+            Pattern {
+                bytes: vec![0x71],
+                mask: vec![0xFF],
+                description: "c.addi16sp",
+            },
             // sd ra, N(sp) (64-bit store ra: 0xE406 or full: 0x23Bxxxxx)
-            Pattern { bytes: vec![0x06, 0xE4], mask: vec![0xFF, 0xFF], description: "c.sdsp ra" },
+            Pattern {
+                bytes: vec![0x06, 0xE4],
+                mask: vec![0xFF, 0xFF],
+                description: "c.sdsp ra",
+            },
             // Full addi sp,sp,-imm (0x00110113 pattern)
-            Pattern { bytes: vec![0x93, 0x01], mask: vec![0xFF, 0xFF], description: "addi sp,sp,-N" },
+            Pattern {
+                bytes: vec![0x93, 0x01],
+                mask: vec![0xFF, 0xFF],
+                description: "addi sp,sp,-N",
+            },
         ];
         let epilogues = vec![
             // ret (compressed c.ret = 0x8082)
-            Pattern { bytes: vec![0x82, 0x80], mask: vec![0xFF, 0xFF], description: "c.ret" },
+            Pattern {
+                bytes: vec![0x82, 0x80],
+                mask: vec![0xFF, 0xFF],
+                description: "c.ret",
+            },
             // jalr zero, ra, 0 (full ret = 0x00008067)
-            Pattern { bytes: vec![0x67, 0x80, 0x00, 0x00], mask: vec![0xFF, 0xFF, 0xFF, 0xFF], description: "ret (jalr x0,ra)" },
+            Pattern {
+                bytes: vec![0x67, 0x80, 0x00, 0x00],
+                mask: vec![0xFF, 0xFF, 0xFF, 0xFF],
+                description: "ret (jalr x0,ra)",
+            },
         ];
         (prologues, epilogues)
     }
@@ -496,15 +538,31 @@ impl FunctionFinder {
     fn ppc_patterns() -> (Vec<Pattern>, Vec<Pattern>) {
         let prologues = vec![
             // stwu r1, -N(r1) (0x9421xxxx BE)
-            Pattern { bytes: vec![0x94, 0x21], mask: vec![0xFF, 0xFF], description: "stwu r1,-N(r1)" },
+            Pattern {
+                bytes: vec![0x94, 0x21],
+                mask: vec![0xFF, 0xFF],
+                description: "stwu r1,-N(r1)",
+            },
             // mflr r0 (0x7C0802A6 BE)
-            Pattern { bytes: vec![0x7C, 0x08, 0x02, 0xA6], mask: vec![0xFF, 0xFF, 0xFF, 0xFF], description: "mflr r0" },
+            Pattern {
+                bytes: vec![0x7C, 0x08, 0x02, 0xA6],
+                mask: vec![0xFF, 0xFF, 0xFF, 0xFF],
+                description: "mflr r0",
+            },
             // stw r0, N(r1) save LR (0x90010004 BE)
-            Pattern { bytes: vec![0x90, 0x01], mask: vec![0xFF, 0xFF], description: "stw r0,N(r1)" },
+            Pattern {
+                bytes: vec![0x90, 0x01],
+                mask: vec![0xFF, 0xFF],
+                description: "stw r0,N(r1)",
+            },
         ];
         let epilogues = vec![
             // blr (branch to link register = 0x4E800020 BE)
-            Pattern { bytes: vec![0x4E, 0x80, 0x00, 0x20], mask: vec![0xFF, 0xFF, 0xFF, 0xFF], description: "blr" },
+            Pattern {
+                bytes: vec![0x4E, 0x80, 0x00, 0x20],
+                mask: vec![0xFF, 0xFF, 0xFF, 0xFF],
+                description: "blr",
+            },
         ];
         (prologues, epilogues)
     }
@@ -512,13 +570,25 @@ impl FunctionFinder {
     fn sparc_patterns() -> (Vec<Pattern>, Vec<Pattern>) {
         let prologues = vec![
             // save %sp, -N, %sp (0x9DE3Bxxx BE)
-            Pattern { bytes: vec![0x9D, 0xE3], mask: vec![0xFF, 0xFF], description: "save %sp,-N,%sp" },
+            Pattern {
+                bytes: vec![0x9D, 0xE3],
+                mask: vec![0xFF, 0xFF],
+                description: "save %sp,-N,%sp",
+            },
         ];
         let epilogues = vec![
             // ret + restore (0x81C7E008 BE)
-            Pattern { bytes: vec![0x81, 0xC7, 0xE0, 0x08], mask: vec![0xFF, 0xFF, 0xFF, 0xFF], description: "ret; restore" },
+            Pattern {
+                bytes: vec![0x81, 0xC7, 0xE0, 0x08],
+                mask: vec![0xFF, 0xFF, 0xFF, 0xFF],
+                description: "ret; restore",
+            },
             // retl (0x81C3E008 BE)
-            Pattern { bytes: vec![0x81, 0xC3, 0xE0, 0x08], mask: vec![0xFF, 0xFF, 0xFF, 0xFF], description: "retl" },
+            Pattern {
+                bytes: vec![0x81, 0xC3, 0xE0, 0x08],
+                mask: vec![0xFF, 0xFF, 0xFF, 0xFF],
+                description: "retl",
+            },
         ];
         (prologues, epilogues)
     }
@@ -567,9 +637,10 @@ impl FunctionFinder {
             for pattern in &self.prologues {
                 if pattern.matches(&code[offset..]) {
                     // Found a prologue — try to find the end
-                    let end = self.find_function_end(code, offset)
+                    let end = self
+                        .find_function_end(code, offset)
                         .unwrap_or((offset + 64).min(code.len())); // fallback: assume 64 bytes
-                    
+
                     functions.push(DetectedFunction {
                         start: self.code_base + offset as u64,
                         end: self.code_base + end as u64,
@@ -618,7 +689,8 @@ impl FunctionFinder {
             visited.insert(offset);
 
             // Analyze this function
-            let end = self.find_function_end(code, offset)
+            let end = self
+                .find_function_end(code, offset)
                 .unwrap_or((offset + 64).min(code.len()));
 
             functions.push(DetectedFunction {
@@ -692,8 +764,8 @@ impl FunctionFinder {
                             code[offset + 3],
                             code[offset + 4],
                         ]);
-                        let target = (self.code_base + offset as u64 + 5)
-                            .wrapping_add(rel as i64 as u64);
+                        let target =
+                            (self.code_base + offset as u64 + 5).wrapping_add(rel as i64 as u64);
                         targets.push(target);
                     }
                 }
@@ -741,17 +813,20 @@ impl FunctionFinder {
         // FLIRT-like signature matching
 
         // Check for "thunk" pattern: jmp [target]
-        if offset + 6 <= code.len()
-            && code[offset] == 0xFF && (code[offset + 1] & 0x38) == 0x20 {
-                return true; // jmp [reg/abs]
-            }
+        if offset + 6 <= code.len() && code[offset] == 0xFF && (code[offset + 1] & 0x38) == 0x20 {
+            return true; // jmp [reg/abs]
+        }
 
         false
     }
 }
 
 /// Quick function detection for common architectures
-pub fn find_functions(code: &[u8], arch: Architecture, entry_points: &[u64]) -> Result<Vec<DetectedFunction>> {
+pub fn find_functions(
+    code: &[u8],
+    arch: Architecture,
+    entry_points: &[u64],
+) -> Result<Vec<DetectedFunction>> {
     let finder = FunctionFinder::new(arch);
     finder.find_all(code, entry_points)
 }
@@ -763,15 +838,15 @@ mod tests {
     #[test]
     fn test_x86_prologue_detection() {
         let finder = FunctionFinder::new(Architecture::X86);
-        
+
         // push ebp; mov ebp, esp; sub esp, 0x10; ...; ret
         let code = vec![
-            0x55, 0x89, 0xE5,       // push ebp; mov ebp, esp
-            0x83, 0xEC, 0x10,       // sub esp, 0x10
-            0x31, 0xC0,             // xor eax, eax
-            0xC9, 0xC3,             // leave; ret
+            0x55, 0x89, 0xE5, // push ebp; mov ebp, esp
+            0x83, 0xEC, 0x10, // sub esp, 0x10
+            0x31, 0xC0, // xor eax, eax
+            0xC9, 0xC3, // leave; ret
         ];
-        
+
         let functions = finder.find_by_prologue(&code).unwrap();
         assert!(!functions.is_empty());
         assert_eq!(functions[0].start, 0);
@@ -780,14 +855,14 @@ mod tests {
     #[test]
     fn test_x86_64_prologue_detection() {
         let finder = FunctionFinder::new(Architecture::X86_64);
-        
+
         let code = vec![
             0x55, 0x48, 0x89, 0xE5, // push rbp; mov rbp, rsp
             0x48, 0x83, 0xEC, 0x20, // sub rsp, 0x20
-            0x31, 0xC0,             // xor eax, eax
-            0xC9, 0xC3,             // leave; ret
+            0x31, 0xC0, // xor eax, eax
+            0xC9, 0xC3, // leave; ret
         ];
-        
+
         let functions = finder.find_by_prologue(&code).unwrap();
         assert!(!functions.is_empty());
     }
@@ -795,21 +870,21 @@ mod tests {
     #[test]
     fn test_recursive_descent() {
         let finder = FunctionFinder::new(Architecture::X86_64);
-        
+
         // main: push rbp; call sub; ret
         // sub: push rbp; xor eax, eax; ret
         let code = vec![
             // main at offset 0
             0x55, 0x48, 0x89, 0xE5, // push rbp; mov rbp, rsp
             0xE8, 0x04, 0x00, 0x00, 0x00, // call +4 (relative)
-            0xC3,                   // ret
-            0x00,                   // padding
+            0xC3, // ret
+            0x00, // padding
             // sub at offset 11
             0x55, 0x48, 0x89, 0xE5, // push rbp; mov rbp, rsp
-            0x31, 0xC0,             // xor eax, eax
-            0xC9, 0xC3,             // leave; ret
+            0x31, 0xC0, // xor eax, eax
+            0xC9, 0xC3, // leave; ret
         ];
-        
+
         let functions = finder.find_recursive(&code, 0).unwrap();
         assert!(!functions.is_empty());
     }
@@ -817,10 +892,12 @@ mod tests {
     #[test]
     fn test_merge_overlapping() {
         let finder = FunctionFinder::new(Architecture::X86_64);
-        
+
         let functions = vec![
             DetectedFunction {
-                start: 0, end: 100, size: 100,
+                start: 0,
+                end: 100,
+                size: 100,
                 confidence: 0.7,
                 detection_method: DetectionMethod::Prologue,
                 prologue_size: 3,
@@ -828,7 +905,9 @@ mod tests {
                 func_type: FunctionKind::Normal,
             },
             DetectedFunction {
-                start: 50, end: 150, size: 100,
+                start: 50,
+                end: 150,
+                size: 100,
                 confidence: 0.8,
                 detection_method: DetectionMethod::Recursive,
                 prologue_size: 0,
@@ -836,7 +915,7 @@ mod tests {
                 func_type: FunctionKind::Normal,
             },
         ];
-        
+
         let merged = finder.merge_overlapping(functions);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].start, 0);
@@ -852,8 +931,7 @@ mod tests {
             code.push(0xC3);
         }
 
-        let deep = FunctionFinder::new(Architecture::X86)
-            .with_max_recursion_depth(64);
+        let deep = FunctionFinder::new(Architecture::X86).with_max_recursion_depth(64);
         assert_eq!(deep.find_recursive(&code, 0).unwrap().len(), 5);
 
         let shallow = FunctionFinder::new(Architecture::X86)
@@ -870,5 +948,3 @@ mod tests {
         assert!(result.is_err());
     }
 }
-
-

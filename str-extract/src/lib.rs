@@ -1,4 +1,4 @@
-﻿#![allow(dead_code, unused_assignments)]
+#![allow(dead_code, unused_assignments)]
 //! # str-extract
 //!
 //! Binary string extractor designed for malware analysis.
@@ -250,11 +250,7 @@ fn run_string_passes<'a>(data: &'a [u8], config: &ExtractConfig) -> Vec<Extracte
 }
 
 /// Extract ASCII strings.
-fn extract_ascii<'a>(
-    data: &'a [u8],
-    min_length: usize,
-    out: &mut Vec<ExtractedString<'a>>,
-) {
+fn extract_ascii<'a>(data: &'a [u8], min_length: usize, out: &mut Vec<ExtractedString<'a>>) {
     let mut start: Option<usize> = None;
 
     for (i, &byte) in data.iter().enumerate() {
@@ -441,7 +437,9 @@ mod tests {
         };
         let results = extract_strings(&data, &config);
         assert!(
-            results.iter().any(|s| s.value == "Hi!" && s.encoding == Encoding::Utf16Le),
+            results
+                .iter()
+                .any(|s| s.value == "Hi!" && s.encoding == Encoding::Utf16Le),
             "Expected 'Hi!' in UTF-16LE, got: {:?}",
             results
         );
@@ -460,7 +458,9 @@ mod tests {
         };
         let results = extract_strings(&data, &config);
         assert!(
-            results.iter().any(|s| s.value == "OK!" && s.encoding == Encoding::Utf16Be),
+            results
+                .iter()
+                .any(|s| s.value == "OK!" && s.encoding == Encoding::Utf16Be),
             "Expected 'OK!' in UTF-16BE, got: {:?}",
             results
         );
@@ -470,8 +470,8 @@ mod tests {
     fn mixed_encodings_sorted_by_offset() {
         // ASCII "URL" at offset 0, then padding, then UTF-16LE "CMD"
         let mut data = Vec::new();
-        data.extend_from_slice(b"URL\x00");           // offset 0: ASCII
-        data.extend_from_slice(&[0x00; 4]);           // padding
+        data.extend_from_slice(b"URL\x00"); // offset 0: ASCII
+        data.extend_from_slice(&[0x00; 4]); // padding
         data.extend_from_slice(&[0x43, 0x00, 0x4D, 0x00, 0x44, 0x00]); // offset 8: UTF-16LE "CMD"
 
         let config = ExtractConfig {
@@ -546,7 +546,14 @@ mod tests {
             "Should extract C2 URL, got: {:?}",
             results.iter().map(|s| &s.value).collect::<Vec<_>>()
         );
-        assert_eq!(results.iter().find(|s| s.value.contains("evil.example.com")).unwrap().offset, 20);
+        assert_eq!(
+            results
+                .iter()
+                .find(|s| s.value.contains("evil.example.com"))
+                .unwrap()
+                .offset,
+            20
+        );
     }
 
     #[test]

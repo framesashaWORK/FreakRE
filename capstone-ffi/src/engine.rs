@@ -145,12 +145,7 @@ pub trait PreciseEngine {
     ///   convention, preserved here).
     /// * An empty input yields `Ok(vec![])` on working engines and
     ///   `Err(EngineError::Unavailable)` on [`StubEngine`].
-    fn disasm(
-        &self,
-        code: &[u8],
-        va: u64,
-        count: usize,
-    ) -> Result<Vec<Instr>, EngineError>;
+    fn disasm(&self, code: &[u8], va: u64, count: usize) -> Result<Vec<Instr>, EngineError>;
 }
 
 // ─── Backend selection ───────────────────────────────────────────────
@@ -209,12 +204,7 @@ pub fn best_engine_for(arch: Arch, mode: Mode) -> Box<dyn PreciseEngine> {
 pub struct StubEngine;
 
 impl PreciseEngine for StubEngine {
-    fn disasm(
-        &self,
-        _code: &[u8],
-        _va: u64,
-        _count: usize,
-    ) -> Result<Vec<Instr>, EngineError> {
+    fn disasm(&self, _code: &[u8], _va: u64, _count: usize) -> Result<Vec<Instr>, EngineError> {
         Err(EngineError::Unavailable)
     }
 }
@@ -247,12 +237,12 @@ pub mod capstone_backend {
     use super::{EngineError, Instr, PreciseEngine};
     use crate::arch::{Arch, Endian, Mode};
     use crate::capstone_bindings::{
-        cstr_to_string, cs_close, cs_disasm, cs_free, cs_open, cs_option, parse_branch_target,
-        CsHandle, CsInsn, CS_GRP_CALL, CS_GRP_INT, CS_GRP_IRET, CS_GRP_JUMP, CS_GRP_PRIVILEGE,
-        CS_GRP_RET, CS_OPT_DETAIL, CS_OPT_OFF, CS_OPT_ON, CS_OPT_SYNTAX, CS_OPT_SYNTAX_ATT,
-        CS_OPT_SYNTAX_INTEL, CS_ARCH_ARM, CS_ARCH_ARM64, CS_ARCH_MIPS, CS_ARCH_PPC, CS_ARCH_SPARC,
-        CS_ARCH_X86, CS_MODE_16, CS_MODE_32, CS_MODE_64, CS_MODE_ARM, CS_MODE_BIG_ENDIAN,
-        CS_MODE_LITTLE_ENDIAN, CS_MODE_MICRO, CS_MODE_THUMB,
+        cs_close, cs_disasm, cs_free, cs_open, cs_option, cstr_to_string, parse_branch_target,
+        CsHandle, CsInsn, CS_ARCH_ARM, CS_ARCH_ARM64, CS_ARCH_MIPS, CS_ARCH_PPC, CS_ARCH_SPARC,
+        CS_ARCH_X86, CS_GRP_CALL, CS_GRP_INT, CS_GRP_IRET, CS_GRP_JUMP, CS_GRP_PRIVILEGE,
+        CS_GRP_RET, CS_MODE_16, CS_MODE_32, CS_MODE_64, CS_MODE_ARM, CS_MODE_BIG_ENDIAN,
+        CS_MODE_LITTLE_ENDIAN, CS_MODE_MICRO, CS_MODE_THUMB, CS_OPT_DETAIL, CS_OPT_OFF, CS_OPT_ON,
+        CS_OPT_SYNTAX, CS_OPT_SYNTAX_ATT, CS_OPT_SYNTAX_INTEL,
     };
     use crate::engine::Syntax;
 
@@ -461,12 +451,7 @@ pub mod capstone_backend {
     }
 
     impl PreciseEngine for CapstoneEngine {
-        fn disasm(
-            &self,
-            code: &[u8],
-            va: u64,
-            count: usize,
-        ) -> Result<Vec<Instr>, EngineError> {
+        fn disasm(&self, code: &[u8], va: u64, count: usize) -> Result<Vec<Instr>, EngineError> {
             if code.is_empty() {
                 return Ok(Vec::new());
             }
@@ -479,9 +464,8 @@ pub mod capstone_backend {
             let mut raw: *mut CsInsn = std::ptr::null_mut();
             // FFI: allocates the insn array; ownership transfers to us on
             // count > 0. On count == 0 nothing is allocated.
-            let n = unsafe {
-                cs_disasm(self.handle, code.as_ptr(), code.len(), va, count, &mut raw)
-            };
+            let n =
+                unsafe { cs_disasm(self.handle, code.as_ptr(), code.len(), va, count, &mut raw) };
             if n == 0 {
                 // Stop condition hit immediately: invalid byte or end of
                 // input. Not an engine failure — an empty prefix is fine.
@@ -607,7 +591,9 @@ mod tests {
         #[test]
         fn best_engine_is_stub_without_capstone() {
             let engine = best_engine();
-            let err = engine.disasm(&[0x55, 0x48, 0x89, 0xE5], 0x1000, 10).unwrap_err();
+            let err = engine
+                .disasm(&[0x55, 0x48, 0x89, 0xE5], 0x1000, 10)
+                .unwrap_err();
             assert!(matches!(err, EngineError::Unavailable));
             assert!(err.to_string().contains("unavailable"));
         }
@@ -663,7 +649,11 @@ mod tests {
             assert_eq!(insns.len(), 1);
             assert_eq!(insns[0].mnemonic, "b");
             assert_eq!(insns[0].size, 4);
-            assert!(insns[0].op_str.contains("#-8"), "op_str={}", insns[0].op_str);
+            assert!(
+                insns[0].op_str.contains("#-8"),
+                "op_str={}",
+                insns[0].op_str
+            );
             assert!(insns[0].groups.iter().any(|g| g == "jump"));
         }
 
@@ -674,7 +664,10 @@ mod tests {
             assert_eq!(insns.len(), 1);
             let op = &insns[0].op_str;
             assert!(op.contains("%rsp") && op.contains("%rbp"), "op_str={op}");
-            assert!(op.find("%rsp") < op.find("%rbp"), "ATT order expected: {op}");
+            assert!(
+                op.find("%rsp") < op.find("%rbp"),
+                "ATT order expected: {op}"
+            );
             assert!(!insns[0].mnemonic.starts_with('#'));
         }
 
@@ -721,7 +714,9 @@ mod tests {
             let code = [0x90; 256];
             let insns = e.disasm(&code, 0x400000, 0).unwrap();
             assert_eq!(insns.len(), 256);
-            assert!(insns.windows(2).all(|w| w[1].address == w[0].address + w[0].size as u64));
+            assert!(insns
+                .windows(2)
+                .all(|w| w[1].address == w[0].address + w[0].size as u64));
         }
     }
 }

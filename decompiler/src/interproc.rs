@@ -43,8 +43,8 @@ pub enum CallingConvention {
     Stdcall,
     Fastcall,
     Thiscall,
-    SystemV,     // Linux x64
-    Win64,       // Windows x64
+    SystemV, // Linux x64
+    Win64,   // Windows x64
     Unknown,
 }
 
@@ -159,7 +159,13 @@ fn detect_calling_convention(func: &IrFunction) -> CallingConvention {
     for block in &func.blocks {
         if block.is_return_block() {
             for inst in &block.insts {
-                if let IrInst::Binary { op: OpCode::Add, lhs, rhs, .. } = inst {
+                if let IrInst::Binary {
+                    op: OpCode::Add,
+                    lhs,
+                    rhs,
+                    ..
+                } = inst
+                {
                     if let (Value::Register { name, .. }, Value::Const(val)) = (lhs, rhs) {
                         if (name == "esp" || name == "rsp") && *val > 0 {
                             stack_cleanup = true;
@@ -224,7 +230,12 @@ fn estimate_param_count(func: &IrFunction, cc: CallingConvention) -> usize {
         }
     }
 
-    used.len().max(if func.metadata.stack_frame_size.unwrap_or(0) > 0 { 1 } else { 0 })
+    used.len()
+        .max(if func.metadata.stack_frame_size.unwrap_or(0) > 0 {
+            1
+        } else {
+            0
+        })
 }
 
 fn infer_return_type(func: &IrFunction) -> Option<Ty> {
@@ -245,15 +256,27 @@ fn infer_return_type(func: &IrFunction) -> Option<Ty> {
 
 fn check_may_throw(func: &IrFunction) -> bool {
     let throwing_funcs: HashSet<&str> = [
-        "__CxxFrameHandler3", "_except_handler3", "_except_handler4",
-        "__gcc_personality_v0", "__gxx_personality_v0",
-        "_C_specific_handler", "__clang_call_terminate",
-        "__cxa_throw", "_CxxThrowException",
-    ].iter().copied().collect();
+        "__CxxFrameHandler3",
+        "_except_handler3",
+        "_except_handler4",
+        "__gcc_personality_v0",
+        "__gxx_personality_v0",
+        "_C_specific_handler",
+        "__clang_call_terminate",
+        "__cxa_throw",
+        "_CxxThrowException",
+    ]
+    .iter()
+    .copied()
+    .collect();
 
     for block in &func.blocks {
         for inst in &block.insts {
-            if let IrInst::Call { target: Value::Symbol(sym), .. } = inst {
+            if let IrInst::Call {
+                target: Value::Symbol(sym),
+                ..
+            } = inst
+            {
                 if throwing_funcs.contains(sym.as_str()) {
                     return true;
                 }
@@ -269,7 +292,11 @@ fn find_global_reads(func: &IrFunction) -> Vec<u64> {
     let mut globals = Vec::new();
     for block in &func.blocks {
         for inst in &block.insts {
-            if let IrInst::Load { addr: Value::Const(addr_val), .. } = inst {
+            if let IrInst::Load {
+                addr: Value::Const(addr_val),
+                ..
+            } = inst
+            {
                 // Heuristic: addresses in typical data segment range
                 if *addr_val > 0x10000 && (*addr_val as u64) < 0x7FFF_FFFF_FFFF {
                     globals.push(*addr_val as u64);
@@ -286,7 +313,11 @@ fn find_global_writes(func: &IrFunction) -> Vec<u64> {
     let mut globals = Vec::new();
     for block in &func.blocks {
         for inst in &block.insts {
-            if let IrInst::Store { addr: Value::Const(addr_val), .. } = inst {
+            if let IrInst::Store {
+                addr: Value::Const(addr_val),
+                ..
+            } = inst
+            {
                 if *addr_val > 0x10000 && (*addr_val as u64) < 0x7FFF_FFFF_FFFF {
                     globals.push(*addr_val as u64);
                 }
@@ -304,22 +335,30 @@ fn resolve_globals(program: &IrProgram) -> HashMap<u64, GlobalInfo> {
     // Collect all global references across all functions
     for func in &program.functions {
         for addr in find_global_reads(func) {
-            globals.entry(addr).or_insert_with(|| GlobalInfo {
-                address: addr,
-                name: format!("g_data_{:X}", addr),
-                read_by: Vec::new(),
-                written_by: Vec::new(),
-                inferred_type: Ty::Unknown,
-            }).read_by.push(func.name.clone());
+            globals
+                .entry(addr)
+                .or_insert_with(|| GlobalInfo {
+                    address: addr,
+                    name: format!("g_data_{:X}", addr),
+                    read_by: Vec::new(),
+                    written_by: Vec::new(),
+                    inferred_type: Ty::Unknown,
+                })
+                .read_by
+                .push(func.name.clone());
         }
         for addr in find_global_writes(func) {
-            globals.entry(addr).or_insert_with(|| GlobalInfo {
-                address: addr,
-                name: format!("g_data_{:X}", addr),
-                read_by: Vec::new(),
-                written_by: Vec::new(),
-                inferred_type: Ty::Unknown,
-            }).written_by.push(func.name.clone());
+            globals
+                .entry(addr)
+                .or_insert_with(|| GlobalInfo {
+                    address: addr,
+                    name: format!("g_data_{:X}", addr),
+                    read_by: Vec::new(),
+                    written_by: Vec::new(),
+                    inferred_type: Ty::Unknown,
+                })
+                .written_by
+                .push(func.name.clone());
         }
     }
 
@@ -344,7 +383,11 @@ fn detect_inline_candidates(program: &IrProgram, analysis: &mut ProgramAnalysis)
     for func in &program.functions {
         for block in &func.blocks {
             for inst in &block.insts {
-                if let IrInst::Call { target: Value::Symbol(target_name), .. } = inst {
+                if let IrInst::Call {
+                    target: Value::Symbol(target_name),
+                    ..
+                } = inst
+                {
                     *caller_counts.entry(target_name.clone()).or_insert(0) += 1;
                 }
             }
@@ -388,7 +431,12 @@ fn propagate_return_types(program: &IrProgram, analysis: &mut ProgramAnalysis) {
             let mut known_call_dsts: HashMap<u32, (&str, Ty)> = HashMap::new();
             for block in &func.blocks {
                 for inst in &block.insts {
-                    if let IrInst::Call { dst: Some(d), target: Value::Symbol(name), .. } = inst {
+                    if let IrInst::Call {
+                        dst: Some(d),
+                        target: Value::Symbol(name),
+                        ..
+                    } = inst
+                    {
                         if let Some(id) = d.var_id() {
                             if let Some(callee) = analysis.summaries.get(name) {
                                 if let Some(ref rt) = callee.return_type {
@@ -464,7 +512,8 @@ impl ProgramAnalysis {
 
     /// List all inline candidates.
     pub fn inline_candidates(&self) -> Vec<&FunctionSummary> {
-        self.summaries.values()
+        self.summaries
+            .values()
             .filter(|s| s.inline_candidate)
             .collect()
     }

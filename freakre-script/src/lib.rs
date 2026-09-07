@@ -72,16 +72,16 @@
 //! print(tostring({version = 2, tags = {'re', 'auto'}}))
 //! ```
 
-pub mod lexer;
 pub mod ast;
-pub mod parser;
 pub mod interpreter;
-pub mod stdlib;
+pub mod lexer;
+pub mod parser;
 pub mod sandbox;
+pub mod stdlib;
 
+pub use ast::Stmt;
 pub use interpreter::{Interpreter, ScriptError};
 pub use sandbox::{Capabilities, SandboxConfig};
-pub use ast::Stmt;
 
 /// Run a script with the given config and capabilities.
 pub fn run(

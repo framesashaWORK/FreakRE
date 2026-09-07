@@ -59,7 +59,12 @@ impl<'a> SectionHeader<'a> {
 }
 
 /// Resolve section name from the string table.
-fn resolve_name(data: &[u8], strtab_offset: usize, strtab_size: usize, name_offset: usize) -> String {
+fn resolve_name(
+    data: &[u8],
+    strtab_offset: usize,
+    strtab_size: usize,
+    name_offset: usize,
+) -> String {
     if strtab_offset == 0 || strtab_size == 0 {
         return format!("<unnamed@{}>", name_offset);
     }
@@ -132,12 +137,17 @@ pub fn parse_section_headers_64<'a, const BE: bool>(
         }
     };
 
-    if (sh_offset as usize).checked_add(total_size).is_none_or(|end| end > data.len()) {
+    if (sh_offset as usize)
+        .checked_add(total_size)
+        .is_none_or(|end| end > data.len())
+    {
         warnings.push(ElfWarning {
             kind: ElfWarningKind::SuspiciousSection,
             message: format!(
                 "Section headers extend beyond file: offset=0x{:X} size=0x{:X} file=0x{:X}",
-                sh_offset, total_size, data.len()
+                sh_offset,
+                total_size,
+                data.len()
             ),
         });
         return Vec::new();
@@ -156,7 +166,10 @@ pub fn parse_section_headers_64<'a, const BE: bool>(
         } else {
             warnings.push(ElfWarning {
                 kind: ElfWarningKind::SuspiciousSection,
-                message: format!("String table section header at index {} extends beyond file", sh_strndx),
+                message: format!(
+                    "String table section header at index {} extends beyond file",
+                    sh_strndx
+                ),
             });
             (0, 0)
         }
@@ -164,7 +177,10 @@ pub fn parse_section_headers_64<'a, const BE: bool>(
         if sh_strndx != 0 && sh_strndx != 0xFFFF {
             warnings.push(ElfWarning {
                 kind: ElfWarningKind::SuspiciousSection,
-                message: format!("e_shstrndx={} is out of bounds (sh_num={})", sh_strndx, sh_num),
+                message: format!(
+                    "e_shstrndx={} is out of bounds (sh_num={})",
+                    sh_strndx, sh_num
+                ),
             });
         }
         (0, 0)
@@ -173,7 +189,8 @@ pub fn parse_section_headers_64<'a, const BE: bool>(
     let mut sections = Vec::with_capacity(sh_num as usize);
 
     for i in 0..sh_num as usize {
-        let Some(base) = i.checked_mul(entry_size)
+        let Some(base) = i
+            .checked_mul(entry_size)
             .and_then(|o| (sh_offset as usize).checked_add(o))
         else {
             break;
@@ -197,7 +214,10 @@ pub fn parse_section_headers_64<'a, const BE: bool>(
         let flags = SectionFlags::from_bits_truncate(sh_flags_raw);
 
         // Extract section data safely
-        let sec_data = if sh_offset_val.checked_add(sh_size).is_some_and(|end| end as usize <= data.len()) {
+        let sec_data = if sh_offset_val
+            .checked_add(sh_size)
+            .is_some_and(|end| end as usize <= data.len())
+        {
             &data[sh_offset_val as usize..sh_offset_val as usize + sh_size as usize]
         } else {
             &[]
@@ -287,12 +307,17 @@ pub fn parse_section_headers_32<'a, const BE: bool>(
         }
     };
 
-    if (sh_offset as usize).checked_add(total_size).is_none_or(|end| end > data.len()) {
+    if (sh_offset as usize)
+        .checked_add(total_size)
+        .is_none_or(|end| end > data.len())
+    {
         warnings.push(ElfWarning {
             kind: ElfWarningKind::SuspiciousSection,
             message: format!(
                 "Section headers extend beyond file: offset=0x{:X} size=0x{:X} file=0x{:X}",
-                sh_offset, total_size, data.len()
+                sh_offset,
+                total_size,
+                data.len()
             ),
         });
         return Vec::new();
@@ -309,7 +334,10 @@ pub fn parse_section_headers_32<'a, const BE: bool>(
         } else {
             warnings.push(ElfWarning {
                 kind: ElfWarningKind::SuspiciousSection,
-                message: format!("String table section header at index {} extends beyond file", sh_strndx),
+                message: format!(
+                    "String table section header at index {} extends beyond file",
+                    sh_strndx
+                ),
             });
             (0, 0)
         }
@@ -317,7 +345,10 @@ pub fn parse_section_headers_32<'a, const BE: bool>(
         if sh_strndx != 0 && sh_strndx != 0xFFFF {
             warnings.push(ElfWarning {
                 kind: ElfWarningKind::SuspiciousSection,
-                message: format!("e_shstrndx={} is out of bounds (sh_num={})", sh_strndx, sh_num),
+                message: format!(
+                    "e_shstrndx={} is out of bounds (sh_num={})",
+                    sh_strndx, sh_num
+                ),
             });
         }
         (0, 0)
@@ -326,7 +357,8 @@ pub fn parse_section_headers_32<'a, const BE: bool>(
     let mut sections = Vec::with_capacity(sh_num as usize);
 
     for i in 0..sh_num as usize {
-        let Some(base) = i.checked_mul(entry_size)
+        let Some(base) = i
+            .checked_mul(entry_size)
             .and_then(|o| (sh_offset as usize).checked_add(o))
         else {
             break;
@@ -349,7 +381,10 @@ pub fn parse_section_headers_32<'a, const BE: bool>(
 
         let flags = SectionFlags::from_bits_truncate(sh_flags_raw);
 
-        let sec_data = if sh_offset_val.checked_add(sh_size).is_some_and(|end| end as usize <= data.len()) {
+        let sec_data = if sh_offset_val
+            .checked_add(sh_size)
+            .is_some_and(|end| end as usize <= data.len())
+        {
             &data[sh_offset_val as usize..sh_offset_val as usize + sh_size as usize]
         } else {
             &[]
@@ -405,9 +440,9 @@ mod tests {
         let mut data = vec![0u8; 512];
         let s0 = 64usize;
         data[s0 + 24..s0 + 32].copy_from_slice(&300u64.to_le_bytes()); // strtab offset
-        data[s0 + 32..s0 + 40].copy_from_slice(&6u64.to_le_bytes());   // strtab size
+        data[s0 + 32..s0 + 40].copy_from_slice(&6u64.to_le_bytes()); // strtab size
         let s1 = s0 + 64;
-        data[s1..s1 + 4].copy_from_slice(&200u32.to_le_bytes());       // sh_name = 200 > 6
+        data[s1..s1 + 4].copy_from_slice(&200u32.to_le_bytes()); // sh_name = 200 > 6
         data[300..306].copy_from_slice(b".text\0");
 
         let mut warnings = Vec::new();

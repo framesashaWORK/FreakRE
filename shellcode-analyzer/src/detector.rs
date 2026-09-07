@@ -73,12 +73,20 @@ pub fn detect_shellcode(data: &[u8], config: &ShellcodeConfig) -> ShellcodeRepor
     if api_hash_results.len() >= min_api_hashes {
         let apis: Vec<String> = api_hash_results
             .iter()
-            .map(|(off, resolved)| format!("{}!{} @ 0x{:X}", resolved.dll_name, resolved.function_name, off))
+            .map(|(off, resolved)| {
+                format!(
+                    "{}!{} @ 0x{:X}",
+                    resolved.dll_name, resolved.function_name, off
+                )
+            })
             .collect();
 
         findings.push(ShellcodeFinding::new(
             "SHELLCODE_API_HASHES",
-            format!("Found {} resolved Windows API hashes (shellcode indicator)", api_hash_results.len()),
+            format!(
+                "Found {} resolved Windows API hashes (shellcode indicator)",
+                api_hash_results.len()
+            ),
             apis,
             api_hash_results[0].0,
             0.9,
@@ -96,7 +104,10 @@ pub fn detect_shellcode(data: &[u8], config: &ShellcodeConfig) -> ShellcodeRepor
     let verdict = if findings.is_empty() {
         ShellcodeVerdict::NoShellcode
     } else {
-        let max_confidence = findings.iter().map(|f| f.confidence).fold(0.0_f64, f64::max);
+        let max_confidence = findings
+            .iter()
+            .map(|f| f.confidence)
+            .fold(0.0_f64, f64::max);
         if max_confidence >= 0.7 {
             ShellcodeVerdict::ShellcodeLikely
         } else {
@@ -120,12 +131,30 @@ fn check_shellcode_patterns(
     config: &ShellcodeConfig,
 ) {
     let getpc_patterns: &[(&[u8], &str)] = &[
-        (&[0xE8, 0x00, 0x00, 0x00, 0x00, 0x58], "call $+5 / pop eax (GetPC)"),
-        (&[0xE8, 0x00, 0x00, 0x00, 0x00, 0x5B], "call $+5 / pop ebx (GetPC)"),
-        (&[0xE8, 0x00, 0x00, 0x00, 0x00, 0x59], "call $+5 / pop ecx (GetPC)"),
-        (&[0xE8, 0x00, 0x00, 0x00, 0x00, 0x5A], "call $+5 / pop edx (GetPC)"),
-        (&[0xE8, 0x00, 0x00, 0x00, 0x00, 0x5E], "call $+5 / pop esi (GetPC)"),
-        (&[0xE8, 0x00, 0x00, 0x00, 0x00, 0x5F], "call $+5 / pop edi (GetPC)"),
+        (
+            &[0xE8, 0x00, 0x00, 0x00, 0x00, 0x58],
+            "call $+5 / pop eax (GetPC)",
+        ),
+        (
+            &[0xE8, 0x00, 0x00, 0x00, 0x00, 0x5B],
+            "call $+5 / pop ebx (GetPC)",
+        ),
+        (
+            &[0xE8, 0x00, 0x00, 0x00, 0x00, 0x59],
+            "call $+5 / pop ecx (GetPC)",
+        ),
+        (
+            &[0xE8, 0x00, 0x00, 0x00, 0x00, 0x5A],
+            "call $+5 / pop edx (GetPC)",
+        ),
+        (
+            &[0xE8, 0x00, 0x00, 0x00, 0x00, 0x5E],
+            "call $+5 / pop esi (GetPC)",
+        ),
+        (
+            &[0xE8, 0x00, 0x00, 0x00, 0x00, 0x5F],
+            "call $+5 / pop edi (GetPC)",
+        ),
         (&[0xD9, 0xE0], "fnstenv (FPU GetPC)"),
         (&[0xEB, 0x00], "jmp $+2 (short jump NOP sled)"),
     ];
@@ -138,11 +167,20 @@ fn check_shellcode_patterns(
     }
 
     let peb_patterns: &[(&[u8], &str)] = &[
-        (&[0x64, 0xA1, 0x30, 0x00, 0x00, 0x00], "mov eax, fs:[0x30] (PEB access x86)"),
-        (&[0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0x00, 0x00, 0x00], "mov rax, gs:[0x60] (PEB access x64)"),
+        (
+            &[0x64, 0xA1, 0x30, 0x00, 0x00, 0x00],
+            "mov eax, fs:[0x30] (PEB access x86)",
+        ),
+        (
+            &[0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0x00, 0x00, 0x00],
+            "mov rax, gs:[0x60] (PEB access x64)",
+        ),
         (&[0x6A, 0x60, 0x5A], "push 0x60 / pop edx (PEB offset)"),
         (&[0x64, 0x8B, 0x35], "mov esi, fs:[...] (TEB/PEB access)"),
-        (&[0x33, 0xC0, 0x64, 0x8B], "xor eax,eax / mov eax,fs:[...] (x86 PEB)"),
+        (
+            &[0x33, 0xC0, 0x64, 0x8B],
+            "xor eax,eax / mov eax,fs:[...] (x86 PEB)",
+        ),
     ];
     for (pattern, _desc) in peb_patterns {
         if let Some(off) = find_pattern(data, pattern) {
@@ -153,8 +191,14 @@ fn check_shellcode_patterns(
     }
 
     let hash_resolution: &[(&[u8], &str)] = &[
-        (&[0x60, 0x8B, 0x45, 0x3C], "pushad / mov eax, [ebp+0x3C] (PE header parsing)"),
-        (&[0x60, 0x8B, 0x75, 0x7C], "pushad / mov esi, [ebp+0x7C] (export table access)"),
+        (
+            &[0x60, 0x8B, 0x45, 0x3C],
+            "pushad / mov eax, [ebp+0x3C] (PE header parsing)",
+        ),
+        (
+            &[0x60, 0x8B, 0x75, 0x7C],
+            "pushad / mov esi, [ebp+0x7C] (export table access)",
+        ),
     ];
     for (pattern, _desc) in hash_resolution {
         if let Some(off) = find_pattern(data, pattern) {
@@ -193,8 +237,12 @@ fn check_nop_sled(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
     }
 
     let nop_equivalents: &[[u8; 2]] = &[
-        [0x89, 0xC0], [0x89, 0xDB], [0x89, 0xC9],
-        [0x89, 0xD2], [0x89, 0xF6], [0x89, 0xFF],
+        [0x89, 0xC0],
+        [0x89, 0xDB],
+        [0x89, 0xC9],
+        [0x89, 0xD2],
+        [0x89, 0xF6],
+        [0x89, 0xFF],
     ];
 
     for equiv in nop_equivalents {
@@ -210,7 +258,10 @@ fn check_nop_sled(data: &[u8], findings: &mut Vec<ShellcodeFinding>) {
                 if count >= 8 {
                     findings.push(ShellcodeFinding::new(
                         "SHELLCODE_NOP_SLED",
-                        format!("Multi-byte NOP sled detected ({} repetitions of 0x{:02X}{:02X})", count, equiv[0], equiv[1]),
+                        format!(
+                            "Multi-byte NOP sled detected ({} repetitions of 0x{:02X}{:02X})",
+                            count, equiv[0], equiv[1]
+                        ),
                         vec![format!("offset 0x{:X}, {} bytes", start, count * 2)],
                         start,
                         0.45,
@@ -243,11 +294,7 @@ fn check_int3_padding(data: &[u8], weak: &mut WeakSignals) {
 
 // ─── Encoder/Decoder Stub Detection ───────────────────────────────────
 
-fn check_encoder_stubs(
-    data: &[u8],
-    findings: &mut Vec<ShellcodeFinding>,
-    _weak: &mut WeakSignals,
-) {
+fn check_encoder_stubs(data: &[u8], findings: &mut Vec<ShellcodeFinding>, _weak: &mut WeakSignals) {
     if data.len() < 20 {
         return;
     }
@@ -289,13 +336,22 @@ fn check_encoder_stubs(
                         if has_loop {
                             let reg_idx = modrm & 0x07;
                             let reg_name = match reg_idx {
-                                0 => "eax", 1 => "ecx", 2 => "edx", 3 => "ebx",
-                                4 => "esp", 5 => "ebp", 6 => "esi", 7 => "edi",
+                                0 => "eax",
+                                1 => "ecx",
+                                2 => "edx",
+                                3 => "ebx",
+                                4 => "esp",
+                                5 => "ebp",
+                                6 => "esi",
+                                7 => "edi",
                                 _ => "?",
                             };
                             findings.push(ShellcodeFinding::new(
                                 "SHELLCODE_XOR_DECODER",
-                                format!("XOR decoder stub: xor [{}], 0x{:02X} (encoder detected)", reg_name, xor_key),
+                                format!(
+                                    "XOR decoder stub: xor [{}], 0x{:02X} (encoder detected)",
+                                    reg_name, xor_key
+                                ),
                                 vec![
                                     format!("decoder at offset 0x{:X}", i),
                                     format!("XOR key: 0x{:02X}", xor_key),
@@ -314,10 +370,22 @@ fn check_encoder_stubs(
     check_alphanumeric_shellcode(data, findings);
 
     let fpu_getpc: &[(&[u8], &str)] = &[
-        (&[0xD9, 0xEE, 0xD9, 0x74, 0x24, 0xF4], "fldz / fnstenv [esp-0xC] (FPU GetPC)"),
-        (&[0xD9, 0xE1, 0xD9, 0x74, 0x24, 0xF4], "fldpi / fnstenv [esp-0xC] (FPU GetPC)"),
-        (&[0xD9, 0xE0, 0xD9, 0x74, 0x24, 0xF4], "fchs / fnstenv [esp-0xC] (FPU GetPC)"),
-        (&[0xD9, 0xE8, 0xD9, 0x74, 0x24, 0xF4], "fucomip / fnstenv [esp-0xC] (FPU GetPC)"),
+        (
+            &[0xD9, 0xEE, 0xD9, 0x74, 0x24, 0xF4],
+            "fldz / fnstenv [esp-0xC] (FPU GetPC)",
+        ),
+        (
+            &[0xD9, 0xE1, 0xD9, 0x74, 0x24, 0xF4],
+            "fldpi / fnstenv [esp-0xC] (FPU GetPC)",
+        ),
+        (
+            &[0xD9, 0xE0, 0xD9, 0x74, 0x24, 0xF4],
+            "fchs / fnstenv [esp-0xC] (FPU GetPC)",
+        ),
+        (
+            &[0xD9, 0xE8, 0xD9, 0x74, 0x24, 0xF4],
+            "fucomip / fnstenv [esp-0xC] (FPU GetPC)",
+        ),
     ];
 
     for (pattern, _desc) in fpu_getpc {
@@ -334,27 +402,39 @@ fn check_encoder_stubs(
 
     for i in 0..data.len().saturating_sub(7) {
         if data[i] == 0xE8 {
-            let offset_bytes = i32::from_le_bytes([data[i + 1], data[i + 2], data[i + 3], data[i + 4]]);
+            let offset_bytes =
+                i32::from_le_bytes([data[i + 1], data[i + 2], data[i + 3], data[i + 4]]);
             let target_rel = offset_bytes;
             if (0..16).contains(&target_rel) {
                 let pop_offset = (5 + target_rel) as usize;
                 if i + pop_offset < data.len() {
                     let next_byte = data[i + pop_offset];
-                    if (0x58..=0x5F).contains(&next_byte) && next_byte != 0x5C && next_byte != 0x5D
-                        && target_rel != 0 {
-                            let reg = match next_byte {
-                                0x58 => "eax", 0x59 => "ecx", 0x5A => "edx",
-                                0x5B => "ebx", 0x5E => "esi", 0x5F => "edi",
-                                _ => "?",
-                            };
-                            findings.push(ShellcodeFinding::new(
-                                "SHELLCODE_GETPC",
-                                format!("call $+{} / pop {} (non-standard GetPC)", target_rel + 5, reg),
-                                vec![format!("offset 0x{:X}", i)],
-                                i,
-                                0.7,
-                            ));
-                        }
+                    if (0x58..=0x5F).contains(&next_byte)
+                        && next_byte != 0x5C
+                        && next_byte != 0x5D
+                        && target_rel != 0
+                    {
+                        let reg = match next_byte {
+                            0x58 => "eax",
+                            0x59 => "ecx",
+                            0x5A => "edx",
+                            0x5B => "ebx",
+                            0x5E => "esi",
+                            0x5F => "edi",
+                            _ => "?",
+                        };
+                        findings.push(ShellcodeFinding::new(
+                            "SHELLCODE_GETPC",
+                            format!(
+                                "call $+{} / pop {} (non-standard GetPC)",
+                                target_rel + 5,
+                                reg
+                            ),
+                            vec![format!("offset 0x{:X}", i)],
+                            i,
+                            0.7,
+                        ));
+                    }
                 }
             }
         }
@@ -452,15 +532,20 @@ fn check_alphanumeric_shellcode(data: &[u8], findings: &mut Vec<ShellcodeFinding
 
 // ─── Egg Hunter Detection ─────────────────────────────────────────────
 
-fn check_egg_hunters(
-    data: &[u8],
-    findings: &mut Vec<ShellcodeFinding>,
-    _weak: &mut WeakSignals,
-) {
+fn check_egg_hunters(data: &[u8], findings: &mut Vec<ShellcodeFinding>, _weak: &mut WeakSignals) {
     let egg_patterns: &[(&[u8], &str)] = &[
-        (&[0x66, 0x81, 0xCA, 0xFF, 0x0F, 0x42, 0x52], "or dx, 0x0FFF / inc edx / push edx (egg hunter page alignment)"),
-        (&[0x6A, 0x02, 0x58, 0xCD, 0x2E, 0x3C, 0x05], "push 2 / pop eax / int 0x2E / cmp al, 5 (egg hunter syscall)"),
-        (&[0x6A, 0x43, 0x58, 0xCD, 0x2E], "push 0x43 / pop eax / int 0x2E (NtDisplayString egg hunter)"),
+        (
+            &[0x66, 0x81, 0xCA, 0xFF, 0x0F, 0x42, 0x52],
+            "or dx, 0x0FFF / inc edx / push edx (egg hunter page alignment)",
+        ),
+        (
+            &[0x6A, 0x02, 0x58, 0xCD, 0x2E, 0x3C, 0x05],
+            "push 2 / pop eax / int 0x2E / cmp al, 5 (egg hunter syscall)",
+        ),
+        (
+            &[0x6A, 0x43, 0x58, 0xCD, 0x2E],
+            "push 0x43 / pop eax / int 0x2E (NtDisplayString egg hunter)",
+        ),
     ];
 
     for (pattern, _desc) in egg_patterns {
@@ -480,29 +565,31 @@ fn check_egg_hunters(
             let modrm = data[i + 1];
             let mod_field = (modrm >> 6) & 0x03;
             let reg_field = (modrm >> 3) & 0x07;
-            if mod_field == 0 && reg_field == 7
-                && i + 6 < data.len() {
-                    let egg = u32::from_le_bytes([data[i + 2], data[i + 3], data[i + 4], data[i + 5]]);
-                    let low_word = (egg & 0xFFFF) as u16;
-                    let high_word = ((egg >> 16) & 0xFFFF) as u16;
-                    if low_word == high_word && low_word != 0 && low_word != 0xFFFF
-                        && i + 6 < data.len() {
-                            let next = data[i + 6];
-                            if next == 0x75 || next == 0x74 || next == 0xEB {
-                                findings.push(ShellcodeFinding::new(
-                                    "SHELLCODE_EGG_HUNTER",
-                                    format!("Egg hunter: cmp [reg], 0x{:08X} (egg tag search)", egg),
-                                    vec![
-                                        format!("offset 0x{:X}", i),
-                                        format!("egg tag: 0x{:08X}", egg),
-                                    ],
-                                    i,
-                                    0.7,
-                                ));
-                                break;
-                            }
-                        }
+            if mod_field == 0 && reg_field == 7 && i + 6 < data.len() {
+                let egg = u32::from_le_bytes([data[i + 2], data[i + 3], data[i + 4], data[i + 5]]);
+                let low_word = (egg & 0xFFFF) as u16;
+                let high_word = ((egg >> 16) & 0xFFFF) as u16;
+                if low_word == high_word
+                    && low_word != 0
+                    && low_word != 0xFFFF
+                    && i + 6 < data.len()
+                {
+                    let next = data[i + 6];
+                    if next == 0x75 || next == 0x74 || next == 0xEB {
+                        findings.push(ShellcodeFinding::new(
+                            "SHELLCODE_EGG_HUNTER",
+                            format!("Egg hunter: cmp [reg], 0x{:08X} (egg tag search)", egg),
+                            vec![
+                                format!("offset 0x{:X}", i),
+                                format!("egg tag: 0x{:08X}", egg),
+                            ],
+                            i,
+                            0.7,
+                        ));
+                        break;
+                    }
                 }
+            }
         }
     }
 }
@@ -565,10 +652,16 @@ fn check_encoded_blobs(
                 buf[i] = b ^ key;
             }
 
-            let has_peb = buf.windows(6).any(|w| w == [0x64, 0xA1, 0x30, 0x00, 0x00, 0x00]);
+            let has_peb = buf
+                .windows(6)
+                .any(|w| w == [0x64, 0xA1, 0x30, 0x00, 0x00, 0x00]);
             let has_gs = buf.windows(4).any(|w| w == [0x65, 0x33, 0x00, 0x00]);
-            let has_fpu_getpc = buf.windows(6).any(|w| w == [0xD9, 0xEE, 0xD9, 0x74, 0x24, 0xF4]);
-            let has_getpc = buf.windows(5).any(|w| w[0] == 0xE8 && w[1] == 0x00 && w[2] == 0x00 && w[3] == 0x00 && w[4] == 0x00);
+            let has_fpu_getpc = buf
+                .windows(6)
+                .any(|w| w == [0xD9, 0xEE, 0xD9, 0x74, 0x24, 0xF4]);
+            let has_getpc = buf.windows(5).any(|w| {
+                w[0] == 0xE8 && w[1] == 0x00 && w[2] == 0x00 && w[3] == 0x00 && w[4] == 0x00
+            });
             // The full API-hash DB scan is expensive; only run it when a cheap
             // preamble already matched, otherwise a 255-key brute force over a
             // large binary would scan the entire DB on every window/key.
@@ -579,10 +672,18 @@ fn check_encoded_blobs(
             };
 
             let mut reasons = Vec::new();
-            if has_peb { reasons.push("PEB/fs access preamble".to_string()); }
-            if has_gs { reasons.push("gs segment access".to_string()); }
-            if has_fpu_getpc { reasons.push("FPU GetPC".to_string()); }
-            if has_getpc { reasons.push("E8 call GetPC".to_string()); }
+            if has_peb {
+                reasons.push("PEB/fs access preamble".to_string());
+            }
+            if has_gs {
+                reasons.push("gs segment access".to_string());
+            }
+            if has_fpu_getpc {
+                reasons.push("FPU GetPC".to_string());
+            }
+            if has_getpc {
+                reasons.push("E8 call GetPC".to_string());
+            }
             if api_hashes_found >= 2 {
                 reasons.push(format!("{} resolved API hashes", api_hashes_found));
             }
@@ -751,7 +852,10 @@ mod tests {
         let config = ShellcodeConfig::default();
         let report = detect_shellcode(&data, &config);
         assert!(
-            !report.findings.iter().any(|f| f.description.contains("PEB")),
+            !report
+                .findings
+                .iter()
+                .any(|f| f.description.contains("PEB")),
             "Lone PEB access should not be flagged: {:?}",
             report.findings
         );
@@ -769,9 +873,16 @@ mod tests {
         let config = ShellcodeConfig::default();
         let report = detect_shellcode(&data, &config);
         assert!(
-            report.findings.iter().any(|f| f.rule_id == "SHELLCODE_PIC_HIGH_ENTROPY"),
+            report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == "SHELLCODE_PIC_HIGH_ENTROPY"),
             "Expected PIC+high-entropy correlation. Findings: {:?}",
-            report.findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
+            report
+                .findings
+                .iter()
+                .map(|f| &f.rule_id)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -790,7 +901,10 @@ mod tests {
 
         let config = ShellcodeConfig::default();
         let report = detect_shellcode(&data, &config);
-        assert!(report.findings.iter().any(|f| f.description.contains("NOP sled")));
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.description.contains("NOP sled")));
     }
 
     #[test]
@@ -805,8 +919,15 @@ mod tests {
 
         let config = ShellcodeConfig::default();
         let report = detect_shellcode(&data, &config);
-        assert!(report.total_api_hashes_found >= 2, "expected >=2 api hashes, got {}", report.total_api_hashes_found);
-        assert!(report.findings.iter().any(|f| f.description.contains("API hash")));
+        assert!(
+            report.total_api_hashes_found >= 2,
+            "expected >=2 api hashes, got {}",
+            report.total_api_hashes_found
+        );
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.description.contains("API hash")));
     }
 
     #[test]
@@ -822,9 +943,16 @@ mod tests {
         let config = ShellcodeConfig::default();
         let report = detect_shellcode(&data, &config);
         assert!(
-            report.findings.iter().any(|f| f.description.contains("XOR decoder")),
+            report
+                .findings
+                .iter()
+                .any(|f| f.description.contains("XOR decoder")),
             "Should detect XOR decoder stub. Findings: {:?}",
-            report.findings.iter().map(|f| &f.description).collect::<Vec<_>>()
+            report
+                .findings
+                .iter()
+                .map(|f| &f.description)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -886,7 +1014,10 @@ mod tests {
         let config = ShellcodeConfig::default();
         let report = detect_shellcode(&data, &config);
         assert!(
-            report.findings.iter().any(|f| f.description.contains("FPU GetPC")),
+            report
+                .findings
+                .iter()
+                .any(|f| f.description.contains("FPU GetPC")),
             "Should detect FPU GetPC"
         );
     }
@@ -900,17 +1031,16 @@ mod tests {
         let mut findings = Vec::new();
         check_alphanumeric_shellcode(&data, &mut findings);
         assert!(
-            findings.iter().any(|f| f.description.contains("Alphanumeric")),
+            findings
+                .iter()
+                .any(|f| f.description.contains("Alphanumeric")),
             "Should detect alphanumeric run"
         );
     }
 
     #[test]
     fn test_xor_encoded_blob() {
-        let shellcode: Vec<u8> = vec![
-            0x64, 0xA1, 0x30, 0x00, 0x00, 0x00,
-            0x8B, 0x40, 0x0C,
-        ];
+        let shellcode: Vec<u8> = vec![0x64, 0xA1, 0x30, 0x00, 0x00, 0x00, 0x8B, 0x40, 0x0C];
         let key = 0x42u8;
         let encoded: Vec<u8> = shellcode.iter().map(|b| b ^ key).collect();
 
@@ -921,7 +1051,9 @@ mod tests {
         let mut weak = WeakSignals::default();
         check_encoded_blobs(&data, &mut findings, &mut weak, &ShellcodeConfig::default());
         assert!(
-            findings.iter().any(|f| f.description.contains("XOR-encoded")),
+            findings
+                .iter()
+                .any(|f| f.description.contains("XOR-encoded")),
             "Should detect XOR-encoded shellcode. Findings: {:?}",
             findings.iter().map(|f| &f.description).collect::<Vec<_>>()
         );

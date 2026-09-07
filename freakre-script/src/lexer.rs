@@ -32,16 +32,31 @@ pub enum Token {
     Not,
 
     // Operators
-    Plus, Minus, Star, Slash, Percent, Caret, Hash,
-    Eq, Neq, Lt, Gt, Lte, Gte,
-    Assign,     // =
-    DotDot,     // ..
-    Dot,        // .
-    Colon,      // :
-    Comma, Semicolon,
-    LParen, RParen,
-    LBracket, RBracket,
-    LBrace, RBrace,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Caret,
+    Hash,
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    Lte,
+    Gte,
+    Assign, // =
+    DotDot, // ..
+    Dot,    // .
+    Colon,  // :
+    Comma,
+    Semicolon,
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    LBrace,
+    RBrace,
 
     Eof,
 }
@@ -55,7 +70,11 @@ pub struct LexError {
 
 impl core::fmt::Display for LexError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Lex error at {}:{}: {}", self.line, self.col, self.message)
+        write!(
+            f,
+            "Lex error at {}:{}: {}",
+            self.line, self.col, self.message
+        )
     }
 }
 
@@ -71,58 +90,89 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
     while pos < bytes.len() {
         // Skip whitespace
         if bytes[pos] == b' ' || bytes[pos] == b'\t' || bytes[pos] == b'\r' {
-            pos += 1; col += 1;
+            pos += 1;
+            col += 1;
             continue;
         }
         if bytes[pos] == b'\n' {
-            pos += 1; line += 1; col = 1;
+            pos += 1;
+            line += 1;
+            col = 1;
             continue;
         }
 
         // Skip comments (-- to end of line)
         if pos + 1 < bytes.len() && bytes[pos] == b'-' && bytes[pos + 1] == b'-' {
             pos += 2;
-            while pos < bytes.len() && bytes[pos] != b'\n' { pos += 1; }
+            while pos < bytes.len() && bytes[pos] != b'\n' {
+                pos += 1;
+            }
             continue;
         }
 
         let start_col = col;
 
         // Numbers
-        if bytes[pos].is_ascii_digit() || (bytes[pos] == b'.' && pos + 1 < bytes.len() && bytes[pos + 1].is_ascii_digit()) {
+        if bytes[pos].is_ascii_digit()
+            || (bytes[pos] == b'.' && pos + 1 < bytes.len() && bytes[pos + 1].is_ascii_digit())
+        {
             let start = pos;
             let mut is_float = false;
-            if bytes[pos] == b'0' && pos + 1 < bytes.len() && (bytes[pos + 1] == b'x' || bytes[pos + 1] == b'X') {
+            if bytes[pos] == b'0'
+                && pos + 1 < bytes.len()
+                && (bytes[pos + 1] == b'x' || bytes[pos + 1] == b'X')
+            {
                 // Hex
                 pos += 2;
-                while pos < bytes.len() && (bytes[pos].is_ascii_hexdigit() || bytes[pos] == b'_') { pos += 1; }
-                let hex_str: String = input[start+2..pos].chars().filter(|c| *c != '_').collect();
+                while pos < bytes.len() && (bytes[pos].is_ascii_hexdigit() || bytes[pos] == b'_') {
+                    pos += 1;
+                }
+                let hex_str: String = input[start + 2..pos]
+                    .chars()
+                    .filter(|c| *c != '_')
+                    .collect();
                 let val = i64::from_str_radix(&hex_str, 16).map_err(|_| LexError {
-                    message: "invalid hex number".into(), line, col: start_col,
+                    message: "invalid hex number".into(),
+                    line,
+                    col: start_col,
                 })?;
                 tokens.push(Token::Integer(val));
                 col += pos - start;
                 continue;
             }
-            while pos < bytes.len() && (bytes[pos].is_ascii_digit() || bytes[pos] == b'_') { pos += 1; }
+            while pos < bytes.len() && (bytes[pos].is_ascii_digit() || bytes[pos] == b'_') {
+                pos += 1;
+            }
             if pos < bytes.len() && bytes[pos] == b'.' {
-                is_float = true; pos += 1;
-                while pos < bytes.len() && (bytes[pos].is_ascii_digit() || bytes[pos] == b'_') { pos += 1; }
+                is_float = true;
+                pos += 1;
+                while pos < bytes.len() && (bytes[pos].is_ascii_digit() || bytes[pos] == b'_') {
+                    pos += 1;
+                }
             }
             if pos < bytes.len() && (bytes[pos] == b'e' || bytes[pos] == b'E') {
-                is_float = true; pos += 1;
-                if pos < bytes.len() && (bytes[pos] == b'+' || bytes[pos] == b'-') { pos += 1; }
-                while pos < bytes.len() && bytes[pos].is_ascii_digit() { pos += 1; }
+                is_float = true;
+                pos += 1;
+                if pos < bytes.len() && (bytes[pos] == b'+' || bytes[pos] == b'-') {
+                    pos += 1;
+                }
+                while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+                    pos += 1;
+                }
             }
             let num_str: String = input[start..pos].chars().filter(|c| *c != '_').collect();
             if is_float {
                 let val = num_str.parse::<f64>().map_err(|_| LexError {
-                    message: "invalid float".into(), line, col: start_col,
+                    message: "invalid float".into(),
+                    line,
+                    col: start_col,
                 })?;
                 tokens.push(Token::Number(val));
             } else {
                 let val = num_str.parse::<i64>().map_err(|_| LexError {
-                    message: "invalid integer".into(), line, col: start_col,
+                    message: "invalid integer".into(),
+                    line,
+                    col: start_col,
                 })?;
                 tokens.push(Token::Integer(val));
             }
@@ -141,15 +191,24 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
             let mut buf: Vec<u8> = Vec::new();
             loop {
                 if pos >= bytes.len() {
-                    return Err(LexError { message: "unterminated string".into(), line, col });
+                    return Err(LexError {
+                        message: "unterminated string".into(),
+                        line,
+                        col,
+                    });
                 }
                 if bytes[pos] == quote {
-                    pos += 1; break;
+                    pos += 1;
+                    break;
                 }
                 if bytes[pos] == b'\\' {
                     pos += 1;
                     if pos >= bytes.len() {
-                        return Err(LexError { message: "unterminated escape".into(), line, col });
+                        return Err(LexError {
+                            message: "unterminated escape".into(),
+                            line,
+                            col,
+                        });
                     }
                     match bytes[pos] {
                         b'n' => buf.push(b'\n'),
@@ -159,7 +218,10 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
                         b'"' => buf.push(b'"'),
                         b'\'' => buf.push(b'\''),
                         b'0' => buf.push(0),
-                        other => { buf.push(b'\\'); buf.push(other); }
+                        other => {
+                            buf.push(b'\\');
+                            buf.push(other);
+                        }
                     }
                 } else {
                     buf.push(bytes[pos]);
@@ -247,7 +309,11 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
                     pos += 1;
                     Token::Neq
                 } else {
-                    return Err(LexError { message: "unexpected char '~'".to_string(), line, col });
+                    return Err(LexError {
+                        message: "unexpected char '~'".to_string(),
+                        line,
+                        col,
+                    });
                 }
             }
             b'<' => {
@@ -267,7 +333,11 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
                 }
             }
             c => {
-                return Err(LexError { message: format!("unexpected char '{}'", c as char), line, col });
+                return Err(LexError {
+                    message: format!("unexpected char '{}'", c as char),
+                    line,
+                    col,
+                });
             }
         };
         tokens.push(tok);

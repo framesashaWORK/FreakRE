@@ -53,19 +53,48 @@ impl Default for Capabilities {
         let mut allowed_functions = HashSet::new();
         // Safe built-ins
         for name in &[
-            "print", "type", "tostring", "tonumber",
-            "pairs", "ipairs", "next", "select",
-            "unpack", "table", "string", "math",
+            "print",
+            "type",
+            "tostring",
+            "tonumber",
+            "pairs",
+            "ipairs",
+            "next",
+            "select",
+            "unpack",
+            "table",
+            "string",
+            "math",
             // stdlib: string utils
-            "len", "sub", "find", "replace", "upper", "lower", "trim",
-            "split", "join", "format_number",
+            "len",
+            "sub",
+            "find",
+            "replace",
+            "upper",
+            "lower",
+            "trim",
+            "split",
+            "join",
+            "format_number",
             // stdlib: data helpers (pure byte computation, no I/O)
-            "hex_encode", "hex_decode", "bytes_to_u32_le", "u32_to_bytes_le",
-            "base64_encode", "base64_decode", "crc32", "xor_bytes",
+            "hex_encode",
+            "hex_decode",
+            "bytes_to_u32_le",
+            "u32_to_bytes_le",
+            "base64_encode",
+            "base64_decode",
+            "crc32",
+            "xor_bytes",
             // stdlib: pattern helpers
-            "contains_any", "count_occurrences", "extract_between",
+            "contains_any",
+            "count_occurrences",
+            "extract_between",
             // stdlib: math/misc
-            "min", "max", "abs", "floor", "ceil",
+            "min",
+            "max",
+            "abs",
+            "floor",
+            "ceil",
         ] {
             allowed_functions.insert(name.to_string());
         }
@@ -73,11 +102,18 @@ impl Default for Capabilities {
         let mut allowed_fields = HashSet::new();
         // RE-specific APIs
         for name in &[
-            "db.find_functions", "db.get_function", "db.get_strings",
-            "db.flag", "db.rename", "db.get_xrefs",
-            "report.add_finding", "report.summary",
-            "strings.contains", "strings.find_all",
-            "binary.read_bytes", "binary.size",
+            "db.find_functions",
+            "db.get_function",
+            "db.get_strings",
+            "db.flag",
+            "db.rename",
+            "db.get_xrefs",
+            "report.add_finding",
+            "report.summary",
+            "strings.contains",
+            "strings.find_all",
+            "binary.read_bytes",
+            "binary.size",
         ] {
             allowed_fields.insert(name.to_string());
         }

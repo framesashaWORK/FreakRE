@@ -71,7 +71,11 @@ pub struct SymbolEntry<'a> {
 }
 
 /// Resolve a null-terminated string from a string table section.
-fn resolve_symbol_name<'a>(_data: &'a [u8], strtab: &SectionHeader<'a>, name_offset: usize) -> Option<&'a str> {
+fn resolve_symbol_name<'a>(
+    _data: &'a [u8],
+    strtab: &SectionHeader<'a>,
+    name_offset: usize,
+) -> Option<&'a str> {
     if strtab.data.is_empty() || name_offset >= strtab.data.len() {
         return None;
     }

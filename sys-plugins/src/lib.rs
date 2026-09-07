@@ -9,15 +9,15 @@
 //! 4. **EntropyMapperPlugin** — Sliding-window entropy mapping for packed region detection
 
 pub mod crypto_finder;
-pub mod string_analyzer;
-pub mod func_classifier;
 pub mod entropy_mapper;
+pub mod func_classifier;
+pub mod string_analyzer;
 pub mod util;
 
 pub use crypto_finder::CryptoFinderPlugin;
-pub use string_analyzer::StringAnalyzerPlugin;
-pub use func_classifier::FuncClassifierPlugin;
 pub use entropy_mapper::EntropyMapperPlugin;
+pub use func_classifier::FuncClassifierPlugin;
+pub use string_analyzer::StringAnalyzerPlugin;
 
 use plugins::PluginManager;
 
@@ -38,5 +38,3 @@ pub fn system_plugin_names() -> Vec<&'static str> {
         "Entropy Mapper",
     ]
 }
-
-

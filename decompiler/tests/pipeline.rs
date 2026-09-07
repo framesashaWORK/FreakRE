@@ -157,6 +157,52 @@ fn irreducible_cfg_emits_resolving_labels() {
 }
 
 #[test]
+fn irreducible_edge_to_loop_header_emits_a_label() {
+    // The side entry makes a -> header irreducible while body -> header is a
+    // natural back edge. The fallback goto targets a structured loop header,
+    // which still needs a concrete label in the generated C.
+    let mut f = IrFunction::new("irred_loop_target", 0x1000);
+    let entry_cond = cond(&mut f);
+    let loop_cond = cond(&mut f);
+    let side_cond = cond(&mut f);
+    let header = f.add_block("header");
+    let body = f.add_block("body");
+    let side = f.add_block("side");
+    let ret = f.add_block("ret");
+
+    f.push_inst(
+        f.entry_block,
+        IrInst::CBranch {
+            cond: entry_cond,
+            target_true: header,
+            target_false: side,
+        },
+    );
+    f.push_inst(
+        header,
+        IrInst::CBranch {
+            cond: loop_cond,
+            target_true: body,
+            target_false: ret,
+        },
+    );
+    f.push_inst(body, IrInst::Branch { target: header });
+    f.push_inst(
+        side,
+        IrInst::CBranch {
+            cond: side_cond,
+            target_true: header,
+            target_false: ret,
+        },
+    );
+    f.push_inst(ret, IrInst::Return { value: None });
+    f.build_cfg();
+
+    let c = decompile_function(&f).unwrap();
+    assert_gotos_resolve(&c);
+}
+
+#[test]
 fn common_runtime_calls_keep_names() {
     // A call to a name that matches the built-in database should survive
     // unchanged (no synthetic rename) and not emit a dangling target.

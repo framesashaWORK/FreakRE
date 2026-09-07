@@ -8,8 +8,8 @@ use freakre_ir::Ty;
 /// Canonical 64-bit GPR slot order: rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi,
 /// then r8..r15.
 pub const GPR_NAMES: [&str; 16] = [
-    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
-    "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
+    "r14", "r15",
 ];
 
 /// Location of an architectural register name inside its parent GPR slot.
@@ -21,13 +21,21 @@ pub struct RegRef {
 }
 
 fn legacy(i: u8) -> RegRef {
-    RegRef { slot: i, offset: 0, width: 64 }
+    RegRef {
+        slot: i,
+        offset: 0,
+        width: 64,
+    }
 }
 
 /// Resolve any x86-64 register name (rax/eax/ax/al/ah/r8d/...) to its
 /// parent-slot location. Unknown names (xmm0, st0, ...) yield `None`.
 pub fn reg_ref(name: &str) -> Option<RegRef> {
-    let r = |slot: u8, offset: u32, width: u32| RegRef { slot, offset, width };
+    let r = |slot: u8, offset: u32, width: u32| RegRef {
+        slot,
+        offset,
+        width,
+    };
     let legacy8 = ["al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil"];
     let high8 = ["ah", "ch", "dh", "bh"];
     let legacy16 = ["ax", "cx", "dx", "bx", "sp", "bp", "si", "di"];
@@ -157,8 +165,7 @@ impl Machine {
                 let field = mask(w);
                 let shifted = (val & field) << rr.offset;
                 let clear = !(field << rr.offset);
-                self.regs[rr.slot as usize] =
-                    (self.regs[rr.slot as usize] & clear) | shifted;
+                self.regs[rr.slot as usize] = (self.regs[rr.slot as usize] & clear) | shifted;
             }
             None => {
                 self.extra_regs.insert(name.to_string(), val);
@@ -187,15 +194,78 @@ mod tests {
 
     #[test]
     fn alias_resolution() {
-        assert_eq!(reg_ref("rax"), Some(RegRef { slot: 0, offset: 0, width: 64 }));
-        assert_eq!(reg_ref("eax"), Some(RegRef { slot: 0, offset: 0, width: 32 }));
-        assert_eq!(reg_ref("ax"), Some(RegRef { slot: 0, offset: 0, width: 16 }));
-        assert_eq!(reg_ref("al"), Some(RegRef { slot: 0, offset: 0, width: 8 }));
-        assert_eq!(reg_ref("ah"), Some(RegRef { slot: 0, offset: 8, width: 8 }));
-        assert_eq!(reg_ref("bh"), Some(RegRef { slot: 3, offset: 8, width: 8 }));
-        assert_eq!(reg_ref("rdi"), Some(RegRef { slot: 7, offset: 0, width: 64 }));
-        assert_eq!(reg_ref("r11d"), Some(RegRef { slot: 11, offset: 0, width: 32 }));
-        assert_eq!(reg_ref("r15b"), Some(RegRef { slot: 15, offset: 0, width: 8 }));
+        assert_eq!(
+            reg_ref("rax"),
+            Some(RegRef {
+                slot: 0,
+                offset: 0,
+                width: 64
+            })
+        );
+        assert_eq!(
+            reg_ref("eax"),
+            Some(RegRef {
+                slot: 0,
+                offset: 0,
+                width: 32
+            })
+        );
+        assert_eq!(
+            reg_ref("ax"),
+            Some(RegRef {
+                slot: 0,
+                offset: 0,
+                width: 16
+            })
+        );
+        assert_eq!(
+            reg_ref("al"),
+            Some(RegRef {
+                slot: 0,
+                offset: 0,
+                width: 8
+            })
+        );
+        assert_eq!(
+            reg_ref("ah"),
+            Some(RegRef {
+                slot: 0,
+                offset: 8,
+                width: 8
+            })
+        );
+        assert_eq!(
+            reg_ref("bh"),
+            Some(RegRef {
+                slot: 3,
+                offset: 8,
+                width: 8
+            })
+        );
+        assert_eq!(
+            reg_ref("rdi"),
+            Some(RegRef {
+                slot: 7,
+                offset: 0,
+                width: 64
+            })
+        );
+        assert_eq!(
+            reg_ref("r11d"),
+            Some(RegRef {
+                slot: 11,
+                offset: 0,
+                width: 32
+            })
+        );
+        assert_eq!(
+            reg_ref("r15b"),
+            Some(RegRef {
+                slot: 15,
+                offset: 0,
+                width: 8
+            })
+        );
         assert_eq!(reg_ref("xmm3"), None);
         assert_eq!(reg_ref("r16"), None);
     }

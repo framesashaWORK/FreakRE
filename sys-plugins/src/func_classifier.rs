@@ -4,10 +4,10 @@
 //! recursive, high-complexity, potential main(), etc. Uses heuristics
 //! on function size, call patterns, and instruction mix.
 
-use plugins::{Plugin, PluginContext, PluginMetadata, MenuItem};
-use project_db::FunctionEntry;
 use crate::util;
 use freakre_x86::{Mnemonic, Operand};
+use plugins::{MenuItem, Plugin, PluginContext, PluginMetadata};
+use project_db::FunctionEntry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum FuncClass {
@@ -45,7 +45,11 @@ impl std::fmt::Display for FuncClass {
 }
 
 pub struct FuncClassifierPlugin;
-impl Default for FuncClassifierPlugin { fn default() -> Self { Self } }
+impl Default for FuncClassifierPlugin {
+    fn default() -> Self {
+        Self
+    }
+}
 
 impl Plugin for FuncClassifierPlugin {
     fn metadata(&self) -> PluginMetadata {
@@ -53,22 +57,32 @@ impl Plugin for FuncClassifierPlugin {
             name: "Function Classifier".into(),
             version: "1.0.0".into(),
             author: Some("FreakRE Team".into()),
-            description: "Classifies functions as thunk/stub/leaf/recursive/complex/entry_point.".into(),
+            description: "Classifies functions as thunk/stub/leaf/recursive/complex/entry_point."
+                .into(),
             license: Some("MIT".into()),
             homepage: None,
         }
     }
     fn menu_items(&self) -> Vec<MenuItem> {
-        vec![MenuItem::new("Analyze/Classify Functions", "Classify All Functions").with_shortcut("Ctrl+Shift+F")]
+        vec![
+            MenuItem::new("Analyze/Classify Functions", "Classify All Functions")
+                .with_shortcut("Ctrl+Shift+F"),
+        ]
     }
     fn on_menu_item(&mut self, ctx: &mut PluginContext, path: &str) {
-        if path == "Analyze/Classify Functions" { self.analyze(ctx); }
+        if path == "Analyze/Classify Functions" {
+            self.analyze(ctx);
+        }
     }
     fn analyze(&mut self, ctx: &mut PluginContext) {
         ctx.println("[FuncClassifier] Classifying functions...");
 
         let functions = match ctx.db.list_functions() {
-            Ok(f) => f, Err(e) => { ctx.println(&format!("Error: {}", e)); return; }
+            Ok(f) => f,
+            Err(e) => {
+                ctx.println(&format!("Error: {}", e));
+                return;
+            }
         };
 
         let mut counts = std::collections::HashMap::new();
@@ -102,7 +116,10 @@ impl Plugin for FuncClassifierPlugin {
             }
         }
 
-        ctx.println(&format!("[FuncClassifier] Classified {} functions:", functions.len()));
+        ctx.println(&format!(
+            "[FuncClassifier] Classified {} functions:",
+            functions.len()
+        ));
         let mut sorted: Vec<_> = counts.iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(a.1));
         for (class, count) in sorted {
@@ -121,7 +138,9 @@ fn classify_function(func: &FunctionEntry) -> FuncClass {
 
     // Thunk: single JMP rel32 (FF 25 or E9) or JMP [mem]
     if size <= 6 {
-        if code.first() == Some(&0xE9) || (code.len() >= 2 && code[0] == 0xFF && (code[1] & 0x38) == 0x20) {
+        if code.first() == Some(&0xE9)
+            || (code.len() >= 2 && code[0] == 0xFF && (code[1] & 0x38) == 0x20)
+        {
             return FuncClass::Thunk;
         }
         if size <= 4 {
@@ -187,7 +206,10 @@ pub struct CallScan {
 /// counts as a call. Decode errors step forward one byte so malformed/padded
 /// regions can't stall the scan.
 fn scan_calls(code: &[u8]) -> CallScan {
-    let mut result = CallScan { count: 0, self_call: false };
+    let mut result = CallScan {
+        count: 0,
+        self_call: false,
+    };
     let mut off = 0usize;
     while off < code.len() {
         match freakre_x86::decode(&code[off..], false) {
@@ -248,16 +270,17 @@ mod tests {
         // Function starting with: nop; nop; nop; nop; nop; nop;
         // then `call -11` (target = offset 6+5-11 = 0 → self), then ret.
         let code = [
-            0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
-            0xE8, 0xF5, 0xFF, 0xFF, 0xFF,
-            0xC3,
+            0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0xE8, 0xF5, 0xFF, 0xFF, 0xFF, 0xC3,
         ];
         let scan = scan_calls(&code);
         assert_eq!(scan.count, 1);
         assert!(scan.self_call);
 
         // classify_function should report Recursive for it.
-        let mut func = FunctionEntry { address: 0x1000, ..Default::default() };
+        let mut func = FunctionEntry {
+            address: 0x1000,
+            ..Default::default()
+        };
         func.code_bytes = Some(code.to_vec());
         assert_eq!(classify_function(&func), FuncClass::Recursive);
     }
@@ -273,8 +296,10 @@ mod tests {
     fn test_leaf_classification_uses_decoded_calls() {
         // >6 bytes containing only an embedded 0xE8 immediate and no real
         // call → leaf, not "has calls".
-        let mut func =
-            FunctionEntry { address: 0x2000, ..Default::default() };
+        let mut func = FunctionEntry {
+            address: 0x2000,
+            ..Default::default()
+        };
         func.code_bytes = Some(vec![0xB8, 0xE8, 0x90, 0x90, 0x90, 0x90, 0x90, 0xC3]);
         assert_eq!(classify_function(&func), FuncClass::Leaf);
     }

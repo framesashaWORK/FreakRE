@@ -11,6 +11,10 @@ pub struct AstFunction {
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
     pub locals: Vec<LocalVar>,
+    /// Entry address in the original binary (0 when unknown). Used by
+    /// `ast_to_c` only when `DecompilerConfig::annotate_addresses` is on.
+    #[serde(default)]
+    pub entry_address: u64,
 }
 
 /// Function parameter
@@ -32,24 +36,18 @@ pub struct LocalVar {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Stmt {
     /// Variable assignment: `var = expr`
-    Assign {
-        target: Expr,
-        value: Expr,
-    },
-    
+    Assign { target: Expr, value: Expr },
+
     /// If statement
     If {
         cond: Expr,
         then_body: Vec<Stmt>,
         else_body: Option<Vec<Stmt>>,
     },
-    
+
     /// While loop
-    While {
-        cond: Expr,
-        body: Vec<Stmt>,
-    },
-    
+    While { cond: Expr, body: Vec<Stmt> },
+
     /// For loop
     For {
         init: Option<Box<Stmt>>,
@@ -57,53 +55,45 @@ pub enum Stmt {
         update: Option<Box<Stmt>>,
         body: Vec<Stmt>,
     },
-    
+
     /// Do-while loop
-    DoWhile {
-        body: Vec<Stmt>,
-        cond: Expr,
-    },
-    
+    DoWhile { body: Vec<Stmt>, cond: Expr },
+
     /// Switch statement
     Switch {
         expr: Expr,
         cases: Vec<SwitchCase>,
         default: Option<Vec<Stmt>>,
     },
-    
+
     /// Return statement
-    Return {
-        value: Option<Expr>,
-    },
-    
+    Return { value: Option<Expr> },
+
     /// Break
     Break,
-    
+
     /// Continue
     Continue,
-    
+
     /// Function call (as statement)
-    Call {
-        func: String,
-        args: Vec<Expr>,
-    },
-    
+    Call { func: String, args: Vec<Expr> },
+
     /// Expression statement (e.g., function call with return value ignored)
     Expr(Expr),
-    
+
     /// Block (compound statement)
     Block(Vec<Stmt>),
-    
+
     /// Variable declaration
     Decl {
         name: String,
         ty: Ty,
         init: Option<Expr>,
     },
-    
+
     /// Empty statement
     Empty,
-    
+
     /// Try-catch block
     TryCatch {
         try_body: Vec<Stmt>,
@@ -112,14 +102,10 @@ pub enum Stmt {
     },
 
     /// Goto (fallback for unstructured edges)
-    Goto {
-        label: String,
-    },
+    Goto { label: String },
 
     /// Label (for goto targets)
-    Label {
-        name: String,
-    },
+    Label { name: String },
 
     /// Comment (for annotations)
     Comment(String),
@@ -138,69 +124,54 @@ pub struct SwitchCase {
 pub enum Expr {
     /// Integer literal
     IntLit(i64),
-    
+
     /// Float literal
     FloatLit(f64),
-    
+
     /// String literal
     StringLit(String),
-    
+
     /// Boolean literal
     BoolLit(bool),
-    
+
     /// Variable reference
     Var(String),
-    
+
     /// Binary operation
     Binary {
         op: BinOp,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
-    
+
     /// Unary operation
-    Unary {
-        op: UnOp,
-        operand: Box<Expr>,
-    },
-    
+    Unary { op: UnOp, operand: Box<Expr> },
+
     /// Function call
-    Call {
-        func: String,
-        args: Vec<Expr>,
-    },
-    
+    Call { func: String, args: Vec<Expr> },
+
     /// Array/pointer indexing
-    Index {
-        base: Box<Expr>,
-        index: Box<Expr>,
-    },
-    
+    Index { base: Box<Expr>, index: Box<Expr> },
+
     /// Member access
-    Member {
-        base: Box<Expr>,
-        field: String,
-    },
-    
+    Member { base: Box<Expr>, field: String },
+
     /// Pointer dereference
     Deref(Box<Expr>),
-    
+
     /// Address-of
     AddrOf(Box<Expr>),
-    
+
     /// Cast
-    Cast {
-        ty: Ty,
-        expr: Box<Expr>,
-    },
-    
+    Cast { ty: Ty, expr: Box<Expr> },
+
     /// Conditional (ternary) operator
     Ternary {
         cond: Box<Expr>,
         then_expr: Box<Expr>,
         else_expr: Box<Expr>,
     },
-    
+
     /// Sizeof
     Sizeof(Box<Expr>),
 }
@@ -238,8 +209,14 @@ impl BinOp {
             BinOp::Mul | BinOp::Div | BinOp::Mod => 13,
             BinOp::Add | BinOp::Sub => 12,
             BinOp::Shl | BinOp::Shr => 11,
-            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
-            | BinOp::LtU | BinOp::LeU | BinOp::GtU | BinOp::GeU => 10,
+            BinOp::Lt
+            | BinOp::Le
+            | BinOp::Gt
+            | BinOp::Ge
+            | BinOp::LtU
+            | BinOp::LeU
+            | BinOp::GtU
+            | BinOp::GeU => 10,
             BinOp::Eq | BinOp::Ne => 9,
             BinOp::And => 8,
             BinOp::Xor => 7,
@@ -248,13 +225,20 @@ impl BinOp {
             BinOp::LogOr => 4,
         }
     }
-    
+
     pub fn is_comparison(&self) -> bool {
         matches!(
             self,
-            BinOp::Eq | BinOp::Ne
-            | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
-            | BinOp::LtU | BinOp::LeU | BinOp::GtU | BinOp::GeU
+            BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::LtU
+                | BinOp::LeU
+                | BinOp::GtU
+                | BinOp::GeU
         )
     }
 
@@ -321,7 +305,7 @@ impl std::fmt::Display for UnOp {
 }
 
 impl AstFunction {
-    /// Create a new empty function
+    /// Create a new empty function with unknown entry address
     pub fn new(name: &str) -> Self {
         AstFunction {
             name: name.to_string(),
@@ -329,6 +313,7 @@ impl AstFunction {
             params: Vec::new(),
             body: Vec::new(),
             locals: Vec::new(),
+            entry_address: 0,
         }
     }
 }
@@ -336,14 +321,14 @@ impl AstFunction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_binop_precedence() {
         assert!(BinOp::Mul.precedence() > BinOp::Add.precedence());
         assert!(BinOp::Add.precedence() > BinOp::Eq.precedence());
         assert!(BinOp::Eq.precedence() > BinOp::LogAnd.precedence());
     }
-    
+
     #[test]
     fn test_expr_creation() {
         let expr = Expr::Binary {
@@ -351,7 +336,7 @@ mod tests {
             lhs: Box::new(Expr::Var("x".to_string())),
             rhs: Box::new(Expr::IntLit(5)),
         };
-        
+
         match expr {
             Expr::Binary { op, .. } => assert_eq!(op, BinOp::Add),
             _ => panic!("Wrong expression type"),

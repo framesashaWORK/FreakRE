@@ -72,7 +72,11 @@ impl SignatureMap {
     }
 
     /// Register an alias from a raw callee identifier to a canonical name.
-    pub fn insert_name(&mut self, name: impl Into<String>, canonical: impl Into<String>) -> &mut Self {
+    pub fn insert_name(
+        &mut self,
+        name: impl Into<String>,
+        canonical: impl Into<String>,
+    ) -> &mut Self {
         self.by_name.insert(name.into(), canonical.into());
         self
     }
@@ -133,7 +137,12 @@ pub fn apply_call_naming(ast: &mut AstFunction) {
 /// Run the pass with default-empty inputs plus this function's own entry
 /// address (enables header renames from address-keyed maps).
 pub fn apply_call_naming_at(ast: &mut AstFunction, self_addr: u64) {
-    apply_call_naming_with(ast, &SignatureMap::default(), &AddrNameMap::default(), Some(self_addr));
+    apply_call_naming_with(
+        ast,
+        &SignatureMap::default(),
+        &AddrNameMap::default(),
+        Some(self_addr),
+    );
 }
 
 /// Full entry point: signature-driven renames plus pattern-hint comments.
@@ -166,14 +175,21 @@ fn parse_synthetic_addr(callee: &str) -> Option<u64> {
     } else {
         callee.strip_prefix("func_")?
     };
-    let hex = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")).unwrap_or(rest);
+    let hex = rest
+        .strip_prefix("0x")
+        .or_else(|| rest.strip_prefix("0X"))
+        .unwrap_or(rest);
     if hex.is_empty() || hex.len() > 16 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     u64::from_str_radix(hex, 16).ok()
 }
 
-fn resolve_callee(callee: &str, signatures: &SignatureMap, addr_names: &AddrNameMap) -> Option<String> {
+fn resolve_callee(
+    callee: &str,
+    signatures: &SignatureMap,
+    addr_names: &AddrNameMap,
+) -> Option<String> {
     if let Some(addr) = parse_synthetic_addr(callee) {
         if let Some(name) = addr_names.get(&addr) {
             if !name.is_empty() && name != callee {
@@ -226,7 +242,11 @@ fn rename_stmt(stmt: &mut Stmt, signatures: &SignatureMap, addr_names: &AddrName
             rewrite_expr(target, signatures, addr_names);
             rewrite_expr(value, signatures, addr_names);
         }
-        Stmt::If { cond, then_body, else_body } => {
+        Stmt::If {
+            cond,
+            then_body,
+            else_body,
+        } => {
             rewrite_expr(cond, signatures, addr_names);
             for s in then_body {
                 rename_stmt(s, signatures, addr_names);
@@ -243,7 +263,12 @@ fn rename_stmt(stmt: &mut Stmt, signatures: &SignatureMap, addr_names: &AddrName
                 rename_stmt(s, signatures, addr_names);
             }
         }
-        Stmt::For { init, cond, update, body } => {
+        Stmt::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             if let Some(s) = init {
                 rename_stmt(s, signatures, addr_names);
             }
@@ -263,7 +288,11 @@ fn rename_stmt(stmt: &mut Stmt, signatures: &SignatureMap, addr_names: &AddrName
             }
             rewrite_expr(cond, signatures, addr_names);
         }
-        Stmt::Switch { expr, cases, default } => {
+        Stmt::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             rewrite_expr(expr, signatures, addr_names);
             for case in cases {
                 rewrite_expr(&mut case.value, signatures, addr_names);
@@ -301,7 +330,11 @@ fn rename_stmt(stmt: &mut Stmt, signatures: &SignatureMap, addr_names: &AddrName
                 rewrite_expr(e, signatures, addr_names);
             }
         }
-        Stmt::TryCatch { try_body, catch_body, .. } => {
+        Stmt::TryCatch {
+            try_body,
+            catch_body,
+            ..
+        } => {
             for s in try_body {
                 rename_stmt(s, signatures, addr_names);
             }
@@ -342,7 +375,11 @@ fn rewrite_expr(expr: &mut Expr, signatures: &SignatureMap, addr_names: &AddrNam
             rewrite_expr(index, signatures, addr_names);
         }
         Expr::Member { base, .. } => rewrite_expr(base, signatures, addr_names),
-        Expr::Ternary { cond, then_expr, else_expr } => {
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             rewrite_expr(cond, signatures, addr_names);
             rewrite_expr(then_expr, signatures, addr_names);
             rewrite_expr(else_expr, signatures, addr_names);
@@ -366,7 +403,11 @@ const HINT_PREFIX: &str = "maybe:";
 fn annotate_hints(stmts: &mut Vec<Stmt>) {
     for s in stmts.iter_mut() {
         match s {
-            Stmt::If { then_body, else_body, .. } => {
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 annotate_hints(then_body);
                 if let Some(else_body) = else_body {
                     annotate_hints(else_body);
@@ -384,7 +425,11 @@ fn annotate_hints(stmts: &mut Vec<Stmt>) {
                 }
             }
             Stmt::Block(body) => annotate_hints(body),
-            Stmt::TryCatch { try_body, catch_body, .. } => {
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 annotate_hints(try_body);
                 annotate_hints(catch_body);
             }
@@ -429,7 +474,11 @@ fn strlen_hint_in_stmt(stmt: &Stmt) -> Option<String> {
     };
 
     let scanned = match cond {
-        Expr::Binary { op: BinOp::Ne, lhs, rhs } => match (&**lhs, &**rhs) {
+        Expr::Binary {
+            op: BinOp::Ne,
+            lhs,
+            rhs,
+        } => match (&**lhs, &**rhs) {
             (Expr::Deref(base), Expr::IntLit(0)) => expr_var_name(base),
             (Expr::IntLit(0), Expr::Deref(base)) => expr_var_name(base),
             _ => None,
@@ -442,7 +491,12 @@ fn strlen_hint_in_stmt(stmt: &Stmt) -> Option<String> {
     for s in body {
         #[allow(clippy::collapsible_match)]
         if let Stmt::Assign { target, value } = s {
-            if let Expr::Binary { op: BinOp::Add, lhs, rhs } = value {
+            if let Expr::Binary {
+                op: BinOp::Add,
+                lhs,
+                rhs,
+            } = value
+            {
                 if as_int_lit(rhs) == Some(1) {
                     if let (Some(t), Some(l)) = (expr_var_name(target), expr_var_name(lhs)) {
                         if t == l {
@@ -472,7 +526,10 @@ fn call_args_of(stmt: &Stmt) -> Option<&Vec<Expr>> {
     match stmt {
         Stmt::Call { args, .. } => Some(args),
         Stmt::Expr(Expr::Call { args, .. }) => Some(args),
-        Stmt::Assign { value: Expr::Call { args, .. }, .. } => Some(args),
+        Stmt::Assign {
+            value: Expr::Call { args, .. },
+            ..
+        } => Some(args),
         _ => None,
     }
 }
@@ -520,19 +577,15 @@ fn const_triple_hint_in_list(stmts: &[Stmt], i: usize) -> Option<String> {
             break;
         }
         if let Stmt::Assign { target, value } = s {
-            let dest_is_memory_or_local =
-                matches!(target, Expr::Deref(_) | Expr::Var(_));
+            let dest_is_memory_or_local = matches!(target, Expr::Deref(_) | Expr::Var(_));
             if dest_is_memory_or_local && as_int_lit(value) == Some(fill_byte) {
                 const_stores += 1;
             }
         }
     }
 
-    (const_stores >= 2).then(|| {
-        format!(
-            "{HINT_PREFIX} memcpy_like (const-fill call triple, low confidence)"
-        )
-    })
+    (const_stores >= 2)
+        .then(|| format!("{HINT_PREFIX} memcpy_like (const-fill call triple, low confidence)"))
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────
@@ -555,7 +608,11 @@ mod tests {
     }
 
     fn add(lhs: Expr, rhs: Expr) -> Expr {
-        Expr::Binary { op: BinOp::Add, lhs: Box::new(lhs), rhs: Box::new(rhs) }
+        Expr::Binary {
+            op: BinOp::Add,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
     }
 
     fn empty_func(name: &str) -> AstFunction {
@@ -565,6 +622,7 @@ mod tests {
             params: Vec::<Param>::new(),
             body: Vec::new(),
             locals: Vec::<LocalVar>::new(),
+            entry_address: 0,
         }
     }
 
@@ -674,18 +732,27 @@ mod tests {
             target: var("v0"),
             value: add(var("v0"), int(1)),
         });
-        ast.body.push(Stmt::Return { value: Some(var("v0")) });
+        ast.body.push(Stmt::Return {
+            value: Some(var("v0")),
+        });
 
         let before = debug_dump(&ast);
         apply_call_naming(&mut ast);
-        assert_eq!(before, debug_dump(&ast), "empty maps must leave AST untouched");
+        assert_eq!(
+            before,
+            debug_dump(&ast),
+            "empty maps must leave AST untouched"
+        );
     }
 
     #[test]
     #[ignore = "Hint comments disabled"]
     fn strlen_loop_gets_hint_comment() {
         let mut ast = empty_func("scanner");
-        ast.body.push(Stmt::Assign { target: var("n"), value: int(0) });
+        ast.body.push(Stmt::Assign {
+            target: var("n"),
+            value: int(0),
+        });
         ast.body.push(Stmt::While {
             cond: Expr::Binary {
                 op: BinOp::Ne,
@@ -693,8 +760,14 @@ mod tests {
                 rhs: Box::new(int(0)),
             },
             body: vec![
-                Stmt::Assign { target: var("n"), value: add(var("n"), int(1)) },
-                Stmt::Assign { target: var("p"), value: add(var("p"), int(1)) },
+                Stmt::Assign {
+                    target: var("n"),
+                    value: add(var("n"), int(1)),
+                },
+                Stmt::Assign {
+                    target: var("p"),
+                    value: add(var("p"), int(1)),
+                },
             ],
         });
 
@@ -724,7 +797,10 @@ mod tests {
         // Mirrors the upstream generators exactly.
         let lifted = format!("func_{:X}", 0x140001675u64);
         assert_eq!(parse_synthetic_addr(&lifted), Some(0x140001675));
-        assert_eq!(parse_synthetic_addr(&format!("func_0x{:X}", 0x1000u64)), Some(0x1000));
+        assert_eq!(
+            parse_synthetic_addr(&format!("func_0x{:X}", 0x1000u64)),
+            Some(0x1000)
+        );
         assert_eq!(parse_synthetic_addr("func_abc"), Some(0xABC));
         assert_eq!(parse_synthetic_addr("func_0x10"), Some(0x10));
         assert_eq!(parse_synthetic_addr("func_"), None);
@@ -783,6 +859,10 @@ mod tests {
                 offset: 0x1010,
                 signature: sig,
                 confidence: 0.85,
+                semantic_role: "",
+                calling_convention: "",
+                sources: Vec::new(),
+                sinks: Vec::new(),
             }],
             compiler_info: None,
             libraries_found: vec!["testlib".to_string()],
@@ -826,7 +906,10 @@ mod tests {
         apply_call_naming_with(&mut ast, &sigs, &AddrNameMap::new(), None);
 
         match &ast.body[0] {
-            Stmt::Assign { value: Expr::Call { func, args }, .. } => {
+            Stmt::Assign {
+                value: Expr::Call { func, args },
+                ..
+            } => {
                 assert_eq!(func, "outer_fn");
                 match &args[0] {
                     Expr::Call { func, .. } => assert_eq!(func, "inner_fn"),

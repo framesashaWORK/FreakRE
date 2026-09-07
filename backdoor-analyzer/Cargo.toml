@@ -8,3 +8,5 @@ description = "Backdoor detection engine: reverse/bind shells, C2 beacons, auth 
 import-analyzer = { path = "../import-analyzer" }
 str-extract = { path = "../str-extract" }
 entropy-rs = { path = "../entropy-rs" }
+serde = { workspace = true }
+serde_json = "1.0"

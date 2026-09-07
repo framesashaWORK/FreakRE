@@ -33,7 +33,10 @@ pub struct Instruction {
 impl Instruction {
     /// True for any control-flow transfer (call/jump/branch/ret).
     pub fn is_control_flow(&self) -> bool {
-        !matches!(self.kind, InstructionKind::Normal | InstructionKind::Nop | InstructionKind::Unknown)
+        !matches!(
+            self.kind,
+            InstructionKind::Normal | InstructionKind::Nop | InstructionKind::Unknown
+        )
     }
 
     /// True for conditional + unconditional jumps/branches.

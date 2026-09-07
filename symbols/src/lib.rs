@@ -13,9 +13,9 @@
 use std::fs::File;
 use std::path::Path;
 
-use pdb::FallibleIterator as _;
 use gimli::Endianity as _;
 use gimli::ReaderOffset as _;
+use pdb::FallibleIterator as _;
 
 /// One function symbol: name plus address and size in whatever address space
 /// the source uses (RVA for DWARF ELF, packed section|offset for PDB until converted).
@@ -277,7 +277,11 @@ fn collect_dwarf_functions<E: gimli::Endianity>(
                 .map_err(dwarf_err)?
                 .and_then(|a| high_pc_size(a.value(), low))
                 .unwrap_or(0);
-            out.push(SymbolInfo { name, address: low, size });
+            out.push(SymbolInfo {
+                name,
+                address: low,
+                size,
+            });
         }
     }
     Ok((units, out))
@@ -288,7 +292,10 @@ fn entry_name<R: gimli::Reader>(
     unit: &gimli::Unit<R>,
     entry: &gimli::DebuggingInformationEntry<R>,
 ) -> Option<String> {
-    for attr in [gimli::constants::DW_AT_name, gimli::constants::DW_AT_linkage_name] {
+    for attr in [
+        gimli::constants::DW_AT_name,
+        gimli::constants::DW_AT_linkage_name,
+    ] {
         let value = entry.attr(attr).ok()??;
         let s = dwarf.attr_string(unit, value.value()).ok()?;
         let cow = s.to_string_lossy().ok()?;
@@ -311,10 +318,7 @@ fn attr_addr<R: gimli::Reader>(
     }
 }
 
-fn high_pc_size<R: gimli::Reader>(
-    value: gimli::AttributeValue<R>,
-    low: u64,
-) -> Option<u64> {
+fn high_pc_size<R: gimli::Reader>(value: gimli::AttributeValue<R>, low: u64) -> Option<u64> {
     match value {
         gimli::AttributeValue::Addr(h) => h.checked_sub(low),
         other => attr_const(&other),
@@ -338,7 +342,9 @@ fn attr_const<R: gimli::Reader>(value: &gimli::AttributeValue<R>) -> Option<u64>
         gimli::AttributeValue::Data2(v) => Some(u64::from(v)),
         gimli::AttributeValue::Data4(v) => Some(u64::from(v)),
         gimli::AttributeValue::Data8(v) => Some(v),
-        gimli::AttributeValue::Block(ref data) if data.len().into_u64() == 16 => block16_as_u64(data),
+        gimli::AttributeValue::Block(ref data) if data.len().into_u64() == 16 => {
+            block16_as_u64(data)
+        }
         _ => None,
     }
 }
@@ -389,8 +395,16 @@ mod tests {
     fn two_function_db() -> SymbolDb {
         SymbolDb::from_sorted_functions(
             vec![
-                SymbolInfo { name: "a".into(), address: 0x100, size: 0x10 },
-                SymbolInfo { name: "b".into(), address: 0x1000, size: 0x40 },
+                SymbolInfo {
+                    name: "a".into(),
+                    address: 0x100,
+                    size: 0x10,
+                },
+                SymbolInfo {
+                    name: "b".into(),
+                    address: 0x1000,
+                    size: 0x40,
+                },
             ],
             SymbolSource::Dwarf,
         )
@@ -416,7 +430,11 @@ mod tests {
     #[test]
     fn zero_size_symbols_match_only_exact_start() {
         let db = SymbolDb::from_sorted_functions(
-            vec![SymbolInfo { name: "z".into(), address: 0x2000, size: 0 }],
+            vec![SymbolInfo {
+                name: "z".into(),
+                address: 0x2000,
+                size: 0,
+            }],
             SymbolSource::Pdb,
         );
         assert_eq!(db.find_by_address(0x1FFF), None);
@@ -447,8 +465,16 @@ mod tests {
     fn overlapping_intervals_resolve_to_enclosing_or_inner_function() {
         let db = SymbolDb::from_sorted_functions(
             vec![
-                SymbolInfo { name: "inner".into(), address: 0x180, size: 0x4 },
-                SymbolInfo { name: "outer".into(), address: 0x100, size: 0x100 },
+                SymbolInfo {
+                    name: "inner".into(),
+                    address: 0x180,
+                    size: 0x4,
+                },
+                SymbolInfo {
+                    name: "outer".into(),
+                    address: 0x100,
+                    size: 0x100,
+                },
             ],
             SymbolSource::Dwarf,
         );

@@ -122,9 +122,10 @@ pub fn run_image(
         .map_err(RunImageError::Lift)?;
     if entry_offset != 0 {
         let want = base.wrapping_add(entry_offset);
-        let found = func.blocks.iter().any(|b| {
-            !b.insts.is_empty() && block_address(&b.label, base) == Some(want)
-        });
+        let found = func
+            .blocks
+            .iter()
+            .any(|b| !b.insts.is_empty() && block_address(&b.label, base) == Some(want));
         if !found {
             return Err(RunImageError::NoEntryBlock { addr: want });
         }

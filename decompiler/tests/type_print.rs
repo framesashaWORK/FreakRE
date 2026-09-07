@@ -17,9 +17,30 @@ fn ptr_through_memory_ir() -> IrFunction {
     let rbx = Value::reg("rbx", Ty::Unknown);
     let rcx = Value::reg("rcx", Ty::Unknown);
 
-    func.push_inst(func.entry_block, IrInst::Load { dst: rax.clone(), addr: rdi.clone(), size: 8 });
-    func.push_inst(func.entry_block, IrInst::Load { dst: rbx.clone(), addr: rax.clone(), size: 8 });
-    func.push_inst(func.entry_block, IrInst::Load { dst: rcx.clone(), addr: rbx.clone(), size: 8 });
+    func.push_inst(
+        func.entry_block,
+        IrInst::Load {
+            dst: rax.clone(),
+            addr: rdi.clone(),
+            size: 8,
+        },
+    );
+    func.push_inst(
+        func.entry_block,
+        IrInst::Load {
+            dst: rbx.clone(),
+            addr: rax.clone(),
+            size: 8,
+        },
+    );
+    func.push_inst(
+        func.entry_block,
+        IrInst::Load {
+            dst: rcx.clone(),
+            addr: rbx.clone(),
+            size: 8,
+        },
+    );
     func.push_inst(func.entry_block, IrInst::Return { value: Some(rcx) });
     func
 }
@@ -59,7 +80,11 @@ fn param_unknown_width_falls_back_to_int() {
     });
     apply_propagated_types(&mut func, &InferredTypes::new());
     let c = ast_to_c(&func);
-    assert!(c.contains("(int arg0)"), "unknown width must fall back to int:\n{}", c);
+    assert!(
+        c.contains("(int arg0)"),
+        "unknown width must fall back to int:\n{}",
+        c
+    );
 }
 
 #[test]
@@ -67,13 +92,28 @@ fn pointer_through_memory_declares_pointers() {
     let ir = ptr_through_memory_ir();
     // This pattern relies on Register-typed addrs; SSA lowers Registers to Vars and breaks the current
     // type-propagation heuristic, so test the non-SSA path explicitly.
-    let cfg = DecompilerConfig { use_ssa: false, ..Default::default() };
+    let cfg = DecompilerConfig {
+        use_ssa: false,
+        ..Default::default()
+    };
     let c = decompile_function_with_config(&ir, &cfg).expect("decompile failed");
 
     // With the current type engine, rdi may be ***, rax **, rbx * — just check that rax/rbx are pointers.
-    assert!(c.contains("rax;") && c.contains("* rax"), "rax must be a typed pointer:\n{}", c);
-    assert!(c.contains("rbx;") && c.contains("* rbx"), "rbx must be a typed pointer:\n{}", c);
-    assert!(!c.contains("(uint64_t *r"), "no uint64_t* soup expected:\n{}", c);
+    assert!(
+        c.contains("rax;") && c.contains("* rax"),
+        "rax must be a typed pointer:\n{}",
+        c
+    );
+    assert!(
+        c.contains("rbx;") && c.contains("* rbx"),
+        "rbx must be a typed pointer:\n{}",
+        c
+    );
+    assert!(
+        !c.contains("(uint64_t *r"),
+        "no uint64_t* soup expected:\n{}",
+        c
+    );
 }
 
 #[test]
@@ -87,28 +127,55 @@ fn struct_field_access_uses_named_fields() {
     let t2 = func.alloc_var(Ty::Unknown);
     let v2 = func.alloc_var(Ty::Unknown);
 
-    func.push_inst(func.entry_block, IrInst::Binary {
-        dst: t1.clone(),
-        op: freakre_ir::OpCode::Add,
-        lhs: rsi.clone(),
-        rhs: Value::Const(0x10),
-    });
-    func.push_inst(func.entry_block, IrInst::Load { dst: v1.clone(), addr: t1, size: 4 });
-    func.push_inst(func.entry_block, IrInst::Binary {
-        dst: t2.clone(),
-        op: freakre_ir::OpCode::Add,
-        lhs: rsi.clone(),
-        rhs: Value::Const(0x14),
-    });
-    func.push_inst(func.entry_block, IrInst::Load { dst: v2.clone(), addr: t2, size: 4 });
+    func.push_inst(
+        func.entry_block,
+        IrInst::Binary {
+            dst: t1.clone(),
+            op: freakre_ir::OpCode::Add,
+            lhs: rsi.clone(),
+            rhs: Value::Const(0x10),
+        },
+    );
+    func.push_inst(
+        func.entry_block,
+        IrInst::Load {
+            dst: v1.clone(),
+            addr: t1,
+            size: 4,
+        },
+    );
+    func.push_inst(
+        func.entry_block,
+        IrInst::Binary {
+            dst: t2.clone(),
+            op: freakre_ir::OpCode::Add,
+            lhs: rsi.clone(),
+            rhs: Value::Const(0x14),
+        },
+    );
+    func.push_inst(
+        func.entry_block,
+        IrInst::Load {
+            dst: v2.clone(),
+            addr: t2,
+            size: 4,
+        },
+    );
     func.push_inst(func.entry_block, IrInst::Return { value: Some(v1) });
 
-    let cfg = DecompilerConfig { use_ssa: false, ..Default::default() };
+    let cfg = DecompilerConfig {
+        use_ssa: false,
+        ..Default::default()
+    };
     let c = decompile_function_with_config(&func, &cfg).expect("decompile failed");
     // Accept either struct field form or fallback cast form. v2 may be DCE'd as dead, so only 0x10 is required.
     let has_fields = c.contains("field_0x10");
     let has_fallback = c.contains("rsi + 0x10");
-    assert!(has_fields || has_fallback, "field access not recognized:\n{}", c);
+    assert!(
+        has_fields || has_fallback,
+        "field access not recognized:\n{}",
+        c
+    );
 }
 
 #[test]
@@ -120,13 +187,23 @@ fn unresolved_offset_deref_prints_cast_with_hex_comment() {
     let t = func.alloc_var(Ty::Unknown);
     let v = func.alloc_var(Ty::Unknown);
 
-    func.push_inst(func.entry_block, IrInst::Binary {
-        dst: t.clone(),
-        op: freakre_ir::OpCode::Add,
-        lhs: rdi.clone(),
-        rhs: Value::Const(0xC),
-    });
-    func.push_inst(func.entry_block, IrInst::Load { dst: v.clone(), addr: t, size: 4 });
+    func.push_inst(
+        func.entry_block,
+        IrInst::Binary {
+            dst: t.clone(),
+            op: freakre_ir::OpCode::Add,
+            lhs: rdi.clone(),
+            rhs: Value::Const(0xC),
+        },
+    );
+    func.push_inst(
+        func.entry_block,
+        IrInst::Load {
+            dst: v.clone(),
+            addr: t,
+            size: 4,
+        },
+    );
     func.push_inst(func.entry_block, IrInst::Return { value: Some(v) });
 
     let c = decompile_function(&func).expect("decompile failed");
@@ -179,7 +256,11 @@ fn cast_hygiene_drops_redundant_keeps_width_change() {
 
     let c = ast_to_c(&func);
     assert!(c.contains("x = x;"), "redundant cast not dropped:\n{}", c);
-    assert!(c.contains("y = (int64_t)x;"), "width-changing cast dropped:\n{}", c);
+    assert!(
+        c.contains("y = (int64_t)x;"),
+        "width-changing cast dropped:\n{}",
+        c
+    );
     assert!(!c.contains("(int32_t)x"), "unexpected int32_t cast:\n{}", c);
 }
 

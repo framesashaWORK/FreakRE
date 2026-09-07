@@ -26,3 +26,9 @@ tempfile = "3"
 str-extract = { path = "../str-extract" }
 entropy-rs = { path = "../entropy-rs" }
 xrefs = { path = "../xrefs" }
+backdoor-analyzer = { path = "../backdoor-analyzer" }
+diffing = { path = "../diffing" }
+
+[features]
+default = ["decompiler"]
+decompiler = ["freakre-scanner/decompiler"]

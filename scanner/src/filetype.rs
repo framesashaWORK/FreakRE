@@ -31,14 +31,15 @@ pub fn detect_file_type(data: &[u8]) -> String {
             if pe_offset + 4 <= data.len() && &data[pe_offset..pe_offset + 4] == b"PE\0\0"
                 // Reads 2 bytes of optional-header magic ([pe_offset+24],
                 // [pe_offset+25]) — both indices must be in bounds.
-                && pe_offset + 26 <= data.len() {
-                    let magic = u16::from_le_bytes([data[pe_offset + 24], data[pe_offset + 25]]);
-                    return if magic == 0x20B {
-                        "PE32+".into()
-                    } else {
-                        "PE32".into()
-                    };
-                }
+                && pe_offset + 26 <= data.len()
+            {
+                let magic = u16::from_le_bytes([data[pe_offset + 24], data[pe_offset + 25]]);
+                return if magic == 0x20B {
+                    "PE32+".into()
+                } else {
+                    "PE32".into()
+                };
+            }
         }
         return "DOS".into();
     }
@@ -74,7 +75,11 @@ pub fn detect_file_type(data: &[u8]) -> String {
     }
 
     // ─── Motorola S-Record ───
-    if data.starts_with(b"S0") || data.starts_with(b"S1") || data.starts_with(b"S2") || data.starts_with(b"S3") {
+    if data.starts_with(b"S0")
+        || data.starts_with(b"S1")
+        || data.starts_with(b"S2")
+        || data.starts_with(b"S3")
+    {
         return "Motorola S-Record".into();
     }
 
@@ -113,14 +118,21 @@ pub fn detect_file_type(data: &[u8]) -> String {
     // ─── Script files (shebang detection) ───
     if data.starts_with(b"#!") {
         // Read first line to identify interpreter
-        let first_line_end = data.iter().position(|&b| b == b'\n').unwrap_or(data.len().min(256));
+        let first_line_end = data
+            .iter()
+            .position(|&b| b == b'\n')
+            .unwrap_or(data.len().min(256));
         let first_line = String::from_utf8_lossy(&data[2..first_line_end]);
         let line = first_line.to_lowercase();
 
         if line.contains("python") || line.contains("python3") || line.contains("python2") {
             return "Script/Python".into();
         }
-        if line.contains("bash") || line.contains("sh") || line.contains("zsh") || line.contains("ksh") {
+        if line.contains("bash")
+            || line.contains("sh")
+            || line.contains("zsh")
+            || line.contains("ksh")
+        {
             return "Script/Shell".into();
         }
         if line.contains("perl") {
@@ -155,7 +167,11 @@ pub fn detect_file_type(data: &[u8]) -> String {
         // UTF-8 BOM — could be PS1, check further
         let body = &data[3..];
         let preview = String::from_utf8_lossy(&body[..body.len().min(128)]).to_lowercase();
-        if preview.contains("param(") || preview.contains("function ") || preview.contains("invoke-") || preview.contains("get-") {
+        if preview.contains("param(")
+            || preview.contains("function ")
+            || preview.contains("invoke-")
+            || preview.contains("get-")
+        {
             return "Script/PowerShell".into();
         }
     }
@@ -163,10 +179,14 @@ pub fn detect_file_type(data: &[u8]) -> String {
     // --- PowerShell (BOM-less) ---
     if let Some(rest) = strip_utf8_bom(data) {
         let preview = String::from_utf8_lossy(&rest[..rest.len().min(256)]).to_lowercase();
-        if preview.contains("param(") || preview.contains("invoke-")
-            || preview.contains("new-object") || preview.contains("add-type")
-            || preview.contains("start-process") || preview.contains("downloadstring")
-            || preview.contains("[reflection.assembly]") || preview.contains("iesecurity")
+        if preview.contains("param(")
+            || preview.contains("invoke-")
+            || preview.contains("new-object")
+            || preview.contains("add-type")
+            || preview.contains("start-process")
+            || preview.contains("downloadstring")
+            || preview.contains("[reflection.assembly]")
+            || preview.contains("iesecurity")
         {
             return "Script/PowerShell".into();
         }
@@ -175,7 +195,8 @@ pub fn detect_file_type(data: &[u8]) -> String {
     // --- PowerShell modules/manifests ---
     if data.len() >= 4 {
         let head = String::from_utf8_lossy(&data[..data.len().min(64)]).to_lowercase();
-        if head.contains("#requires") || head.contains("using module")
+        if head.contains("#requires")
+            || head.contains("using module")
             || head.contains("functions-toexport")
         {
             return "Script/PowerShell".into();
@@ -185,7 +206,8 @@ pub fn detect_file_type(data: &[u8]) -> String {
     // --- VBScript ---
     if data.len() >= 32 {
         let lower = String::from_utf8_lossy(&data[..data.len().min(512)]).to_lowercase();
-        if lower.contains("wscript") || lower.contains("createobject(\"adodb")
+        if lower.contains("wscript")
+            || lower.contains("createobject(\"adodb")
             || lower.contains("createobject(\"msxml2")
         {
             return "Script/VBScript".into();
@@ -195,10 +217,21 @@ pub fn detect_file_type(data: &[u8]) -> String {
     // --- AutoIt (AU3) ---
     if data.len() >= 64 {
         let lower = String::from_utf8_lossy(&data[..data.len().min(4096)]).to_lowercase();
-        let has_au3 = contains_any(&lower, &[
-            "autoit", "au3", "func ", "send(", "mouseclick", "controlclick", "opt_winwait",
-        ]);
-        if has_au3 && !lower.contains("ahk") && !lower.contains("autohotkey")
+        let has_au3 = contains_any(
+            &lower,
+            &[
+                "autoit",
+                "au3",
+                "func ",
+                "send(",
+                "mouseclick",
+                "controlclick",
+                "opt_winwait",
+            ],
+        );
+        if has_au3
+            && !lower.contains("ahk")
+            && !lower.contains("autohotkey")
             && (lower.contains("func ") || lower.contains("endfunc"))
         {
             return "Script/AutoIt".into();
@@ -227,10 +260,24 @@ pub fn detect_file_type(data: &[u8]) -> String {
     if data.len() >= 8 {
         let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         let py3_magic = (magic & 0xFFFF_0000) == 0x0A0D_0000 && (magic & 0xFFFF) >= 0x0100;
-        let known = matches!(magic,
-            0x0A0D0C00 | 0x0A0D0C0A | 0x0A0D0D0A | 0x0A0DEB0A | 0x0A0DF20A | 0x0A0DF50A |
-            0x0A0DF70A | 0x0A0DF80A | 0x0A0DF90A | 0x0A0DFA0A | 0x0A0DFB0A | 0x0A0DFC0A |
-            0x0A0DFD0A | 0x0A0DFE0A | 0x0A0DFF0A | 0x0A0D000B
+        let known = matches!(
+            magic,
+            0x0A0D0C00
+                | 0x0A0D0C0A
+                | 0x0A0D0D0A
+                | 0x0A0DEB0A
+                | 0x0A0DF20A
+                | 0x0A0DF50A
+                | 0x0A0DF70A
+                | 0x0A0DF80A
+                | 0x0A0DF90A
+                | 0x0A0DFA0A
+                | 0x0A0DFB0A
+                | 0x0A0DFC0A
+                | 0x0A0DFD0A
+                | 0x0A0DFE0A
+                | 0x0A0DFF0A
+                | 0x0A0D000B
         );
         if known || py3_magic {
             return "Python/Compiled".into();
@@ -317,17 +364,26 @@ mod tests {
 
         // Mach-O 64-bit (little-endian)
         let mut macho64 = [0u8; 32];
-        macho64[0] = 0xCF; macho64[1] = 0xFA; macho64[2] = 0xED; macho64[3] = 0xFE;
+        macho64[0] = 0xCF;
+        macho64[1] = 0xFA;
+        macho64[2] = 0xED;
+        macho64[3] = 0xFE;
         assert_eq!(detect_file_type(&macho64), "Mach-O 64-bit");
 
         // Mach-O 32-bit (little-endian)
         let mut macho32 = [0u8; 32];
-        macho32[0] = 0xCE; macho32[1] = 0xFA; macho32[2] = 0xED; macho32[3] = 0xFE;
+        macho32[0] = 0xCE;
+        macho32[1] = 0xFA;
+        macho32[2] = 0xED;
+        macho32[3] = 0xFE;
         assert_eq!(detect_file_type(&macho32), "Mach-O 32-bit");
 
         // Mach-O Fat binary
         let mut fat = [0u8; 32];
-        fat[0] = 0xCA; fat[1] = 0xFE; fat[2] = 0xBA; fat[3] = 0xBE;
+        fat[0] = 0xCA;
+        fat[1] = 0xFE;
+        fat[2] = 0xBA;
+        fat[3] = 0xBE;
         assert_eq!(detect_file_type(&fat), "Mach-O Fat");
 
         // Python script

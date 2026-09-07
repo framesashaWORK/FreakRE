@@ -35,7 +35,9 @@ pub fn detect_anomalies_elf32(
 
 /// Statically linked binaries are common in IoT malware (no libc dependency).
 fn check_static_linking(program_headers: &[ProgramHeader], warnings: &mut Vec<ElfWarning>) {
-    let has_interp = program_headers.iter().any(|p| p.p_type == ProgramType::Interp);
+    let has_interp = program_headers
+        .iter()
+        .any(|p| p.p_type == ProgramType::Interp);
     if !has_interp && !program_headers.is_empty() {
         warnings.push(ElfWarning {
             kind: ElfWarningKind::StaticallyLinked,
@@ -78,8 +80,12 @@ fn check_executable_segment_exists(
 
 /// Check for missing security protections (NX, RELRO).
 fn check_missing_protections(program_headers: &[ProgramHeader], warnings: &mut Vec<ElfWarning>) {
-    let has_gnu_stack = program_headers.iter().any(|p| p.p_type == ProgramType::GnuStack);
-    let has_relro = program_headers.iter().any(|p| p.p_type == ProgramType::GnuRelro);
+    let has_gnu_stack = program_headers
+        .iter()
+        .any(|p| p.p_type == ProgramType::GnuStack);
+    let has_relro = program_headers
+        .iter()
+        .any(|p| p.p_type == ProgramType::GnuRelro);
 
     if !has_gnu_stack && !program_headers.is_empty() {
         warnings.push(ElfWarning {

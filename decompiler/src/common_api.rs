@@ -140,9 +140,28 @@ pub fn lookup_common_api(name: &str) -> Option<ApiSignature> {
 /// Exact names present in [`lookup_common_api`], as a const list so it can be
 /// seeded into a [`crate::call_naming::SignatureMap`] cheaply.
 pub const COMMON_API_NAMES: &[&str] = &[
-    "memcpy", "memmove", "memset", "memcmp", "strlen", "strcpy", "strncpy", "strcmp", "strncmp",
-    "printf", "sprintf", "fprintf", "malloc", "calloc", "realloc", "free", "exit", "atoi",
-    "GetProcAddress", "LoadLibraryA", "LoadLibraryW", "VirtualAlloc",
+    "memcpy",
+    "memmove",
+    "memset",
+    "memcmp",
+    "strlen",
+    "strcpy",
+    "strncpy",
+    "strcmp",
+    "strncmp",
+    "printf",
+    "sprintf",
+    "fprintf",
+    "malloc",
+    "calloc",
+    "realloc",
+    "free",
+    "exit",
+    "atoi",
+    "GetProcAddress",
+    "LoadLibraryA",
+    "LoadLibraryW",
+    "VirtualAlloc",
 ];
 
 #[cfg(test)]
@@ -161,7 +180,10 @@ mod tests {
     #[test]
     fn names_list_covers_lookup() {
         for &name in COMMON_API_NAMES {
-            assert!(lookup_common_api(name).is_some(), "missing entry for {name}");
+            assert!(
+                lookup_common_api(name).is_some(),
+                "missing entry for {name}"
+            );
         }
     }
 }

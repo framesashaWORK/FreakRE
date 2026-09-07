@@ -16,7 +16,7 @@
 //! * [`GpuScanner::find_literal`] reports every match offset for a needle of up
 //!   to 64 bytes (longer needles transparently use the CPU path), capped at
 //!   [`MAX_MATCHES`] stored offsets with an always-exact total count.
-//! * Both scan methods silently fall back to the CPU implementations in
+//! * All scan methods silently fall back to the CPU implementations in
 //!   [`cpu`] whenever GPU init failed or a runtime GPU error occurred;
 //!   [`GpuScanner::is_gpu_active`] reports which path was used.
 //!
@@ -161,6 +161,31 @@ pub mod cpu {
         scan.truncated = scan.total as usize > scan.offsets.len();
         scan
     }
+
+    /// Naive masked scan. A zero mask byte is a wildcard; non-zero mask bytes
+    /// require the corresponding pattern byte to match exactly. Empty or
+    /// length-mismatched pattern/mask inputs yield no matches.
+    pub fn find_masked(data: &[u8], pattern: &[u8], mask: &[u8]) -> LiteralScan {
+        if pattern.is_empty() || pattern.len() != mask.len() || pattern.len() > data.len() {
+            return LiteralScan::default();
+        }
+        let mut scan = LiteralScan::default();
+        for pos in 0..=(data.len() - pattern.len()) {
+            if pattern
+                .iter()
+                .zip(mask)
+                .enumerate()
+                .all(|(i, (&wanted, &mask_byte))| mask_byte == 0 || data[pos + i] == wanted)
+            {
+                scan.total += 1;
+                if scan.offsets.len() < MAX_MATCHES {
+                    scan.offsets.push(pos as u32);
+                }
+            }
+        }
+        scan.truncated = scan.total as usize > scan.offsets.len();
+        scan
+    }
 }
 
 /// Window start offsets replicating `entropy-rs::sliding_window_entropy`:
@@ -239,22 +264,21 @@ impl GpuScanner {
             info.device_type
         );
 
-        let (device, queue) =
-            match pollster::block_on(adapter.request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("gpu-scan.device"),
-                    ..Default::default()
-                },
-                None,
-            )) {
-                Ok(pair) => pair,
-                Err(e) => {
-                    log::warn!("gpu-scan: device request failed ({e}), using CPU fallback");
-                    return Ok(Self::cpu_only(FallbackReason::DeviceInitFailed(
-                        e.to_string(),
-                    )));
-                }
-            };
+        let (device, queue) = match pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("gpu-scan.device"),
+                ..Default::default()
+            },
+            None,
+        )) {
+            Ok(pair) => pair,
+            Err(e) => {
+                log::warn!("gpu-scan: device request failed ({e}), using CPU fallback");
+                return Ok(Self::cpu_only(FallbackReason::DeviceInitFailed(
+                    e.to_string(),
+                )));
+            }
+        };
 
         let poisoned = Arc::new(AtomicBool::new(false));
         {
@@ -294,23 +318,22 @@ impl GpuScanner {
             ],
         });
 
-        let make_pipeline = |label: &str,
-                             module: &wgpu::ShaderModule,
-                             bgl: &wgpu::BindGroupLayout| {
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some(label),
-                bind_group_layouts: &[bgl],
-                push_constant_ranges: &[],
-            });
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(label),
-                layout: Some(&layout),
-                module,
-                entry_point: Some("main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
-            })
-        };
+        let make_pipeline =
+            |label: &str, module: &wgpu::ShaderModule, bgl: &wgpu::BindGroupLayout| {
+                let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some(label),
+                    bind_group_layouts: &[bgl],
+                    push_constant_ranges: &[],
+                });
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&layout),
+                    module,
+                    entry_point: Some("main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                })
+            };
 
         let entropy_pipeline =
             make_pipeline("gpu-scan.entropy.pipeline", &entropy_module, &entropy_bgl);
@@ -409,6 +432,17 @@ impl GpuScanner {
         cpu::find_literal(data, needle)
     }
 
+    /// Masked byte scan using the exact CPU implementation.
+    ///
+    /// A zero mask byte is a wildcard and every non-zero mask byte requires an
+    /// exact match. No masked shader exists yet, so this method deliberately
+    /// remains CPU-only, including when the scanner has an active GPU backend.
+    /// [`MAX_NEEDLE_BYTES`] is the reserved boundary for a future GPU path.
+    pub fn find_masked(&mut self, data: &[u8], pattern: &[u8], mask: &[u8]) -> LiteralScan {
+        // TODO: Add a masked shader before routing eligible patterns to GPU.
+        cpu::find_masked(data, pattern, mask)
+    }
+
     fn gpu_scan_entropy(
         &self,
         data: &[u8],
@@ -433,19 +467,26 @@ impl GpuScanner {
         let padded_len = data.len().div_ceil(4) * 4;
         let mut padded = vec![0u8; padded_len];
         padded[..data.len()].copy_from_slice(data);
-        let data_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("gpu-scan.entropy.data"),
-            contents: &padded,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let data_buf = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("gpu-scan.entropy.data"),
+                contents: &padded,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         drop(padded);
 
-        let starts_bytes: Vec<u8> = starts.iter().flat_map(|o| (*o as u32).to_le_bytes()).collect();
-        let starts_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("gpu-scan.entropy.starts"),
-            contents: &starts_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let starts_bytes: Vec<u8> = starts
+            .iter()
+            .flat_map(|o| (*o as u32).to_le_bytes())
+            .collect();
+        let starts_buf = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("gpu-scan.entropy.starts"),
+                contents: &starts_bytes,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         drop(starts_bytes);
 
         let out_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -458,11 +499,13 @@ impl GpuScanner {
         let mut results = Vec::with_capacity(starts.len());
         for (chunk_idx, chunk) in starts.chunks(ENTROPY_WINDOWS_PER_PASS).enumerate() {
             let params = params_uniform(chunk.len() as u32, window_u32, 0, 0);
-            let params_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("gpu-scan.entropy.params"),
-                contents: &params,
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+            let params_buf = gpu
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("gpu-scan.entropy.params"),
+                    contents: &params,
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
 
             let base = chunk_idx * ENTROPY_WINDOWS_PER_PASS;
             let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -512,8 +555,13 @@ impl GpuScanner {
             }
             gpu.queue.submit([encoder.finish()]);
 
-            let raw =
-                read_back(&gpu.device, &gpu.queue, &out_buf, (base * 4) as u64, chunk.len() * 4)?;
+            let raw = read_back(
+                &gpu.device,
+                &gpu.queue,
+                &out_buf,
+                (base * 4) as u64,
+                chunk.len() * 4,
+            )?;
             for (i, quad) in raw.chunks_exact(4).enumerate() {
                 results.push((
                     starts[base + i],
@@ -537,21 +585,25 @@ impl GpuScanner {
         let padded_len = data.len().div_ceil(4) * 4;
         let mut padded = vec![0u8; padded_len];
         padded[..data.len()].copy_from_slice(data);
-        let data_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("gpu-scan.lit.data"),
-            contents: &padded,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let data_buf = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("gpu-scan.lit.data"),
+                contents: &padded,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         drop(padded);
 
         let needle_padded = needle.len().div_ceil(4) * 4;
         let mut packed = vec![0u8; needle_padded];
         packed[..needle.len()].copy_from_slice(needle);
-        let needle_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("gpu-scan.lit.needle"),
-            contents: &packed,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let needle_buf = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("gpu-scan.lit.needle"),
+                contents: &packed,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         drop(packed);
 
         let params = params_uniform(
@@ -560,11 +612,13 @@ impl GpuScanner {
             MAX_MATCHES as u32,
             0,
         );
-        let params_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("gpu-scan.lit.params"),
-            contents: &params,
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let params_buf = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("gpu-scan.lit.params"),
+                contents: &params,
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         let matches_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("gpu-scan.lit.matches"),
@@ -572,11 +626,13 @@ impl GpuScanner {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let count_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("gpu-scan.lit.count"),
-            contents: &0u32.to_le_bytes(),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        });
+        let count_buf = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("gpu-scan.lit.count"),
+                contents: &0u32.to_le_bytes(),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            });
 
         let threads = shaders::SCAN_WORKGROUP_SIZE as usize;
         let candidates_per_pass = 65_535 * threads;

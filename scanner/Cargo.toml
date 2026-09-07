@@ -14,7 +14,6 @@ path = "src/lib.rs"
 default = ["cli"]
 decompiler = ["dep:freakre-ir", "dep:decompiler"]
 cli = ["dep:clap", "dep:rayon", "dep:walkdir", "dep:colored", "dep:serde_json"]
-
 [dependencies]
 serde = { workspace = true }
 clap = { version = "4", features = ["derive"], optional = true }

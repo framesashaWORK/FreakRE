@@ -42,10 +42,10 @@ pub(crate) const CS_MODE_64: u32 = 1 << 3;
 pub(crate) const CS_MODE_THUMB: u32 = 1 << 4;
 pub(crate) const CS_MODE_BIG_ENDIAN: u32 = 1 << 31;
 pub(crate) const CS_MODE_MICRO: u32 = 1 << 4; // MicroMIPS
-//
-// NOTE: no CS_MODE_RISCV32/RISCV64 constants exist in this hand-written
-// table, therefore `Arch::RISCV` is rejected by the engine layer rather
-// than being opened with wrong mode bits.
+                                              //
+                                              // NOTE: no CS_MODE_RISCV32/RISCV64 constants exist in this hand-written
+                                              // table, therefore `Arch::RISCV` is rejected by the engine layer rather
+                                              // than being opened with wrong mode bits.
 
 // Capstone instruction group IDs for control flow classification
 // (capstone.h `cs_group_type`, generic groups shared by all arches)
@@ -84,7 +84,7 @@ pub(crate) struct CsInsn {
     detail: *const u8,
 }
 
-pub(crate) extern "C" {
+extern "C" {
     pub(crate) fn cs_open(arch: i32, mode: u32, handle: *mut CsHandle) -> CsErr;
     pub(crate) fn cs_close(handle: *mut CsHandle) -> CsErr;
     pub(crate) fn cs_disasm(
@@ -154,16 +154,29 @@ pub(crate) fn parse_operands(op_str: &str) -> Vec<Operand> {
     let mut cur = String::new();
     for ch in op_str.chars() {
         match ch {
-            '[' => { depth += 1; cur.push(ch); }
-            ']' => { depth = depth.saturating_sub(1); cur.push(ch); }
-            ',' if depth == 0 => { parts.push(cur.trim().to_string()); cur.clear(); }
+            '[' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ']' => {
+                depth = depth.saturating_sub(1);
+                cur.push(ch);
+            }
+            ',' if depth == 0 => {
+                parts.push(cur.trim().to_string());
+                cur.clear();
+            }
             _ => cur.push(ch),
         }
     }
     if !cur.trim().is_empty() {
         parts.push(cur.trim().to_string());
     }
-    parts.into_iter().filter(|s| !s.is_empty()).map(|s| parse_single_operand(&s)).collect()
+    parts
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .map(|s| parse_single_operand(&s))
+        .collect()
 }
 
 fn parse_single_operand(s: &str) -> Operand {
@@ -204,7 +217,11 @@ fn parse_single_operand(s: &str) -> Operand {
     }
     // Short alphanumeric token: likely a register on another arch.
     // Deterministic hash fallback (non-zero, stable across runs).
-    if first.len() <= 8 && first.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+    if first.len() <= 8
+        && first
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+    {
         let hash = first.bytes().fold(0x811c_9dc5u32, |acc, b| {
             acc.wrapping_mul(0x0100_0193).wrapping_add(b as u32)
         });
@@ -282,7 +299,12 @@ fn parse_mem_inner(inner: &str) -> Operand {
             continue;
         }
     }
-    Operand::Mem { base, index, scale, disp }
+    Operand::Mem {
+        base,
+        index,
+        scale,
+        disp,
+    }
 }
 
 /// Classify via Capstone groups + mnemonic fallback.
@@ -290,7 +312,11 @@ fn parse_mem_inner(inner: &str) -> Operand {
 /// Groups are authoritative for ret/call/int. For jumps the generic group
 /// cannot separate cond/uncond (both are `JUMP`), so `jmp`/`b` (bare) map to
 /// `UnconditionalJump` and any other jump mnemonic to `ConditionalBranch`.
-pub(crate) fn classify_by_groups(handle: CsHandle, insn: *const CsInsn, mnemonic: &str) -> InstructionKind {
+pub(crate) fn classify_by_groups(
+    handle: CsHandle,
+    insn: *const CsInsn,
+    mnemonic: &str,
+) -> InstructionKind {
     unsafe {
         if cs_insn_group(handle, insn, CS_GRP_RET) {
             return InstructionKind::Return;
@@ -315,13 +341,17 @@ pub(crate) fn classify_by_groups(handle: CsHandle, insn: *const CsInsn, mnemonic
 pub(crate) fn parse_branch_target(kind: InstructionKind, op_str: &str) -> Option<u64> {
     if !matches!(
         kind,
-        InstructionKind::ConditionalBranch | InstructionKind::UnconditionalJump | InstructionKind::Call
+        InstructionKind::ConditionalBranch
+            | InstructionKind::UnconditionalJump
+            | InstructionKind::Call
     ) {
         return None;
     }
     let first = op_str.split(',').next()?.trim();
     let first = first.split_whitespace().next()?;
-    let hex = first.strip_prefix("0x").or_else(|| first.strip_prefix("0X"))?;
+    let hex = first
+        .strip_prefix("0x")
+        .or_else(|| first.strip_prefix("0X"))?;
     let digits: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
     if digits.is_empty() {
         return None;

@@ -5,7 +5,7 @@
 //! since AC doesn't support wildcards.
 
 use crate::ast::*;
-use freakre_patterns::{SafeRegex, AcSearcher};
+use freakre_patterns::{AcSearcher, SafeRegex};
 use std::collections::HashMap;
 
 /// A compiled rule ready for scanning.
@@ -72,11 +72,8 @@ pub fn compile_rule(rule: &Rule) -> Result<CompiledRule, CompileError> {
     // condition references to strings that were never declared (real YARA
     // fails compilation with "unresolved reference" instead of silently
     // evaluating them as false).
-    let defined: std::collections::HashSet<&str> = rule
-        .strings
-        .iter()
-        .map(|s| s.identifier.as_str())
-        .collect();
+    let defined: std::collections::HashSet<&str> =
+        rule.strings.iter().map(|s| s.identifier.as_str()).collect();
     for id in rule.condition.referenced_strings() {
         if !defined.contains(id) {
             return Err(CompileError::UndefinedString(
@@ -98,8 +95,7 @@ pub fn compile_rule(rule: &Rule) -> Result<CompiledRule, CompileError> {
                 let flags = if sdef.modifiers.nocase { "(?i)" } else { "" };
                 // Regex values come verbatim from the rule source, so they are
                 // always valid UTF-8.
-                let pattern_str =
-                    format!("(?-u){}{}", flags, String::from_utf8_lossy(&tp.value));
+                let pattern_str = format!("(?-u){}{}", flags, String::from_utf8_lossy(&tp.value));
                 let regex = SafeRegex::new(&pattern_str).map_err(|e| {
                     CompileError::InvalidRegex(sdef.identifier.clone(), e.to_string())
                 })?;
@@ -174,7 +170,11 @@ fn expand_text_variants(text: &[u8], mods: &Modifiers) -> Vec<Vec<u8>> {
         let wide: Vec<u8> = text
             .iter()
             .flat_map(|&b| {
-                let b = if mods.nocase { b.to_ascii_lowercase() } else { b };
+                let b = if mods.nocase {
+                    b.to_ascii_lowercase()
+                } else {
+                    b
+                };
                 [b, 0]
             })
             .collect();

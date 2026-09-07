@@ -21,10 +21,10 @@
 //! "#).unwrap();
 //! ```
 
-use rhai::{Engine, Scope, AST, Dynamic, Map, Array};
 use project_db::ProjectDatabase;
-use thiserror::Error;
+use rhai::{Array, Dynamic, Engine, Map, Scope, AST};
 use std::sync::{Arc, Mutex};
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum ScriptError {
@@ -63,11 +63,17 @@ impl ScriptContext {
     }
 
     pub fn get_output(&self) -> Vec<String> {
-        self.output.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.output
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     pub fn clear_output(&self) {
-        self.output.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.output
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
     }
 }
 
@@ -110,37 +116,39 @@ impl ScriptEngine {
 
     pub fn with_context(mut self, db: Arc<Mutex<ProjectDatabase>>) -> Self {
         self.context = Some(ScriptContext::new(db.clone()));
-        self.engine.register_fn("list_functions", move |db: Arc<Mutex<ProjectDatabase>>| -> Array {
-            let db = db.lock().unwrap_or_else(|p| p.into_inner());
-            match db.list_functions() {
-                Ok(funcs) => funcs
-                    .into_iter()
-                    .map(|f| {
-                        let mut m = Map::new();
-                        m.insert("address".into(), Dynamic::from(f.address));
-                        m.insert("name".into(), Dynamic::from(f.name));
-                        Dynamic::from(m)
-                    })
-                    .collect(),
-                Err(_) => Array::new(),
-            }
-        });
-        self.engine.register_fn("count_functions", move |db: Arc<Mutex<ProjectDatabase>>| -> i64 {
-            let db = db.lock().unwrap_or_else(|p| p.into_inner());
-            let n = db.list_functions().map(|f| f.len()).unwrap_or(0);
-            n as i64
-        });
+        self.engine.register_fn(
+            "list_functions",
+            move |db: Arc<Mutex<ProjectDatabase>>| -> Array {
+                let db = db.lock().unwrap_or_else(|p| p.into_inner());
+                match db.list_functions() {
+                    Ok(funcs) => funcs
+                        .into_iter()
+                        .map(|f| {
+                            let mut m = Map::new();
+                            m.insert("address".into(), Dynamic::from(f.address));
+                            m.insert("name".into(), Dynamic::from(f.name));
+                            Dynamic::from(m)
+                        })
+                        .collect(),
+                    Err(_) => Array::new(),
+                }
+            },
+        );
+        self.engine.register_fn(
+            "count_functions",
+            move |db: Arc<Mutex<ProjectDatabase>>| -> i64 {
+                let db = db.lock().unwrap_or_else(|p| p.into_inner());
+                let n = db.list_functions().map(|f| f.len()).unwrap_or(0);
+                n as i64
+            },
+        );
         self
     }
 
     fn register_api(engine: &mut Engine) {
         // Safe utility functions (no side effects, no system access)
-        engine.register_fn("to_hex", |n: i64| -> String {
-            format!("0x{:X}", n)
-        });
-        engine.register_fn("to_hex", |n: u64| -> String {
-            format!("0x{:X}", n)
-        });
+        engine.register_fn("to_hex", |n: i64| -> String { format!("0x{:X}", n) });
+        engine.register_fn("to_hex", |n: u64| -> String { format!("0x{:X}", n) });
 
         engine.register_fn("format_address", |n: i64| -> String {
             format!("0x{:016X}", n)
@@ -159,7 +167,9 @@ impl ScriptEngine {
         if let Some(ref context) = self.context {
             let mut scope = Scope::new();
             scope.push("db", context.db.clone());
-            let result = self.engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast)?;
+            let result = self
+                .engine
+                .eval_ast_with_scope::<Dynamic>(&mut scope, &ast)?;
             Ok(result)
         } else {
             let result = self.engine.eval_ast::<Dynamic>(&ast)?;
@@ -186,7 +196,9 @@ impl ScriptEngine {
         }
 
         let ast = self.engine.compile(script)?;
-        let result = self.engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast)?;
+        let result = self
+            .engine
+            .eval_ast_with_scope::<Dynamic>(&mut scope, &ast)?;
         Ok(result)
     }
 
@@ -200,7 +212,9 @@ impl ScriptEngine {
         if let Some(ref context) = self.context {
             let mut scope = Scope::new();
             scope.push("db", context.db.clone());
-            Ok(self.engine.eval_ast_with_scope::<Dynamic>(&mut scope, ast)?)
+            Ok(self
+                .engine
+                .eval_ast_with_scope::<Dynamic>(&mut scope, ast)?)
         } else {
             Ok(self.engine.eval_ast::<Dynamic>(ast)?)
         }
@@ -208,12 +222,18 @@ impl ScriptEngine {
 
     /// Get script output (capped to the most recent `MAX_OUTPUT_LINES` lines)
     pub fn get_output(&self) -> Vec<String> {
-        self.output.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.output
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Clear script output
     pub fn clear_output(&mut self) {
-        self.output.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.output
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
     }
 }
 
@@ -314,7 +334,8 @@ mod tests {
             "hash".to_string(),
             "x86".to_string(),
             "PE".to_string(),
-        ).unwrap();
+        )
+        .unwrap();
         Arc::new(Mutex::new(db))
     }
 
@@ -324,7 +345,9 @@ mod tests {
         let mut engine = ScriptEngine::new().with_context(db);
         let result = engine.eval_with_db("db.count_functions()").unwrap();
         assert_eq!(result.as_int().unwrap(), 0);
-        let result = engine.eval_with_db("let f = db.list_functions(); f.len()").unwrap();
+        let result = engine
+            .eval_with_db("let f = db.list_functions(); f.len()")
+            .unwrap();
         assert_eq!(result.as_int().unwrap(), 0);
     }
 
@@ -339,10 +362,18 @@ mod tests {
     fn test_templates_run() {
         let db = make_test_db("templates");
         let mut engine = ScriptEngine::new().with_context(db);
-        let _ = engine.eval_with_db(ScriptTemplates::find_strings()).unwrap();
-        let _ = engine.eval_with_db(ScriptTemplates::find_crypto_constants()).unwrap();
-        let _ = engine.eval_with_db(ScriptTemplates::rename_functions()).unwrap();
-        let _ = engine.eval_with_db(ScriptTemplates::find_call_chains()).unwrap();
+        let _ = engine
+            .eval_with_db(ScriptTemplates::find_strings())
+            .unwrap();
+        let _ = engine
+            .eval_with_db(ScriptTemplates::find_crypto_constants())
+            .unwrap();
+        let _ = engine
+            .eval_with_db(ScriptTemplates::rename_functions())
+            .unwrap();
+        let _ = engine
+            .eval_with_db(ScriptTemplates::find_call_chains())
+            .unwrap();
     }
 
     fn poison<T>(m: &Arc<Mutex<T>>) {
@@ -381,7 +412,10 @@ mod tests {
         let ctx = ScriptContext::new(db);
         poison(&ctx.output);
         assert!(ctx.get_output().is_empty());
-        ctx.output.lock().unwrap_or_else(|p| p.into_inner()).push("kept".to_string());
+        ctx.output
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push("kept".to_string());
         assert_eq!(ctx.get_output(), vec!["kept".to_string()]);
         ctx.clear_output();
         assert!(ctx.get_output().is_empty());
@@ -401,5 +435,3 @@ mod tests {
         assert!(engine.get_output().is_empty());
     }
 }
-
-

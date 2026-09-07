@@ -191,14 +191,16 @@ impl<F: Framework> WorklistSolver<F> {
             let changed = match direction {
                 Direction::Forward => {
                     let old = std::mem::replace(&mut self.in_facts[block_idx], new_fact);
-                    self.out_facts[block_idx] =
-                        self.framework.transfer(block_idx, &self.in_facts[block_idx]);
+                    self.out_facts[block_idx] = self
+                        .framework
+                        .transfer(block_idx, &self.in_facts[block_idx]);
                     self.in_facts[block_idx] != old
                 }
                 Direction::Backward => {
                     let old = std::mem::replace(&mut self.out_facts[block_idx], new_fact);
-                    self.in_facts[block_idx] =
-                        self.framework.transfer(block_idx, &self.out_facts[block_idx]);
+                    self.in_facts[block_idx] = self
+                        .framework
+                        .transfer(block_idx, &self.out_facts[block_idx]);
                     self.out_facts[block_idx] != old
                 }
             };
@@ -274,9 +276,9 @@ mod tests {
     fn test_worklist_solver() {
         // Simple CFG: 0 → 1 → 2
         let deps = vec![
-            vec![],    // block 0: no predecessors
-            vec![0],   // block 1: predecessor 0
-            vec![1],   // block 2: predecessor 1
+            vec![],  // block 0: no predecessors
+            vec![0], // block 1: predecessor 0
+            vec![1], // block 2: predecessor 1
         ];
 
         let mut solver = WorklistSolver::new(ReachabilityFramework, 3, deps);

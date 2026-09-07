@@ -21,7 +21,8 @@
 //! every fixed byte of every entry is verified, wildcards match anything.
 
 use fxhash::FxHashMap;
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 /// Minimum pattern length in bytes (FP guard).
 pub const MIN_PATTERN_LEN: usize = 8;
@@ -43,6 +44,13 @@ pub struct DbEntry {
     /// Alias names (`aka=a,b` 7th field): forwarder chains and merged
     /// cross-DLL duplicates. Informational; matching uses `function_name`.
     pub aka: Vec<&'static str>,
+    /// Optional PE/Windows semantic tags encoded in `meta=...`.
+    pub semantic_role: &'static str,
+    pub calling_convention: &'static str,
+    /// Comma-separated semantic tags. Stored inline as one leaked string to
+    /// avoid two heap allocations per generated entry.
+    pub sources: &'static str,
+    pub sinks: &'static str,
 }
 
 impl DbEntry {
@@ -81,7 +89,15 @@ impl std::fmt::Display for DbParseError {
 }
 
 fn intern(s: &str) -> &'static str {
-    Box::leak(s.to_owned().into_boxed_str())
+    static INTERN: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let map = INTERN.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = map.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(&value) = map.get(s) {
+        return value;
+    }
+    let value = Box::leak(s.to_owned().into_boxed_str());
+    map.insert(value.to_string(), value);
+    value
 }
 
 /// Parse one `.fsig` text. `file` is only used for error messages.
@@ -97,7 +113,11 @@ pub fn parse_fsig(text: &str, file: &'static str) -> (Vec<DbEntry>, Vec<DbParseE
         }
         match parse_line(line) {
             Ok(e) => entries.push(e),
-            Err(reason) => errors.push(DbParseError { file, line: line_no, reason }),
+            Err(reason) => errors.push(DbParseError {
+                file,
+                line: line_no,
+                reason,
+            }),
         }
     }
     (entries, errors)
@@ -105,15 +125,52 @@ pub fn parse_fsig(text: &str, file: &'static str) -> (Vec<DbEntry>, Vec<DbParseE
 
 fn parse_line(line: &str) -> Result<DbEntry, String> {
     let parts: Vec<&str> = line.split('|').collect();
-    if parts.len() != 6 && parts.len() != 7 {
-        return Err(format!("expected 6 '|' fields (+optional aka=), got {}", parts.len()));
+    if parts.len() < 6 {
+        return Err(format!(
+            "expected at least 6 '|' fields (+optional aka/meta), got {}",
+            parts.len()
+        ));
     }
-    let (lib, arch, name, min_len_s, conf_s, hex) =
-        (parts[0].trim(), parts[1].trim(), parts[2].trim(), parts[3].trim(), parts[4].trim(), parts[5]);
+    let (lib, arch, name, min_len_s, conf_s, hex) = (
+        parts[0].trim(),
+        parts[1].trim(),
+        parts[2].trim(),
+        parts[3].trim(),
+        parts[4].trim(),
+        parts[5],
+    );
     let mut aka: Vec<&'static str> = Vec::new();
-    if parts.len() == 7 {
-        let a = parts[6].trim();
-        let list = a.strip_prefix("aka=").ok_or_else(|| format!("bad 7th field {a:?}, want aka=a,b"))?;
+    let mut semantic_role = "";
+    let mut calling_convention = "";
+    let mut sources = String::new();
+    let mut sinks = String::new();
+    for extra in parts.iter().skip(6) {
+        let a = extra.trim();
+        if let Some(meta) = a.strip_prefix("meta=") {
+            for item in meta.split(';') {
+                let Some((key, value)) = item.split_once('=') else {
+                    return Err(format!("bad metadata item {item:?}"));
+                };
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err(format!("empty metadata value for {key:?}"));
+                }
+                match key.trim() {
+                    "role" => semantic_role = intern(value),
+                    "cc" => calling_convention = intern(value),
+                    "source" => sources = value.to_string(),
+                    "sink" => sinks = value.to_string(),
+                    _ => return Err(format!("unknown metadata key {key:?}")),
+                }
+            }
+            continue;
+        }
+        if !aka.is_empty() {
+            return Err("duplicate aka field".to_string());
+        }
+        let list = a
+            .strip_prefix("aka=")
+            .ok_or_else(|| format!("bad 7th field {a:?}, want aka=a,b"))?;
         if list.is_empty() {
             return Err("empty aka list".to_string());
         }
@@ -134,13 +191,15 @@ fn parse_line(line: &str) -> Result<DbEntry, String> {
     if lib.contains(|c: char| c == '|' || c.is_control()) {
         return Err(format!("bad lib id {lib:?}"));
     }
-    let min_func_len: usize =
-        min_len_s.parse().map_err(|_| format!("bad min_len {min_len_s:?}"))?;
+    let min_func_len: usize = min_len_s
+        .parse()
+        .map_err(|_| format!("bad min_len {min_len_s:?}"))?;
     if min_func_len == 0 {
         return Err("min_len must be >= 1".to_string());
     }
-    let confidence: f64 =
-        conf_s.parse().map_err(|_| format!("bad confidence {conf_s:?}"))?;
+    let confidence: f64 = conf_s
+        .parse()
+        .map_err(|_| format!("bad confidence {conf_s:?}"))?;
     if !(confidence > 0.0 && confidence <= 1.0) {
         return Err(format!("confidence {confidence} out of (0, 1]"));
     }
@@ -188,6 +247,10 @@ fn parse_line(line: &str) -> Result<DbEntry, String> {
         min_func_len,
         confidence,
         aka,
+        semantic_role,
+        calling_convention,
+        sources: if sources.is_empty() { "" } else { intern(&sources) },
+        sinks: if sinks.is_empty() { "" } else { intern(&sinks) },
     })
 }
 
@@ -219,7 +282,8 @@ const DB_FILES: &[(&str, &str)] = db_files!(
 /// index ladder (triple -> pair -> single -> positional). Neither the
 /// harvester nor the curated files emit leading wildcards, so every shipped
 /// pattern opens with fixed opcodes and lands in the triple index.
-const MAX_PAIR_GAP: usize = 8;
+/// Maximum gap between the two leading fixed bytes for the pair index.
+pub(crate) const MAX_PAIR_GAP: usize = 8;
 
 struct Db {
     entries: Vec<DbEntry>,
@@ -227,31 +291,65 @@ struct Db {
     /// across functions (`48 89 5C 24 08 48 89 74 24 ...`), so even quint
     /// buckets hold hundreds; eight bytes split them an order of magnitude
     /// further. Hot path: one lookup per code offset.
-    oct_index: FxHashMap<[u8; 8], Vec<usize>>,
+    oct_index: FxHashMap<[u8; 8], Vec<u32>>,
     /// (5 leading fixed bytes) -> entries without an 8-fixed opening.
-    quint_index: FxHashMap<(u8, u8, u8, u8, u8), Vec<usize>>,
+    quint_index: FxHashMap<(u8, u8, u8, u8, u8), Vec<u32>>,
     /// (byte0, byte1, byte2) -> entries with three fixed bytes at pattern
     /// offsets 0,1,2 but no five-fixed opening (wildcard at 3 or 4).
-    triple_index: FxHashMap<(u8, u8, u8), Vec<usize>>,
+    triple_index: FxHashMap<(u8, u8, u8), Vec<u32>>,
     /// (first fixed byte, second fixed byte, gap) -> entries that miss the
     /// triple (wildcard at offset 1 or 2, e.g. call-first `E8 ??...`).
     /// One probe per gap value per offset; buckets stay small because the
     /// second fixed byte disambiguates.
-    pair_index: FxHashMap<(u8, u8, usize), Vec<usize>>,
+    pair_index: FxHashMap<(u8, u8, usize), Vec<u32>>,
     /// First byte -> entries with fewer than two fixed bytes in the first
     /// `MAX_PAIR_GAP + 1` positions (e.g. `movabs` with an 8-byte wildcard
     /// immediate). Rare; slightly wider buckets, still bounded.
-    single_index: FxHashMap<u8, Vec<usize>>,
+    single_index: FxHashMap<u8, Vec<u32>>,
     /// (byte, pos) -> entries whose FIRST fixed byte sits past pattern
     /// offset 0 (leading wildcards). Empty for every shipped database; the
     /// probe loop below skips entirely when there is nothing to look for.
-    slow_index: FxHashMap<(u8, usize), Vec<usize>>,
+    slow_index: FxHashMap<(u8, usize), Vec<u32>>,
     max_slow_pos: usize,
     /// Per-entry fixed runs `(start, end)` aligned with `entries`: verifying
     /// a candidate compares whole fixed slices (memcmp-grade) instead of
     /// branching per byte. Runs cover every fixed byte exactly once.
-    runs: Vec<Vec<(usize, usize)>>,
+    runs: Vec<(usize, usize)>,
+    run_ranges: Vec<usize>,
     errors: Vec<DbParseError>,
+}
+
+/// Cheap structural memory counters for diagnostics and benchmarks. These are
+/// counts, not allocator-specific byte estimates, so they remain stable
+/// across platforms and Rust versions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DbMemoryStats {
+    pub entries: usize,
+    pub pattern_bytes: usize,
+    pub index_refs: usize,
+    pub fixed_runs: usize,
+    pub indexed_keys: usize,
+}
+
+fn memory_stats(db: &Db) -> DbMemoryStats {
+    let index_refs = db.oct_index.values().map(Vec::len).sum::<usize>()
+        + db.quint_index.values().map(Vec::len).sum::<usize>()
+        + db.triple_index.values().map(Vec::len).sum::<usize>()
+        + db.pair_index.values().map(Vec::len).sum::<usize>()
+        + db.single_index.values().map(Vec::len).sum::<usize>()
+        + db.slow_index.values().map(Vec::len).sum::<usize>();
+    DbMemoryStats {
+        entries: db.entries.len(),
+        pattern_bytes: db.entries.iter().map(|entry| entry.bytes.len()).sum(),
+        index_refs,
+        fixed_runs: db.runs.len(),
+        indexed_keys: db.oct_index.len()
+            + db.quint_index.len()
+            + db.triple_index.len()
+            + db.pair_index.len()
+            + db.single_index.len()
+            + db.slow_index.len(),
+    }
 }
 
 fn build_db(files: &[(&'static str, &str)]) -> Db {
@@ -272,6 +370,7 @@ fn build_db(files: &[(&'static str, &str)]) -> Db {
         slow_index: FxHashMap::default(),
         max_slow_pos: 0,
         runs: Vec::new(),
+        run_ranges: vec![0],
         errors,
     };
     rebuild_index(&mut db);
@@ -283,17 +382,11 @@ fn index_one(db: &mut Db, idx: usize, e: &DbEntry) {
     if e.mask.len() > 7 && e.mask[..8].iter().all(|&m| m) {
         db.oct_index
             .entry([
-                e.bytes[0],
-                e.bytes[1],
-                e.bytes[2],
-                e.bytes[3],
-                e.bytes[4],
-                e.bytes[5],
-                e.bytes[6],
+                e.bytes[0], e.bytes[1], e.bytes[2], e.bytes[3], e.bytes[4], e.bytes[5], e.bytes[6],
                 e.bytes[7],
             ])
             .or_default()
-            .push(idx);
+            .push(idx as u32);
         return;
     }
     // Five fixed bytes opening the pattern?
@@ -301,27 +394,38 @@ fn index_one(db: &mut Db, idx: usize, e: &DbEntry) {
         db.quint_index
             .entry((e.bytes[0], e.bytes[1], e.bytes[2], e.bytes[3], e.bytes[4]))
             .or_default()
-            .push(idx);
+            .push(idx as u32);
         return;
     }
-    let mut fixed = e.mask.iter().enumerate().filter(|(_, &m)| m).map(|(p, _)| p);
+    let mut fixed = e
+        .mask
+        .iter()
+        .enumerate()
+        .filter(|(_, &m)| m)
+        .map(|(p, _)| p);
     match (fixed.next(), fixed.next()) {
         (Some(0), Some(1)) if e.mask.len() > 2 && e.mask[2] => {
             db.triple_index
                 .entry((e.bytes[0], e.bytes[1], e.bytes[2]))
                 .or_default()
-                .push(idx);
+                .push(idx as u32);
         }
         (Some(p0), Some(p1)) if p0 == 0 && p1 - p0 <= MAX_PAIR_GAP => {
-            db.pair_index.entry((e.bytes[p0], e.bytes[p1], p1 - p0)).or_default().push(idx);
+            db.pair_index
+                .entry((e.bytes[p0], e.bytes[p1], p1 - p0))
+                .or_default()
+                .push(idx as u32);
         }
         (Some(p0), _) if p0 == 0 => {
-            db.single_index.entry(e.bytes[p0]).or_default().push(idx);
+            db.single_index.entry(e.bytes[p0]).or_default().push(idx as u32);
         }
         (Some(p0), _) => {
             // Leading wildcards: keep the old positional probe.
             db.max_slow_pos = db.max_slow_pos.max(p0);
-            db.slow_index.entry((e.bytes[p0], p0)).or_default().push(idx);
+            db.slow_index
+                .entry((e.bytes[p0], p0))
+                .or_default()
+                .push(idx as u32);
         }
         (None, _) => {
             // Unreachable: the parser enforces MIN_CONCRETE_BYTES.
@@ -342,7 +446,40 @@ fn loaded_db() -> &'static Db {
 // test binary) and bloats every consumer. Instead it loads from disk once,
 // on demand, and is consulted alongside the embedded curated database.
 
-static OVERLAY: std::sync::RwLock<Option<Db>> = std::sync::RwLock::new(None);
+/// Overlay storage: the classic parsed-text `Db`, or a memory-mapped binary
+/// `.fbd` file (FRBD format) that skips parsing and index building entirely.
+enum OverlaySource {
+    Text(Db),
+    Binary(std::sync::Arc<crate::fdb::FdbOverlay>),
+}
+
+static OVERLAY: std::sync::RwLock<Option<OverlaySource>> = std::sync::RwLock::new(None);
+
+/// Access the overlay with a uniform `&Db` view (the binary source is
+/// projected into a transient `Db`-shaped adapter). `f` must not keep the
+/// reference beyond the call.
+fn with_overlay<R>(f: impl FnOnce(Option<&Db>) -> R) -> R {
+    let guard = OVERLAY.read().unwrap_or_else(|e| e.into_inner());
+    match guard.as_ref() {
+        Some(OverlaySource::Text(db)) => f(Some(db)),
+        Some(OverlaySource::Binary(_)) => {
+            // The binary overlay keeps its own mmap-backed scan/verify path;
+            // callers that need entry data use the fdb-specific accessors
+            // (see `with_overlay_fdb`), so the `Db` view is not built here.
+            f(None)
+        }
+        None => f(None),
+    }
+}
+
+/// Access the binary overlay directly, when the overlay is one.
+fn with_overlay_fdb<R>(f: impl FnOnce(Option<&crate::fdb::FdbOverlay>) -> R) -> R {
+    let guard = OVERLAY.read().unwrap_or_else(|e| e.into_inner());
+    match guard.as_ref() {
+        Some(OverlaySource::Binary(fdb)) => f(Some(fdb)),
+        _ => f(None),
+    }
+}
 
 /// Minimum pattern length accepted into the overlay. Measured on real
 /// system-DLL code: sub-16 sliding patterns are prologue-grade — 96% of
@@ -361,12 +498,7 @@ pub fn load_overlay_text(text: &str, file: &'static str) -> Result<usize, Vec<Db
         return Err(errors);
     }
     entries.retain(|e| e.bytes.len() >= OVERLAY_MIN_PATTERN_LEN);
-    let mut db = build_db(&[]);
-    db.entries = entries;
-    rebuild_index(&mut db);
-    let n = db.entries.len();
-    *OVERLAY.write().unwrap_or_else(|e| e.into_inner()) = Some(db);
-    Ok(n)
+    Ok(install_overlay(entries))
 }
 
 /// (Re)build all indexes of `db` from its current entries.
@@ -381,11 +513,12 @@ fn rebuild_index(db: &mut Db) {
     // Move entries out so indexes (`&mut db`) and entries (`&e`) borrow
     // disjoint locals; move back afterwards.
     let entries = std::mem::take(&mut db.entries);
-    let mut runs: Vec<Vec<(usize, usize)>> = Vec::with_capacity(entries.len());
+    let mut runs = Vec::new();
+    let mut run_ranges = Vec::with_capacity(entries.len() + 1);
+    run_ranges.push(0);
     for (idx, e) in entries.iter().enumerate() {
         index_one(db, idx, e);
         // Fixed runs for bulk verification.
-        let mut entry_runs = Vec::new();
         let mut i = 0;
         while i < e.mask.len() {
             if e.mask[i] {
@@ -393,30 +526,148 @@ fn rebuild_index(db: &mut Db) {
                 while i < e.mask.len() && e.mask[i] {
                     i += 1;
                 }
-                entry_runs.push((s, i));
+                runs.push((s, i));
             } else {
                 i += 1;
             }
         }
-        runs.push(entry_runs);
+        run_ranges.push(runs.len());
     }
     db.entries = entries;
     db.runs = runs;
+    db.run_ranges = run_ranges;
 }
+
+/// Install parsed entries as the overlay (gate + index + replace).
+pub fn install_overlay_for_bench(entries: Vec<DbEntry>) -> usize {
+    install_overlay(entries)
+}
+
+/// Install parsed entries as the overlay (gate + index + replace).
+fn install_overlay(entries: Vec<DbEntry>) -> usize {
+    let mut db = build_db(&[]);
+    db.entries = entries;
+    rebuild_index(&mut db);
+    let n = db.entries.len();
+    *OVERLAY.write().unwrap_or_else(|e| e.into_inner()) = Some(OverlaySource::Text(db));
+    n
+}
+
+/// Install a memory-mapped binary overlay, replacing any text overlay.
+pub fn install_overlay_fdb(fdb: crate::fdb::FdbOverlay) -> usize {
+    let n = fdb.len();
+    *OVERLAY.write().unwrap_or_else(|e| e.into_inner()) =
+        Some(OverlaySource::Binary(std::sync::Arc::new(fdb)));
+    n
+}
+
+/// Load a binary `.fbd` overlay (FRBD format) and install it. Loading only
+/// mmaps the file and validates the header — no parsing, no index building.
+pub fn load_overlay_fbd(path: &std::path::Path) -> Result<usize, String> {
+    let fdb = crate::fdb::FdbOverlay::load(path)?;
+    let n = fdb.len();
+    *OVERLAY.write().unwrap_or_else(|e| e.into_inner()) =
+        Some(OverlaySource::Binary(fdb));
+    Ok(n)
+}
+
+// Family-engine re-exports (the engine itself lives in `fdb`).
+pub use crate::fdb::{
+    family_signature_count, load_family_fbd, resolve_family_hit, resolve_family_metadata,
+    scan_families_for_arch, FamilyHit,
+};
 
 /// Load (or replace) the overlay database from a `.fsig` file.
 pub fn load_overlay_file(path: &std::path::Path) -> Result<usize, String> {
-    let text = std::fs::read_to_string(path)
+    let file = std::fs::File::open(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    // The file content must outlive the process: leak once per load.
-    let owned: &'static str = Box::leak(text.into_boxed_str());
-    load_overlay_text(owned, "generated.fsig").map_err(|errs| {
-        let mut s = format!("{} malformed line(s): ", errs.len());
-        for e in errs.iter().take(5) {
-            s.push_str(&format!("{e}; "));
+    let reader = std::io::BufReader::new(file);
+    let entries = parse_overlay_reader(reader, "generated.fsig")?;
+    Ok(install_overlay(entries))
+}
+
+fn parse_overlay_reader<R: std::io::BufRead>(reader: R, file: &str) -> Result<Vec<DbEntry>, String> {
+    let mut entries = Vec::new();
+    let mut errors = Vec::new();
+    for (index, line) in reader.lines().enumerate() {
+        let line = line.map_err(|e| format!("cannot read {file}: {e}"))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
         }
-        s
-    })
+        match parse_line(trimmed) {
+            Ok(entry) if entry.bytes.len() >= OVERLAY_MIN_PATTERN_LEN => entries.push(entry),
+            Ok(_) => {}
+            Err(reason) => errors.push(DbParseError {
+                file: "generated.fsig",
+                line: index + 1,
+                reason,
+            }),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(format!("{} malformed line(s): {}", errors.len(), errors.iter().take(5).map(|e| e.to_string()).collect::<Vec<_>>().join("; ")));
+    }
+    Ok(entries)
+}
+
+/// Load (or replace) the overlay from every `generated-*.fsig` chunk in
+/// `dir` (sorted). The harvest is split because a single file would exceed
+/// the 100 MB hosting limit; all chunks install as one database.
+pub fn load_overlay_dir(dir: &std::path::Path) -> Result<usize, String> {
+    // Prefer a packed binary tier (`generated-*.fbd`): mmap-load beats text
+    // parsing by ~30x, and the packed file is authoritative when both exist.
+    let mut fbd_chunks: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.extension()
+                .map(|e| e.eq_ignore_ascii_case("fbd"))
+                .unwrap_or(false)
+            {
+                if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                    if name.starts_with("generated-") {
+                        fbd_chunks.push(p);
+                    }
+                }
+            }
+        }
+    }
+    fbd_chunks.sort();
+    if let Some(first) = fbd_chunks.first() {
+        return load_overlay_fbd(first);
+    }
+
+    let mut chunks: Vec<std::path::PathBuf> = Vec::new();
+    let rd = std::fs::read_dir(dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
+    for ent in rd.flatten() {
+        let p = ent.path();
+        if p.extension()
+            .map(|e| e.eq_ignore_ascii_case("fsig"))
+            .unwrap_or(false)
+        {
+            if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                if name.starts_with("generated-") {
+                    chunks.push(p);
+                }
+            }
+        }
+    }
+    chunks.sort();
+    if chunks.is_empty() {
+        return Err(format!("no generated-*.fsig in {}", dir.display()));
+    }
+    let mut entries = Vec::new();
+    for chunk in &chunks {
+        let file = std::fs::File::open(chunk)
+            .map_err(|e| format!("cannot read {}: {e}", chunk.display()))?;
+        entries.extend(parse_overlay_reader(
+            std::io::BufReader::new(file),
+            chunk.to_string_lossy().as_ref(),
+        )?);
+    }
+    entries.retain(|e| e.bytes.len() >= OVERLAY_MIN_PATTERN_LEN);
+    Ok(install_overlay(entries))
 }
 
 /// Drop the overlay (tests only).
@@ -427,43 +678,96 @@ pub(crate) fn clear_overlay() {
 
 /// Overlay entry count (0 when not loaded).
 pub fn overlay_signature_count() -> usize {
-    OVERLAY.read().unwrap_or_else(|e| e.into_inner()).as_ref().map(|d| d.entries.len()).unwrap_or(0)
+    let guard = OVERLAY.read().unwrap_or_else(|e| e.into_inner());
+    match guard.as_ref() {
+        Some(OverlaySource::Text(db)) => db.entries.len(),
+        Some(OverlaySource::Binary(fdb)) => fdb.len(),
+        None => 0,
+    }
 }
 
-/// Candidate overlay path, for applications: `$FREAKRE_GENERATED_SIGS`, else
-/// `generated.fsig` next to the current executable, else the in-tree
-/// development layouts (`target/debug/../func-sigs/db`, `./func-sigs/db`),
-/// else `./generated.fsig`. Returns the first path that exists.
+/// Return structural memory counters for the currently loaded overlay.
+pub fn overlay_memory_stats() -> Option<DbMemoryStats> {
+    with_overlay(|ov| ov.map(memory_stats))
+}
+
+/// Candidate overlay directory, for applications: `$FREAKRE_GENERATED_SIGS`
+/// (a directory of `generated-*.fsig`, or a single `.fsig` file for
+/// backward compatibility), else the directory next to the current
+/// executable, else the in-tree development layouts, else `./`.
+/// Returns the first directory containing `generated-*.fsig`.
 ///
-/// Deployments should copy `func-sigs/db/generated.fsig` next to the
-/// application binary (or point `$FREAKRE_GENERATED_SIGS` at it).
-pub fn find_overlay_file() -> Option<std::path::PathBuf> {
+/// Deployments should copy `func-sigs/db/generated-*.fsig` next to the
+/// application binary (or point `$FREAKRE_GENERATED_SIGS` at the dir).
+pub fn find_overlay_dir() -> Option<std::path::PathBuf> {
     if let Some(p) = std::env::var_os("FREAKRE_GENERATED_SIGS") {
         let p = std::path::PathBuf::from(p);
-        if p.is_file() {
+        if p.is_dir() {
             return Some(p);
         }
     }
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("generated.fsig"));
+            candidates.push(dir.to_path_buf());
             // Cargo dev layout: <root>/target/debug/<exe> -> <root>/func-sigs/db/.
-            candidates.push(dir.join("../func-sigs/db/generated.fsig"));
-            candidates.push(dir.join("../../func-sigs/db/generated.fsig"));
+            candidates.push(dir.join("../func-sigs/db"));
+            candidates.push(dir.join("../../func-sigs/db"));
         }
     }
-    candidates.push(std::path::PathBuf::from("generated.fsig"));
-    candidates.push(std::path::PathBuf::from("func-sigs/db/generated.fsig"));
-    candidates.into_iter().find(|p| p.is_file())
+    candidates.push(std::path::PathBuf::from("."));
+    candidates.push(std::path::PathBuf::from("func-sigs/db"));
+    candidates.into_iter().find(|d| {
+        std::fs::read_dir(d)
+            .map(|mut rd| {
+                rd.any(|e| {
+                    e.map(|e| {
+                        e.file_name()
+                            .to_str()
+                            .map(|s| s.starts_with("generated-"))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    })
 }
 
 static AUTO_LOADED: OnceLock<Option<usize>> = OnceLock::new();
 
-/// Load the overlay once via [`find_overlay_file`] (no-op when absent).
-/// Safe to call from every consumer at startup; returns the entry count.
+/// Load the overlay once (directory of chunks, or a single legacy `.fsig`
+/// via `$FREAKRE_GENERATED_SIGS`). Safe to call from every consumer at
+/// startup; returns the entry count.
 pub fn auto_load_overlay() -> Option<usize> {
-    *AUTO_LOADED.get_or_init(|| find_overlay_file().and_then(|p| load_overlay_file(&p).ok()))
+    *AUTO_LOADED.get_or_init(|| {
+        let mut loaded = None;
+        if let Some(p) = std::env::var_os("FREAKRE_GENERATED_SIGS") {
+            let p = std::path::PathBuf::from(&p);
+            if p.is_file() {
+                loaded = if p.extension().is_some_and(|e| e == "fbd") {
+                    load_overlay_fbd(&p).ok()
+                } else {
+                    load_overlay_file(&p).ok()
+                };
+            }
+        }
+        if loaded.is_none() {
+            loaded = find_overlay_dir().and_then(|d| load_overlay_dir(&d).ok());
+        }
+        // Family database: optional sibling `malware-families.fbd` next to the
+        // overlay, or an explicit `FREAKRE_FAMILY_SIGS` path. Failure here
+        // never blocks the main overlay load.
+        let fam = std::env::var_os("FREAKRE_FAMILY_SIGS")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                find_overlay_dir().map(|d| d.join("malware-families.fbd"))
+            });
+        if let Some(f) = fam.filter(|p| p.is_file()) {
+            let _ = load_family_fbd(&f);
+        }
+        loaded
+    })
 }
 
 /// All parsed entries (empty when every `.fsig` file is missing — the files
@@ -486,8 +790,13 @@ pub fn db_signature_count() -> usize {
 /// Library ids present in the database (embedded + overlay), sorted.
 pub fn db_libraries() -> Vec<&'static str> {
     let mut libs: Vec<&'static str> = loaded_db().entries.iter().map(|e| e.library).collect();
-    if let Some(ov) = OVERLAY.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        libs.extend(ov.entries.iter().map(|e| e.library));
+    {
+        let guard = OVERLAY.read().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(OverlaySource::Text(ov)) => libs.extend(ov.entries.iter().map(|e| e.library)),
+            Some(OverlaySource::Binary(ov)) => libs.extend(ov.libraries()),
+            None => {}
+        }
     }
     libs.sort_unstable();
     libs.dedup();
@@ -498,13 +807,24 @@ pub fn db_libraries() -> Vec<&'static str> {
 pub fn hit_fixed_count(hit: &DbHit) -> usize {
     if hit.overlay {
         let guard = OVERLAY.read().unwrap_or_else(|e| e.into_inner());
-        guard.as_ref().expect("overlay hit without overlay").entries[hit.entry]
+        match guard.as_ref() {
+            Some(OverlaySource::Binary(fdb)) => {
+                let rr = fdb.run_range(hit.entry);
+                rr.1 - rr.0
+            }
+            Some(OverlaySource::Text(db)) => db.entries[hit.entry]
+                .mask
+                .iter()
+                .filter(|&&m| m)
+                .count(),
+            None => 0,
+        }
+    } else {
+        loaded_db().entries[hit.entry]
             .mask
             .iter()
             .filter(|&&m| m)
             .count()
-    } else {
-        loaded_db().entries[hit.entry].mask.iter().filter(|&&m| m).count()
     }
 }
 
@@ -513,12 +833,57 @@ pub fn hit_fixed_count(hit: &DbHit) -> usize {
 pub fn resolve_hit(hit: &DbHit) -> (&'static str, &'static str, usize, usize, f64) {
     if hit.overlay {
         let guard = OVERLAY.read().unwrap_or_else(|e| e.into_inner());
-        let e = &guard.as_ref().expect("overlay hit without overlay").entries[hit.entry];
-        (e.library, e.function_name, e.bytes.len(), e.min_func_len, e.confidence)
+        match guard.as_ref() {
+            Some(OverlaySource::Binary(fdb)) => (
+                fdb.library(hit.entry),
+                fdb.function_name(hit.entry),
+                fdb.pattern_len(hit.entry),
+                fdb.min_func_len(hit.entry),
+                fdb.confidence(hit.entry),
+            ),
+            Some(OverlaySource::Text(db)) => {
+                let e = &db.entries[hit.entry];
+                (
+                    e.library,
+                    e.function_name,
+                    e.bytes.len(),
+                    e.min_func_len,
+                    e.confidence,
+                )
+            }
+            None => ("", "", 0, 0, 0.0),
+        }
     } else {
         let e = &loaded_db().entries[hit.entry];
-        (e.library, e.function_name, e.bytes.len(), e.min_func_len, e.confidence)
+        (
+            e.library,
+            e.function_name,
+            e.bytes.len(),
+            e.min_func_len,
+            e.confidence,
+        )
     }
+}
+
+/// PE-oriented semantic metadata for a signature hit.
+pub fn resolve_metadata(hit: &DbHit) -> (&'static str, &'static str, Vec<&'static str>, Vec<&'static str>) {
+    if hit.overlay {
+        let guard = OVERLAY.read().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(OverlaySource::Binary(fdb)) => return fdb.resolve_metadata(hit.entry),
+            Some(OverlaySource::Text(db)) => {
+                let e = &db.entries[hit.entry];
+                return (e.semantic_role, e.calling_convention,
+                    e.sources.split(',').filter(|v| !v.is_empty()).collect(),
+                    e.sinks.split(',').filter(|v| !v.is_empty()).collect());
+            }
+            None => {}
+        }
+    }
+    let e = &loaded_db().entries[hit.entry];
+    (e.semantic_role, e.calling_convention,
+        e.sources.split(',').filter(|v| !v.is_empty()).collect(),
+        e.sinks.split(',').filter(|v| !v.is_empty()).collect())
 }
 
 /// Scan `code` for database entries. `base_offset` is added to match offsets
@@ -540,15 +905,40 @@ const SCAN_OVERLAP: usize = 64;
 const SCAN_INLINE_LIMIT: usize = 65536;
 
 pub fn scan_db(code: &[u8], base_offset: usize, step: usize, max_matches: usize) -> Vec<DbHit> {
+    scan_db_for_arch(code, base_offset, step, max_matches, None)
+}
+
+/// Scan the signature databases while optionally restricting matches to one
+/// architecture label (for example `x64`, `arm32`, or `arm64`).  Keeping the
+/// filter here prevents multi-architecture overlays from producing ambiguous
+/// hits when callers know the PE machine type.
+pub fn scan_db_for_arch(
+    code: &[u8],
+    base_offset: usize,
+    step: usize,
+    max_matches: usize,
+    arch: Option<&str>,
+) -> Vec<DbHit> {
     let mut out = Vec::new();
     if code.is_empty() || max_matches == 0 {
         return out;
     }
     let _ = step;
-    scan_db_into(loaded_db(), false, code, base_offset, max_matches, &mut out);
+    scan_db_into(
+        loaded_db(),
+        false,
+        code,
+        base_offset,
+        max_matches,
+        arch,
+        &mut out,
+    );
     if out.len() < max_matches {
-        if let Some(ov) = OVERLAY.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            scan_db_into(ov, true, code, base_offset, max_matches, &mut out);
+        let hit = with_overlay_fdb(|ov| {
+            ov.map(|o| o.scan_code(code, base_offset, max_matches - out.len(), arch))
+        });
+        if let Some(hits) = hit {
+            out.extend(hits);
         }
     }
     // De-duplicate overlap artefacts (identical hits only).
@@ -564,11 +954,15 @@ fn scan_db_into(
     code: &[u8],
     base_offset: usize,
     max_matches: usize,
+    arch: Option<&str>,
     out: &mut Vec<DbHit>,
 ) {
-    let par = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
+    let par = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(1, 8);
     if par < 2 || code.len() < SCAN_INLINE_LIMIT {
-        scan_one(db, overlay, code, base_offset, max_matches, out);
+        scan_one(db, overlay, code, base_offset, max_matches, arch, out);
         return;
     }
     // Split into `par` chunks with SCAN_OVERLAP bytes of right overlap so
@@ -587,7 +981,15 @@ fn scan_db_into(
             }
             handles.push(s.spawn(move || {
                 let mut v = Vec::new();
-                scan_one(db, overlay, &code[start..end], base_offset + start, max_matches, &mut v);
+                scan_one(
+                    db,
+                    overlay,
+                    &code[start..end],
+                    base_offset + start,
+                    max_matches,
+                    arch,
+                    &mut v,
+                );
                 v
             }));
         }
@@ -609,6 +1011,7 @@ fn scan_one(
     code: &[u8],
     base_offset: usize,
     max_matches: usize,
+    arch: Option<&str>,
     out: &mut Vec<DbHit>,
 ) {
     if db.entries.is_empty() {
@@ -617,8 +1020,12 @@ fn scan_one(
     // Verify one candidate list against `code` at `start`.
     macro_rules! verify {
         ($list:expr, $start:expr) => {
-            for &idx in $list {
+            for &raw_idx in $list {
+                let idx = raw_idx as usize;
                 let e = &db.entries[idx];
+                if arch.is_some_and(|wanted| e.arch != wanted) {
+                    continue;
+                }
                 let start: usize = $start;
                 if start + e.bytes.len() > code.len() {
                     continue;
@@ -626,8 +1033,12 @@ fn scan_one(
                 if code.len() - start < e.min_func_len {
                     continue;
                 }
-                if match_runs(code, start, e, &db.runs[idx]) {
-                    out.push(DbHit { offset: base_offset + start, entry: idx, overlay });
+                if match_runs(code, start, e, &db.runs[db.run_ranges[idx]..db.run_ranges[idx + 1]]) {
+                    out.push(DbHit {
+                        offset: base_offset + start,
+                        entry: idx,
+                        overlay,
+                    });
                     if out.len() >= max_matches {
                         return;
                     }
@@ -668,7 +1079,10 @@ fn scan_one(
         }
         // Three fixed bytes at pattern offsets 0,1,2.
         if offset + 2 < code.len() {
-            if let Some(list) = db.triple_index.get(&(b, code[offset + 1], code[offset + 2])) {
+            if let Some(list) = db
+                .triple_index
+                .get(&(b, code[offset + 1], code[offset + 2]))
+            {
                 verify!(list, offset);
             }
         }
@@ -689,16 +1103,24 @@ fn scan_one(
                 continue;
             };
             let start = offset - pos;
-            for &idx in list {
+            for &raw_idx in list {
+                let idx = raw_idx as usize;
                 let e = &db.entries[idx];
+                if arch.is_some_and(|wanted| e.arch != wanted) {
+                    continue;
+                }
                 if start + e.bytes.len() > code.len() {
                     continue;
                 }
                 if code.len() - start < e.min_func_len {
                     continue;
                 }
-                if match_runs(code, start, e, &db.runs[idx]) {
-                    out.push(DbHit { offset: base_offset + start, entry: idx, overlay });
+                if match_runs(code, start, e, &db.runs[db.run_ranges[idx]..db.run_ranges[idx + 1]]) {
+                    out.push(DbHit {
+                        offset: base_offset + start,
+                        entry: idx,
+                        overlay,
+                    });
                     if out.len() >= max_matches {
                         return;
                     }
@@ -776,7 +1198,21 @@ toolow|x86|t|8|0.0|55 8B EC 83 EC 10 90 90
         assert_eq!(entries[0].function_name, "memcpy");
         assert_eq!(entries[0].bytes.len(), 15);
         assert_eq!(entries[0].concrete_len(), 12);
-        assert_eq!(errors.len(), 4, "all four bad lines must be reported: {errors:?}");
+        assert_eq!(
+            errors.len(),
+            4,
+            "all four bad lines must be reported: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn arch_filter_accepts_unknown_arch_without_matching_other_arches() {
+        let (entries, errors) = parse_fsig(
+            "a|x86|one|8|0.8|55 8B EC 90 90 90 90 90\nb|arm64|two|8|0.8|55 8B EC 90 90 90 90 90\n",
+            "arch.fsig",
+        );
+        assert!(errors.is_empty());
+        assert_eq!(entries.iter().filter(|e| e.arch == "arm64").count(), 1);
     }
 
     #[test]
@@ -786,16 +1222,43 @@ toolow|x86|t|8|0.0|55 8B EC 83 EC 10 90 90
              kernel32|x64|Bad|9|0.80|48 83 EC 28 E8 ?? ?? ?? ??|alias=X\n",
             "a.fsig",
         );
-        assert!(errors.iter().any(|e| e.line == 2), "bad 7th field must error: {errors:?}");
+        assert!(
+            errors.iter().any(|e| e.line == 2),
+            "bad 7th field must error: {errors:?}"
+        );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].aka, vec!["KBCreate", "BaseCreate"]);
+    }
+
+    #[test]
+    fn parse_pe_semantic_metadata_after_alias() {
+        let (entries, errors) = parse_fsig(
+            "kernel32|x64|CreateProcessW|16|0.90|48 83 EC 28 90 90 90 90|aka=CreateProcess|meta=role=execution_sink;cc=win64;source=network;sink=process_execution",
+            "test",
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(entries[0].semantic_role, "execution_sink");
+        assert_eq!(entries[0].calling_convention, "win64");
+        assert_eq!(entries[0].sources, "network");
+        assert_eq!(entries[0].sinks, "process_execution");
+    }
+
+    #[test]
+    fn reject_unknown_pe_metadata_key() {
+        let (_, errors) = parse_fsig(
+            "kernel32|x64|x|16|0.9|48 83 EC 28 90 90 90 90|meta=wat=value",
+            "test",
+        );
+        assert_eq!(errors.len(), 1);
     }
 
     #[test]
     fn matches_at_respects_wildcards_and_bounds() {
         let (entries, _) = parse_fsig(SAMPLE, "s.fsig");
         let e = &entries[0];
-        let mut good = vec![0x55, 0x8B, 0xEC, 0x57, 0x8B, 0x7D, 0xAA, 0x8B, 0x75, 0xBB, 0x8B, 0x4D, 0xCC, 0xF3];
+        let mut good = vec![
+            0x55, 0x8B, 0xEC, 0x57, 0x8B, 0x7D, 0xAA, 0x8B, 0x75, 0xBB, 0x8B, 0x4D, 0xCC, 0xF3,
+        ];
         good.push(0xA5);
         assert!(e.matches_at(&good, 0));
         good[6] = 0x00; // wildcard position: any value ok
@@ -820,7 +1283,9 @@ toolow|x86|t|8|0.0|55 8B EC 83 EC 10 90 90
         let n = super::db_signature_count();
         assert!(n >= 400, "database shrunk to {n} entries, want >= 400");
         let libs = super::db_libraries();
-        for want in ["msvcrt", "zlib", "openssl", "curl", "go", "delphi", "mingw", "glibc"] {
+        for want in [
+            "msvcrt", "zlib", "openssl", "curl", "go", "delphi", "mingw", "glibc",
+        ] {
             assert!(libs.contains(&want), "library {want} missing from {libs:?}");
         }
     }
@@ -832,7 +1297,11 @@ toolow|x86|t|8|0.0|55 8B EC 83 EC 10 90 90
         // the harvester pre-validates these exact fills.)
         for (i, fill) in super::validation_fills().iter().enumerate() {
             let hits = super::scan_db(fill, 0, 1, 10_000);
-            assert!(hits.is_empty(), "fill {i} matched {:?}", &hits[..hits.len().min(3)]);
+            assert!(
+                hits.is_empty(),
+                "fill {i} matched {:?}",
+                &hits[..hits.len().min(3)]
+            );
         }
     }
 
@@ -845,7 +1314,10 @@ toolow|x86|t|8|0.0|55 8B EC 83 EC 10 90 90
         let mut want = Vec::new();
         let mut off = 64usize;
         for name in pick {
-            let e = super::db_entries().iter().find(|e| e.function_name == name).expect(name);
+            let e = super::db_entries()
+                .iter()
+                .find(|e| e.function_name == name)
+                .expect(name);
             let mut body = e.bytes.clone();
             // Wildcards stand for addresses: fill with arbitrary bytes.
             for (i, b) in body.iter_mut().enumerate() {
@@ -860,9 +1332,8 @@ toolow|x86|t|8|0.0|55 8B EC 83 EC 10 90 90
         let hits = super::scan_db(&code, 0x1000, 1, 100);
         for (off, name) in want {
             assert!(
-                hits.iter().any(|h| {
-                    h.offset == 0x1000 + off && super::resolve_hit(h).1 == name
-                }),
+                hits.iter()
+                    .any(|h| { h.offset == 0x1000 + off && super::resolve_hit(h).1 == name }),
                 "missing {name} @ {off:#x} in {hits:?}"
             );
         }
@@ -870,14 +1341,15 @@ toolow|x86|t|8|0.0|55 8B EC 83 EC 10 90 90
 
     #[test]
     fn overlay_generated_loads_and_holds_target() {
-        // The fsig-gen harvest ships as data (db/generated.fsig), loaded at
-        // runtime so no binary embeds the 27 MB blob (AV heuristics flag it).
-        let path = std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/db/generated.fsig"
-        ));
-        let n = super::load_overlay_file(&path).expect("generated.fsig must load");
-        assert!(n >= 18_000, "harvest shrunk to {n} entries, want >= 18000");
+        // The fsig-gen harvest ships as data (db/generated-*.fsig chunks;
+        // one file would exceed the 100 MB hosting limit), loaded at runtime
+        // so no binary embeds the ~230 MB blob (AV heuristics flag it).
+        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/db"));
+        let n = super::load_overlay_dir(&dir).expect("generated chunks must load");
+        assert!(
+            n >= 900_000,
+            "harvest shrunk to {n} entries, want >= 900000"
+        );
         assert_eq!(n, super::overlay_signature_count());
         let libs = super::db_libraries();
         for want in ["kernel32", "ntdll", "ucrtbase"] {

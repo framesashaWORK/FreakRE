@@ -4,8 +4,8 @@
 //! packed/encrypted regions, and annotates them in the project database.
 //! Essential for finding hidden payloads, encrypted resources, and packer stubs.
 
-use plugins::{Plugin, PluginContext, PluginMetadata, MenuItem};
 use crate::util;
+use plugins::{MenuItem, Plugin, PluginContext, PluginMetadata};
 
 const WINDOW_SIZE: usize = 256;
 const STEP_SIZE: usize = 128;
@@ -17,7 +17,11 @@ const VERY_HIGH_ENTROPY_THRESHOLD: f64 = 7.5;
 const LOW_ENTROPY_THRESHOLD: f64 = 1.0;
 
 pub struct EntropyMapperPlugin;
-impl Default for EntropyMapperPlugin { fn default() -> Self { Self } }
+impl Default for EntropyMapperPlugin {
+    fn default() -> Self {
+        Self
+    }
+}
 
 /// A contiguous run of function bytes within the analysis buffer and the
 /// virtual address where it actually lives.
@@ -71,16 +75,20 @@ impl Plugin for EntropyMapperPlugin {
             name: "Entropy Mapper".into(),
             version: "1.0.0".into(),
             author: Some("FreakRE Team".into()),
-            description: "Sliding-window entropy analysis to find packed/encrypted/padding regions.".into(),
+            description:
+                "Sliding-window entropy analysis to find packed/encrypted/padding regions.".into(),
             license: Some("MIT".into()),
             homepage: None,
         }
     }
     fn menu_items(&self) -> Vec<MenuItem> {
-        vec![MenuItem::new("Analyze/Entropy Map", "Map Binary Entropy").with_shortcut("Ctrl+Shift+E")]
+        vec![MenuItem::new("Analyze/Entropy Map", "Map Binary Entropy")
+            .with_shortcut("Ctrl+Shift+E")]
     }
     fn on_menu_item(&mut self, ctx: &mut PluginContext, path: &str) {
-        if path == "Analyze/Entropy Map" { self.analyze(ctx); }
+        if path == "Analyze/Entropy Map" {
+            self.analyze(ctx);
+        }
     }
     fn analyze(&mut self, ctx: &mut PluginContext) {
         ctx.println("[EntropyMapper] Computing sliding-window entropy...");
@@ -88,7 +96,11 @@ impl Plugin for EntropyMapperPlugin {
         // Get raw binary data from the functions' code bytes as proxy.
         // In production, ProjectDatabase would store the full binary.
         let mut functions = match ctx.db.list_functions() {
-            Ok(f) => f, Err(e) => { ctx.println(&format!("Error: {}", e)); return; }
+            Ok(f) => f,
+            Err(e) => {
+                ctx.println(&format!("Error: {}", e));
+                return;
+            }
         };
 
         if functions.is_empty() {
@@ -105,7 +117,9 @@ impl Plugin for EntropyMapperPlugin {
         let mut ranges: Vec<CodeRange> = Vec::new();
         for func in &functions {
             if let Some(bytes) = &func.code_bytes {
-                if bytes.is_empty() { continue; }
+                if bytes.is_empty() {
+                    continue;
+                }
                 ranges.push(CodeRange {
                     buf_start: all_code.len(),
                     buf_end: all_code.len() + bytes.len(),
@@ -132,8 +146,12 @@ impl Plugin for EntropyMapperPlugin {
             let window = &all_code[offset..offset + WINDOW_SIZE];
             let entropy = shannon_entropy(window);
 
-            if entropy > max_entropy { max_entropy = entropy; }
-            if entropy < min_entropy { min_entropy = entropy; }
+            if entropy > max_entropy {
+                max_entropy = entropy;
+            }
+            if entropy < min_entropy {
+                min_entropy = entropy;
+            }
 
             // Translate the window start through the per-function ranges.
             // Windows that straddle a gap between functions are skipped:
@@ -142,9 +160,17 @@ impl Plugin for EntropyMapperPlugin {
             match map_window(&ranges, offset, WINDOW_SIZE) {
                 Some(abs_addr) => {
                     if entropy >= VERY_HIGH_ENTROPY_THRESHOLD {
-                        high_entropy_regions.push((abs_addr, abs_addr + WINDOW_SIZE as u64, entropy));
+                        high_entropy_regions.push((
+                            abs_addr,
+                            abs_addr + WINDOW_SIZE as u64,
+                            entropy,
+                        ));
                     } else if entropy <= LOW_ENTROPY_THRESHOLD {
-                        low_entropy_regions.push((abs_addr, abs_addr + WINDOW_SIZE as u64, entropy));
+                        low_entropy_regions.push((
+                            abs_addr,
+                            abs_addr + WINDOW_SIZE as u64,
+                            entropy,
+                        ));
                     }
                 }
                 None => skipped_windows += 1,
@@ -167,8 +193,13 @@ impl Plugin for EntropyMapperPlugin {
                 &mut ctx.db,
                 *start,
                 "[ENTROPY]",
-                &format!("[ENTROPY] High entropy region: {:.2} bits/byte (0x{:X}-0x{:X}, {} bytes)",
-                    ent, start, end, end - start),
+                &format!(
+                    "[ENTROPY] High entropy region: {:.2} bits/byte (0x{:X}-0x{:X}, {} bytes)",
+                    ent,
+                    start,
+                    end,
+                    end - start
+                ),
             );
         }
 
@@ -177,14 +208,19 @@ impl Plugin for EntropyMapperPlugin {
                 &mut ctx.db,
                 *start,
                 "[ENTROPY]",
-                &format!("[ENTROPY] Low entropy/padding: {:.2} bits/byte (0x{:X}-0x{:X})",
-                    ent, start, end),
+                &format!(
+                    "[ENTROPY] Low entropy/padding: {:.2} bits/byte (0x{:X}-0x{:X})",
+                    ent, start, end
+                ),
             );
         }
 
         ctx.println(&format!(
             "[EntropyMapper] Analyzed {} windows ({} bytes). Max={:.2}, Min={:.2}",
-            total_windows, all_code.len(), max_entropy, min_entropy
+            total_windows,
+            all_code.len(),
+            max_entropy,
+            min_entropy
         ));
         ctx.println(&format!(
             "[EntropyMapper] Found {} high-entropy region(s), {} low-entropy region(s) ({} window(s) skipped across function gaps)",
@@ -194,20 +230,29 @@ impl Plugin for EntropyMapperPlugin {
         for (start, end, ent) in &merged_high {
             ctx.println(&format!(
                 "  🔴 PACKED: 0x{:X}-0x{:X} ({:.2} bits/byte, {} bytes)",
-                start, end, ent, end - start
+                start,
+                end,
+                ent,
+                end - start
             ));
         }
     }
 }
 
 fn shannon_entropy(data: &[u8]) -> f64 {
-    if data.is_empty() { return 0.0; }
+    if data.is_empty() {
+        return 0.0;
+    }
     let mut freq = [0usize; 256];
-    for &b in data { freq[b as usize] += 1; }
+    for &b in data {
+        freq[b as usize] += 1;
+    }
     let len = data.len() as f64;
     let mut entropy = 0.0f64;
     for &count in &freq {
-        if count == 0 { continue; }
+        if count == 0 {
+            continue;
+        }
         let p = count as f64 / len;
         entropy -= p * p.log2();
     }
@@ -215,7 +260,9 @@ fn shannon_entropy(data: &[u8]) -> f64 {
 }
 
 fn merge_regions(regions: &[(u64, u64, f64)]) -> Vec<(u64, u64, f64)> {
-    if regions.is_empty() { return Vec::new(); }
+    if regions.is_empty() {
+        return Vec::new();
+    }
     let mut sorted = regions.to_vec();
     sorted.sort_by_key(|r| r.0);
     let mut merged: Vec<(u64, u64, f64)> = vec![sorted[0]];
@@ -246,10 +293,16 @@ mod tests {
         // All 256 byte values equally distributed → max entropy = 8.0
         let mut data = Vec::new();
         for _ in 0..4 {
-            for b in 0..=255u8 { data.push(b); }
+            for b in 0..=255u8 {
+                data.push(b);
+            }
         }
         let ent = shannon_entropy(&data);
-        assert!(ent > 7.9, "Uniform distribution should have ~8.0 entropy, got {}", ent);
+        assert!(
+            ent > 7.9,
+            "Uniform distribution should have ~8.0 entropy, got {}",
+            ent
+        );
     }
 
     #[test]
@@ -273,8 +326,16 @@ mod tests {
         let f2 = vec![0xFFu8; 512];
         let mut buf = Vec::new();
         let ranges = vec![
-            CodeRange { buf_start: 0, buf_end: 512, va: 0x1000 },
-            CodeRange { buf_start: 512, buf_end: 1024, va: 0x9000 },
+            CodeRange {
+                buf_start: 0,
+                buf_end: 512,
+                va: 0x1000,
+            },
+            CodeRange {
+                buf_start: 512,
+                buf_end: 1024,
+                va: 0x9000,
+            },
         ];
         buf.extend_from_slice(&f1);
         buf.extend_from_slice(&f2);
@@ -301,7 +362,10 @@ mod tests {
         assert_eq!(map_window(&ranges, 0, WINDOW_SIZE), Some(0x1000));
         // Last window that still fits entirely in function 2:
         // starts at buffer offset 768 → VA 0x9000 + (768-512) = 0x9100
-        assert_eq!(map_window(&ranges, 1024 - WINDOW_SIZE, WINDOW_SIZE), Some(0x9100));
+        assert_eq!(
+            map_window(&ranges, 1024 - WINDOW_SIZE, WINDOW_SIZE),
+            Some(0x9100)
+        );
     }
 
     #[test]

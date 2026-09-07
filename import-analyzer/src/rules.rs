@@ -100,7 +100,8 @@ fn check_process_injection(imports: &[(String, String)], matches: &mut Vec<RuleM
     if has("ntunmapviewofsection") && has("setthreadcontext") {
         matches.push(RuleMatch {
             rule_id: "INJ_PROCESS_HOLLOWING",
-            description: "Process hollowing detected: NtUnmapViewOfSection + SetThreadContext".into(),
+            description: "Process hollowing detected: NtUnmapViewOfSection + SetThreadContext"
+                .into(),
             level: SuspicionLevel::Critical,
             confidence: 0.90,
             triggered_by: vec!["NtUnmapViewOfSection".into(), "SetThreadContext".into()],
@@ -122,7 +123,8 @@ fn check_process_injection(imports: &[(String, String)], matches: &mut Vec<RuleM
     if has("createremotethread") && !has("virtualallocex") {
         matches.push(RuleMatch {
             rule_id: "INJ_SINGLE_REMOTE_THREAD",
-            description: "CreateRemoteThread without VirtualAllocEx (possible alternative injection)".into(),
+            description:
+                "CreateRemoteThread without VirtualAllocEx (possible alternative injection)".into(),
             level: SuspicionLevel::Low,
             confidence: 0.40,
             triggered_by: vec!["CreateRemoteThread".into()],
@@ -138,7 +140,8 @@ fn check_persistence(imports: &[(String, String)], matches: &mut Vec<RuleMatch>)
     if has("regsetvalueexw") || has("regsetvalueexa") || has("regcreatekeyexw") {
         matches.push(RuleMatch {
             rule_id: "PERSIST_REGISTRY",
-            description: "Registry modification API (possible persistence via Run/RunOnce keys)".into(),
+            description: "Registry modification API (possible persistence via Run/RunOnce keys)"
+                .into(),
             level: SuspicionLevel::Low,
             confidence: 0.35,
             triggered_by: vec!["RegSetValueEx/RegCreateKeyEx".into()],
@@ -205,7 +208,10 @@ fn check_evasion_techniques(imports: &[(String, String)], matches: &mut Vec<Rule
             .collect();
         matches.push(RuleMatch {
             rule_id: "EVASION_ANTIDEBUG",
-            description: format!("Multiple anti-debug APIs detected ({} genuine, {} timing)", genuine_count, common_count),
+            description: format!(
+                "Multiple anti-debug APIs detected ({} genuine, {} timing)",
+                genuine_count, common_count
+            ),
             level: SuspicionLevel::Medium,
             confidence: 0.70 + (genuine_count as f64 * 0.05).min(0.25),
             triggered_by: triggered,
@@ -216,7 +222,9 @@ fn check_evasion_techniques(imports: &[(String, String)], matches: &mut Vec<Rule
     if has("getprocaddress") && (has("loadlibrarya") || has("loadlibraryw")) {
         matches.push(RuleMatch {
             rule_id: "EVASION_DYNAMIC_RESOLVE",
-            description: "Dynamic API resolution via GetProcAddress + LoadLibrary (obfuscation/evasion)".into(),
+            description:
+                "Dynamic API resolution via GetProcAddress + LoadLibrary (obfuscation/evasion)"
+                    .into(),
             level: SuspicionLevel::Medium,
             confidence: 0.30,
             triggered_by: vec!["GetProcAddress".into(), "LoadLibrary".into()],
@@ -255,7 +263,10 @@ fn check_network_c2(imports: &[(String, String)], matches: &mut Vec<RuleMatch>) 
     if http_count >= 2 {
         matches.push(RuleMatch {
             rule_id: "NET_HTTP_C2",
-            description: format!("Multiple HTTP/Internet APIs detected ({}) — possible C2 communication", http_count),
+            description: format!(
+                "Multiple HTTP/Internet APIs detected ({}) — possible C2 communication",
+                http_count
+            ),
             level: SuspicionLevel::Medium,
             confidence: 0.60 + (http_count as f64 * 0.05).min(0.30),
             triggered_by: http_funcs
@@ -300,7 +311,8 @@ fn check_crypto_ransomware(imports: &[(String, String)], matches: &mut Vec<RuleM
     if crypto_count >= 2 && file_enum {
         matches.push(RuleMatch {
             rule_id: "CRYPTO_RANSOMWARE_PATTERN",
-            description: "Cryptographic APIs + file enumeration — possible ransomware behavior".into(),
+            description: "Cryptographic APIs + file enumeration — possible ransomware behavior"
+                .into(),
             level: SuspicionLevel::High,
             confidence: 0.85,
             triggered_by: crypto_funcs
@@ -338,7 +350,10 @@ fn check_keylogging(imports: &[(String, String)], matches: &mut Vec<RuleMatch>) 
                 description: "Windows hook + keyboard state API — possible keylogger".into(),
                 level: SuspicionLevel::High,
                 confidence: 0.75,
-                triggered_by: vec!["SetWindowsHookEx".into(), "GetAsyncKeyState/GetKeyState".into()],
+                triggered_by: vec![
+                    "SetWindowsHookEx".into(),
+                    "GetAsyncKeyState/GetKeyState".into(),
+                ],
             });
         }
     }
@@ -347,7 +362,8 @@ fn check_keylogging(imports: &[(String, String)], matches: &mut Vec<RuleMatch>) 
     if has("credenumeratew") || has("credenumeratea") || has("lsalogonuser") {
         matches.push(RuleMatch {
             rule_id: "CRED_THEFT_API",
-            description: "Credential enumeration/authentication API — possible credential theft".into(),
+            description: "Credential enumeration/authentication API — possible credential theft"
+                .into(),
             level: SuspicionLevel::High,
             confidence: 0.70,
             triggered_by: vec!["CredEnumerate/LsaLogonUser".into()],
@@ -360,10 +376,16 @@ fn check_dll_suspicious(modules: &[ImportedModule], matches: &mut Vec<RuleMatch>
     let suspicious_dlls = [
         ("amsi.dll", "AMSI bypass target"),
         ("dbgcore.dll", "Debug/core dump manipulation"),
-        ("dbghelp.dll", "Debug helper — unusual in production malware context"),
+        (
+            "dbghelp.dll",
+            "Debug helper — unusual in production malware context",
+        ),
         ("version.dll", "Common side-loading target"),
         ("uxtheme.dll", "Theme API abuse for injection"),
-        ("dwmapi.dll", "Desktop Window Manager — screen capture/injection"),
+        (
+            "dwmapi.dll",
+            "Desktop Window Manager — screen capture/injection",
+        ),
     ];
 
     for module in modules {
@@ -465,13 +487,22 @@ mod tests {
     #[test]
     fn test_no_false_positive_normal_app() {
         let modules = vec![
-            make_module("kernel32.dll", &["CreateFileW", "ReadFile", "WriteFile", "CloseHandle"]),
+            make_module(
+                "kernel32.dll",
+                &["CreateFileW", "ReadFile", "WriteFile", "CloseHandle"],
+            ),
             make_module("user32.dll", &["MessageBoxW", "ShowWindow"]),
         ];
         let matches = evaluate_rules(&modules);
         // Normal app should not produce any high/critical detections
-        let critical = matches.iter().filter(|m| m.level == SuspicionLevel::Critical).count();
-        let high = matches.iter().filter(|m| m.level == SuspicionLevel::High).count();
+        let critical = matches
+            .iter()
+            .filter(|m| m.level == SuspicionLevel::Critical)
+            .count();
+        let high = matches
+            .iter()
+            .filter(|m| m.level == SuspicionLevel::High)
+            .count();
         assert_eq!(critical, 0);
         assert_eq!(high, 0);
     }
@@ -534,7 +565,9 @@ mod tests {
         };
         let matches = evaluate_rules(&[module]);
         assert!(
-            !matches.iter().any(|m| m.rule_id == "IMPORT_ORDINAL_OBFUSCATION"),
+            !matches
+                .iter()
+                .any(|m| m.rule_id == "IMPORT_ORDINAL_OBFUSCATION"),
             "unreadable entries must not be miscounted as ordinal-only obfuscation"
         );
     }
@@ -573,6 +606,8 @@ mod tests {
             is_delay_load: false,
         };
         let matches = evaluate_rules(&[module]);
-        assert!(!matches.iter().any(|m| m.rule_id == "IMPORT_ORDINAL_OBFUSCATION"));
+        assert!(!matches
+            .iter()
+            .any(|m| m.rule_id == "IMPORT_ORDINAL_OBFUSCATION"));
     }
 }

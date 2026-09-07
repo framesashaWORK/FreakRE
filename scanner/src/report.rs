@@ -42,6 +42,11 @@ pub struct FunctionInfo {
     pub name: String,
     pub size: usize,
     pub func_type: FunctionType,
+    pub confidence: f64,
+    pub api_references: Vec<String>,
+    pub xref_offsets: Vec<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reachable_from_entry: Option<bool>,
 }
 
 /// Type of detected function
@@ -99,6 +104,10 @@ pub struct FileReport {
     pub architecture_info: Option<ArchitectureInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backdoor_report: Option<BackdoorSummary>,
+    /// Full backdoor findings with evidence and confidence. The summary above
+    /// remains for compact/legacy consumers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backdoor_analysis: Option<backdoor_analyzer::BackdoorReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shellcode_report: Option<ShellcodeSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,6 +121,7 @@ pub struct FileReport {
     pub scan_duration_ms: u128,
     /// Detected functions (populated by func-sigs analysis)
     pub functions: Vec<FunctionInfo>,
+    pub analysis_profile: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -246,11 +256,11 @@ pub struct FlatBinaryInfo {
 /// right instruction decoder for downstream analysis.
 #[derive(Debug, Clone, Serialize)]
 pub struct ArchitectureInfo {
-    pub arch: String,             // "x86" / "x86_64" / "ARM" / "AArch64" / "unknown"
-    pub endian: String,           // "little" / "big" / "mixed"
-    pub bitness: u8,              // 32 / 64
-    pub confidence: f32,          // 0.0 - 1.0
-    pub indicators: Vec<String>,  // reasons
+    pub arch: String,            // "x86" / "x86_64" / "ARM" / "AArch64" / "unknown"
+    pub endian: String,          // "little" / "big" / "mixed"
+    pub bitness: u8,             // 32 / 64
+    pub confidence: f32,         // 0.0 - 1.0
+    pub indicators: Vec<String>, // reasons
 }
 
 /// Summary of a script-language analysis (PowerShell / AutoIt / AHK / BAT / VBS).
@@ -420,6 +430,9 @@ pub struct SignatureSummaryInfo {
     pub num_matches: usize,
     pub libraries_found: Vec<String>,
     pub compiler: Option<String>,
+    pub semantic_roles: Vec<String>,
+    pub semantic_sources: Vec<String>,
+    pub semantic_sinks: Vec<String>,
 }
 
 /// ML-based classification result

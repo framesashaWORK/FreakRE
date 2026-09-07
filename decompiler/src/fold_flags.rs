@@ -24,7 +24,10 @@ fn classify_flag(name: &str) -> Option<FlagBits> {
 }
 
 fn is_atom(v: &Value) -> bool {
-    matches!(v, Value::Const(_) | Value::Var { .. } | Value::Register { .. })
+    matches!(
+        v,
+        Value::Const(_) | Value::Var { .. } | Value::Register { .. }
+    )
 }
 
 fn var_id(v: &Value) -> Option<u32> {
@@ -175,7 +178,12 @@ fn match_flag_cond(inst: &IrInst) -> Option<(u32, OpCode, String, i64)> {
         _ => return None,
     };
     match inst {
-        IrInst::Binary { dst: _, op: o @ (OpCode::Eq | OpCode::Ne), lhs, rhs } => {
+        IrInst::Binary {
+            dst: _,
+            op: o @ (OpCode::Eq | OpCode::Ne),
+            lhs,
+            rhs,
+        } => {
             let (reg, bit) = match (lhs, rhs) {
                 (Value::Register { name, .. }, Value::Const(c)) => (name.clone(), *c),
                 (Value::Const(c), Value::Register { name, .. }) => (name.clone(), *c),
@@ -234,8 +242,18 @@ pub fn fold_adc_carries(func: &mut IrFunction) -> usize {
             // `func` across the `func.alloc_var` call below.
             let inst = func.blocks[bi].insts[ii].clone();
             let (dst, a, b, carry, is_adc) = match inst {
-                IrInst::Adc { ref dst, ref a, ref b, ref carry } => (dst, a, b, carry, true),
-                IrInst::Sbb { ref dst, ref a, ref b, ref carry } => (dst, a, b, carry, false),
+                IrInst::Adc {
+                    ref dst,
+                    ref a,
+                    ref b,
+                    ref carry,
+                } => (dst, a, b, carry, true),
+                IrInst::Sbb {
+                    ref dst,
+                    ref a,
+                    ref b,
+                    ref carry,
+                } => (dst, a, b, carry, false),
                 _ => {
                     new_insts.push(inst.clone());
                     continue;
@@ -347,18 +365,21 @@ pub fn fold_flag_comparisons(func: &mut IrFunction) -> usize {
                 };
                 let set = (bit == 1) != (op == OpCode::Ne);
                 let new_op = if set { def.op } else { negate(def.op) };
-                plans.push((bi, ii, IrInst::Binary {
-                    dst: Value::var(dst_id, Ty::Bool),
-                    op: new_op,
-                    lhs: def.lhs,
-                    rhs: def.rhs,
-                }));
+                plans.push((
+                    bi,
+                    ii,
+                    IrInst::Binary {
+                        dst: Value::var(dst_id, Ty::Bool),
+                        op: new_op,
+                        lhs: def.lhs,
+                        rhs: def.rhs,
+                    },
+                ));
                 continue;
             }
 
             // ── Combined two-flag condition (`ja` / `jbe`) ──
-            let (dst_id, comb_op, ta, tb) = match match_combined_cond(&func.blocks[bi].insts[ii])
-            {
+            let (dst_id, comb_op, ta, tb) = match match_combined_cond(&func.blocks[bi].insts[ii]) {
                 Some(x) => x,
                 None => continue,
             };
@@ -410,12 +431,16 @@ pub fn fold_flag_comparisons(func: &mut IrFunction) -> usize {
             if da.lhs != db.lhs || da.rhs != db.rhs {
                 continue;
             }
-            plans.push((bi, ii, IrInst::Binary {
-                dst: Value::var(dst_id, Ty::Bool),
-                op: result_op,
-                lhs: da.lhs,
-                rhs: da.rhs,
-            }));
+            plans.push((
+                bi,
+                ii,
+                IrInst::Binary {
+                    dst: Value::var(dst_id, Ty::Bool),
+                    op: result_op,
+                    lhs: da.lhs,
+                    rhs: da.rhs,
+                },
+            ));
         }
     }
 
@@ -496,7 +521,11 @@ pub fn eliminate_dead_flag_defs(func: &mut IrFunction) -> usize {
                 }
                 let removable = match inst {
                     IrInst::Binary { op, .. } => PURE.contains(op) || FOLDABLE.contains(op),
-                    IrInst::Unary { op: OpCode::Copy, src, .. } => is_atom(src),
+                    IrInst::Unary {
+                        op: OpCode::Copy,
+                        src,
+                        ..
+                    } => is_atom(src),
                     _ => false,
                 };
                 if !removable {
@@ -510,9 +539,9 @@ pub fn eliminate_dead_flag_defs(func: &mut IrFunction) -> usize {
         candidates.sort_unstable_by(|a, b| b.cmp(a));
         for &(bi, ii, vid) in &candidates {
             let still_used = func.blocks.iter().any(|bb| {
-                bb.insts.iter().any(|i2| {
-                    i2.sources().iter().any(|s| var_id(s) == Some(vid))
-                })
+                bb.insts
+                    .iter()
+                    .any(|i2| i2.sources().iter().any(|s| var_id(s) == Some(vid)))
             });
             if !still_used {
                 func.blocks[bi].insts.remove(ii);
@@ -590,7 +619,11 @@ pub fn propagate_block_temps(func: &mut IrFunction) -> usize {
                     _ => continue,
                 };
                 let eligible = match inst {
-                    IrInst::Unary { op: OpCode::Copy, src, .. } => is_atom(src),
+                    IrInst::Unary {
+                        op: OpCode::Copy,
+                        src,
+                        ..
+                    } => is_atom(src),
                     // NOTE: Binary temps are NOT substituted: taking
                     // `sources().first()` would drop the opcode and the rhs,
                     // collapsing `t = rbp - 8` into a bare `rbp`.
@@ -624,9 +657,9 @@ pub fn propagate_block_temps(func: &mut IrFunction) -> usize {
                     // A register written between the copy and its use
                     // invalidates the pending substitution: later uses must
                     // observe the NEW value, not the stale one.
-                    repl.retain(|_, (_, src)| {
-                        !matches!(src, Value::Register { name: n, .. } if n == name)
-                    });
+                    repl.retain(
+                        |_, (_, src)| !matches!(src, Value::Register { name: n, .. } if n == name),
+                    );
                 }
                 _ => {}
             }
@@ -648,19 +681,25 @@ pub fn propagate_block_temps(func: &mut IrFunction) -> usize {
         let mut ii = 0;
         while ii < func.blocks[bi].insts.len() {
             let cand_id = match &func.blocks[bi].insts[ii] {
-                IrInst::Unary { op: OpCode::Copy, dst, .. } => var_id(dst),
+                IrInst::Unary {
+                    op: OpCode::Copy,
+                    dst,
+                    ..
+                } => var_id(dst),
                 _ => None,
             };
             let drop_here = match cand_id {
-                Some(id) => repl.contains_key(&id) && {
-                    let used_elsewhere = func.blocks.iter().enumerate().any(|(bj, bb)| {
-                        bb.insts.iter().enumerate().any(|(jj, inst)| {
-                            !(bj == bi && jj == ii)
-                                && inst.sources().iter().any(|s| var_id(s) == Some(id))
-                        })
-                    });
-                    !used_elsewhere
-                },
+                Some(id) => {
+                    repl.contains_key(&id) && {
+                        let used_elsewhere = func.blocks.iter().enumerate().any(|(bj, bb)| {
+                            bb.insts.iter().enumerate().any(|(jj, inst)| {
+                                !(bj == bi && jj == ii)
+                                    && inst.sources().iter().any(|s| var_id(s) == Some(id))
+                            })
+                        });
+                        !used_elsewhere
+                    }
+                }
                 None => false,
             };
             if drop_here {
@@ -705,20 +744,22 @@ pub fn fuse_load_copies(func: &mut IrFunction) -> usize {
         let insts = &func.blocks[bi].insts;
         for (li, inst) in insts.iter().enumerate() {
             let t_id = match inst {
-                IrInst::Load { dst: Value::Var { id, .. }, .. } => *id,
+                IrInst::Load {
+                    dst: Value::Var { id, .. },
+                    ..
+                } => *id,
                 _ => continue,
             };
             if global_defs.get(&t_id).copied().unwrap_or(0) != 1 {
                 continue;
             }
-            let ci = match insts[li + 1..]
-                .iter()
-                .position(|i| matches!(
+            let ci = match insts[li + 1..].iter().position(|i| {
+                matches!(
                     i,
                     IrInst::Unary { op: OpCode::Copy, src, .. }
                         if var_id(src) == Some(t_id)
-                ))
-            {
+                )
+            }) {
                 Some(off) => li + 1 + off,
                 None => continue,
             };
@@ -726,8 +767,7 @@ pub fn fuse_load_copies(func: &mut IrFunction) -> usize {
             // Load and the Copy nor anywhere else in the function.
             let used_elsewhere = func.blocks.iter().enumerate().any(|(bj, bb)| {
                 bb.insts.iter().enumerate().any(|(jj, i2)| {
-                    !(bj == bi && jj == ci)
-                        && i2.sources().iter().any(|s| var_id(s) == Some(t_id))
+                    !(bj == bi && jj == ci) && i2.sources().iter().any(|s| var_id(s) == Some(t_id))
                 })
             });
             if used_elsewhere {
@@ -783,6 +823,7 @@ fn mutable_sources(inst: &mut IrInst) -> Vec<&mut Value> {
         }
         IrInst::Return { value: Some(v) } => vec![v],
         IrInst::IndirectBranch { target } => vec![target],
+        IrInst::Switch { index, .. } => vec![index],
         IrInst::Phi { incoming, .. } => incoming.iter_mut().map(|(_, v)| v).collect(),
         IrInst::Syscall { number, args } => {
             let mut v: Vec<&mut Value> = args.iter_mut().collect();
@@ -812,39 +853,53 @@ mod tests {
         let rbp = Value::reg("rbp", Ty::i64());
         let rdx = Value::reg("rdx", Ty::i64());
 
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: t0.clone(),
-            op: OpCode::Add,
-            lhs: rbp.clone(),
-            rhs: Value::Const(-8),
-        });
-        func.push_inst(func.entry_block, IrInst::Load {
-            dst: t1.clone(),
-            addr: t0.clone(),
-            size: 8,
-        });
-        func.push_inst(func.entry_block, IrInst::Unary {
-            dst: rdx.clone(),
-            op: OpCode::Copy,
-            src: t1.clone(),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: t0.clone(),
+                op: OpCode::Add,
+                lhs: rbp.clone(),
+                rhs: Value::Const(-8),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Load {
+                dst: t1.clone(),
+                addr: t0.clone(),
+                size: 8,
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: rdx.clone(),
+                op: OpCode::Copy,
+                src: t1.clone(),
+            },
+        );
         func.push_inst(func.entry_block, IrInst::Return { value: None });
 
         propagate_block_temps(&mut func);
 
         let b = &func.blocks[func.entry_block.0 as usize];
-        let addr_is_bare_rbp = b.insts.iter().any(|inst| matches!(
-            inst,
-            IrInst::Load { addr, .. } if *addr == rbp
-        ));
+        let addr_is_bare_rbp = b.insts.iter().any(|inst| {
+            matches!(
+                inst,
+                IrInst::Load { addr, .. } if *addr == rbp
+            )
+        });
         assert!(
             !addr_is_bare_rbp,
             "load address must not be collapsed to a bare register"
         );
         let add_kept = b.insts.iter().any(|inst| match inst {
-            IrInst::Binary { op: OpCode::Add, lhs, rhs, .. } => {
-                *lhs == rbp && *rhs == Value::Const(-8)
-            }
+            IrInst::Binary {
+                op: OpCode::Add,
+                lhs,
+                rhs,
+                ..
+            } => *lhs == rbp && *rhs == Value::Const(-8),
             _ => false,
         });
         assert!(add_kept, "Binary{{Add, rbp, -8}} must survive propagation");
@@ -859,16 +914,22 @@ mod tests {
         let rdx = Value::reg("rdx", Ty::i64());
         let entry = func.entry_block;
 
-        func.push_inst(entry, IrInst::Load {
-            dst: t1.clone(),
-            addr: rbp.clone(),
-            size: 8,
-        });
-        func.push_inst(entry, IrInst::Unary {
-            dst: rdx.clone(),
-            op: OpCode::Copy,
-            src: t1.clone(),
-        });
+        func.push_inst(
+            entry,
+            IrInst::Load {
+                dst: t1.clone(),
+                addr: rbp.clone(),
+                size: 8,
+            },
+        );
+        func.push_inst(
+            entry,
+            IrInst::Unary {
+                dst: rdx.clone(),
+                op: OpCode::Copy,
+                src: t1.clone(),
+            },
+        );
         func.push_inst(entry, IrInst::Return { value: None });
 
         let fused = fuse_load_copies(&mut func);
@@ -876,7 +937,13 @@ mod tests {
 
         let b = &func.blocks[entry.0 as usize];
         assert!(
-            !b.insts.iter().any(|i| matches!(i, IrInst::Unary { op: OpCode::Copy, .. })),
+            !b.insts.iter().any(|i| matches!(
+                i,
+                IrInst::Unary {
+                    op: OpCode::Copy,
+                    ..
+                }
+            )),
             "the copy must be gone"
         );
         let loads: Vec<&IrInst> = b
@@ -900,30 +967,45 @@ mod tests {
         let rdx = Value::reg("rdx", Ty::i64());
         let entry = func.entry_block;
 
-        func.push_inst(entry, IrInst::Load {
-            dst: t1.clone(),
-            addr: rbp.clone(),
-            size: 8,
-        });
-        func.push_inst(entry, IrInst::Store {
-            addr: rbp.clone(),
-            value: t1.clone(),
-            size: 8,
-        });
-        func.push_inst(entry, IrInst::Unary {
-            dst: rdx.clone(),
-            op: OpCode::Copy,
-            src: t1.clone(),
-        });
+        func.push_inst(
+            entry,
+            IrInst::Load {
+                dst: t1.clone(),
+                addr: rbp.clone(),
+                size: 8,
+            },
+        );
+        func.push_inst(
+            entry,
+            IrInst::Store {
+                addr: rbp.clone(),
+                value: t1.clone(),
+                size: 8,
+            },
+        );
+        func.push_inst(
+            entry,
+            IrInst::Unary {
+                dst: rdx.clone(),
+                op: OpCode::Copy,
+                src: t1.clone(),
+            },
+        );
         func.push_inst(entry, IrInst::Return { value: None });
 
         let fused = fuse_load_copies(&mut func);
-        assert_eq!(fused, 0, "temp is used by the Store — fusion must be skipped");
+        assert_eq!(
+            fused, 0,
+            "temp is used by the Store — fusion must be skipped"
+        );
         assert!(
-            func.blocks[entry.0 as usize]
-                .insts
-                .iter()
-                .any(|i| matches!(i, IrInst::Unary { op: OpCode::Copy, .. })),
+            func.blocks[entry.0 as usize].insts.iter().any(|i| matches!(
+                i,
+                IrInst::Unary {
+                    op: OpCode::Copy,
+                    ..
+                }
+            )),
             "copy must remain untouched"
         );
     }
@@ -939,26 +1021,38 @@ mod tests {
         let entry = func.entry_block;
 
         // t1 is defined twice (same id used as dst of both loads).
-        func.push_inst(entry, IrInst::Load {
-            dst: t1.clone(),
-            addr: rbp.clone(),
-            size: 8,
-        });
-        func.push_inst(entry, IrInst::Load {
-            dst: t1.clone(),
-            addr: Value::Const(0x40),
-            size: 8,
-        });
-        func.push_inst(entry, IrInst::Unary {
-            dst: t2.clone(),
-            op: OpCode::Copy,
-            src: t1.clone(),
-        });
-        func.push_inst(entry, IrInst::Unary {
-            dst: rdx.clone(),
-            op: OpCode::Copy,
-            src: t2,
-        });
+        func.push_inst(
+            entry,
+            IrInst::Load {
+                dst: t1.clone(),
+                addr: rbp.clone(),
+                size: 8,
+            },
+        );
+        func.push_inst(
+            entry,
+            IrInst::Load {
+                dst: t1.clone(),
+                addr: Value::Const(0x40),
+                size: 8,
+            },
+        );
+        func.push_inst(
+            entry,
+            IrInst::Unary {
+                dst: t2.clone(),
+                op: OpCode::Copy,
+                src: t1.clone(),
+            },
+        );
+        func.push_inst(
+            entry,
+            IrInst::Unary {
+                dst: rdx.clone(),
+                op: OpCode::Copy,
+                src: t2,
+            },
+        );
         func.push_inst(entry, IrInst::Return { value: None });
 
         let fused = fuse_load_copies(&mut func);
@@ -978,25 +1072,34 @@ mod tests {
         let rax = Value::reg("rax", Ty::i64());
         let rcx = Value::reg("rcx", Ty::i64());
 
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: Value::reg("flag_zf", Ty::Bool),
-            op: OpCode::Eq,
-            lhs: rax.clone(),
-            rhs: rcx.clone(),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: Value::reg("flag_zf", Ty::Bool),
+                op: OpCode::Eq,
+                lhs: rax.clone(),
+                rhs: rcx.clone(),
+            },
+        );
         func.push_inst(func.entry_block, IrInst::Branch { target: use_b });
         // Swapped operand order (const on the left) must match as well.
-        func.push_inst(use_b, IrInst::Binary {
-            dst: cond.clone(),
-            op: OpCode::Ne,
-            lhs: Value::Const(1),
-            rhs: Value::reg("flag_zf", Ty::Bool),
-        });
-        func.push_inst(use_b, IrInst::CBranch {
-            cond: cond.clone(),
-            target_true: t_b,
-            target_false: f_b,
-        });
+        func.push_inst(
+            use_b,
+            IrInst::Binary {
+                dst: cond.clone(),
+                op: OpCode::Ne,
+                lhs: Value::Const(1),
+                rhs: Value::reg("flag_zf", Ty::Bool),
+            },
+        );
+        func.push_inst(
+            use_b,
+            IrInst::CBranch {
+                cond: cond.clone(),
+                target_true: t_b,
+                target_false: f_b,
+            },
+        );
         func.push_inst(t_b, IrInst::Return { value: None });
         func.push_inst(f_b, IrInst::Return { value: None });
         func.build_cfg();
@@ -1034,29 +1137,46 @@ mod tests {
         let body_b = func.add_block("body");
         let exit_b = func.add_block("exit");
 
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: cond.clone(),
-            op: OpCode::Ne,
-            lhs: Value::reg("flag_zf", Ty::Bool),
-            rhs: Value::Const(1),
-        });
-        func.push_inst(func.entry_block, IrInst::CBranch {
-            cond: cond.clone(),
-            target_true: body_b,
-            target_false: exit_b,
-        });
-        func.push_inst(body_b, IrInst::Binary {
-            dst: Value::reg("flag_zf", Ty::Bool),
-            op: OpCode::Eq,
-            lhs: Value::reg("rax", Ty::i64()),
-            rhs: Value::reg("rcx", Ty::i64()),
-        });
-        func.push_inst(body_b, IrInst::Branch { target: func.entry_block });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: cond.clone(),
+                op: OpCode::Ne,
+                lhs: Value::reg("flag_zf", Ty::Bool),
+                rhs: Value::Const(1),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: cond.clone(),
+                target_true: body_b,
+                target_false: exit_b,
+            },
+        );
+        func.push_inst(
+            body_b,
+            IrInst::Binary {
+                dst: Value::reg("flag_zf", Ty::Bool),
+                op: OpCode::Eq,
+                lhs: Value::reg("rax", Ty::i64()),
+                rhs: Value::reg("rcx", Ty::i64()),
+            },
+        );
+        func.push_inst(
+            body_b,
+            IrInst::Branch {
+                target: func.entry_block,
+            },
+        );
         func.push_inst(exit_b, IrInst::Return { value: None });
         func.build_cfg();
 
         let folded = fold_flag_comparisons(&mut func);
-        assert_eq!(folded, 1, "unique global def must fold even without dominance");
+        assert_eq!(
+            folded, 1,
+            "unique global def must fold even without dominance"
+        );
         let entry = &func.blocks[func.entry_block.0 as usize];
         assert!(
             matches!(
@@ -1087,31 +1207,43 @@ mod tests {
         let t_b = func.add_block("then");
         let f_b = func.add_block("else");
 
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: Value::reg("flag_zf", Ty::Bool),
-            op: OpCode::Eq,
-            lhs: Value::reg("rax", Ty::i64()),
-            rhs: Value::reg("rbx", Ty::i64()),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: Value::reg("flag_zf", Ty::Bool),
+                op: OpCode::Eq,
+                lhs: Value::reg("rax", Ty::i64()),
+                rhs: Value::reg("rbx", Ty::i64()),
+            },
+        );
         func.push_inst(func.entry_block, IrInst::Branch { target: mid_b });
-        func.push_inst(mid_b, IrInst::Binary {
-            dst: Value::reg("flag_zf", Ty::Bool),
-            op: OpCode::Eq,
-            lhs: Value::reg("rcx", Ty::i64()),
-            rhs: Value::reg("rdx", Ty::i64()),
-        });
+        func.push_inst(
+            mid_b,
+            IrInst::Binary {
+                dst: Value::reg("flag_zf", Ty::Bool),
+                op: OpCode::Eq,
+                lhs: Value::reg("rcx", Ty::i64()),
+                rhs: Value::reg("rdx", Ty::i64()),
+            },
+        );
         func.push_inst(mid_b, IrInst::Branch { target: tail_b });
-        func.push_inst(tail_b, IrInst::Binary {
-            dst: cond.clone(),
-            op: OpCode::Eq,
-            lhs: Value::reg("flag_zf", Ty::Bool),
-            rhs: Value::Const(1),
-        });
-        func.push_inst(tail_b, IrInst::CBranch {
-            cond: cond.clone(),
-            target_true: t_b,
-            target_false: f_b,
-        });
+        func.push_inst(
+            tail_b,
+            IrInst::Binary {
+                dst: cond.clone(),
+                op: OpCode::Eq,
+                lhs: Value::reg("flag_zf", Ty::Bool),
+                rhs: Value::Const(1),
+            },
+        );
+        func.push_inst(
+            tail_b,
+            IrInst::CBranch {
+                cond: cond.clone(),
+                target_true: t_b,
+                target_false: f_b,
+            },
+        );
         func.push_inst(t_b, IrInst::Return { value: None });
         func.push_inst(f_b, IrInst::Return { value: None });
         func.build_cfg();
@@ -1145,31 +1277,43 @@ mod tests {
         let t_b = func.add_block("then");
         let f_b = func.add_block("else");
 
-        func.push_inst(func.entry_block, IrInst::CBranch {
-            cond: cond_in.clone(),
-            target_true: arm_a,
-            target_false: arm_b,
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: cond_in.clone(),
+                target_true: arm_a,
+                target_false: arm_b,
+            },
+        );
         for (blk, reg_name) in [(arm_a, "rax"), (arm_b, "rbx")] {
-            func.push_inst(blk, IrInst::Binary {
-                dst: Value::reg("flag_zf", Ty::Bool),
-                op: OpCode::Eq,
-                lhs: Value::reg(reg_name, Ty::i64()),
-                rhs: Value::Const(0),
-            });
+            func.push_inst(
+                blk,
+                IrInst::Binary {
+                    dst: Value::reg("flag_zf", Ty::Bool),
+                    op: OpCode::Eq,
+                    lhs: Value::reg(reg_name, Ty::i64()),
+                    rhs: Value::Const(0),
+                },
+            );
             func.push_inst(blk, IrInst::Branch { target: join_b });
         }
-        func.push_inst(join_b, IrInst::Binary {
-            dst: cond_out.clone(),
-            op: OpCode::Ne,
-            lhs: Value::reg("flag_zf", Ty::Bool),
-            rhs: Value::Const(1),
-        });
-        func.push_inst(join_b, IrInst::CBranch {
-            cond: cond_out.clone(),
-            target_true: t_b,
-            target_false: f_b,
-        });
+        func.push_inst(
+            join_b,
+            IrInst::Binary {
+                dst: cond_out.clone(),
+                op: OpCode::Ne,
+                lhs: Value::reg("flag_zf", Ty::Bool),
+                rhs: Value::Const(1),
+            },
+        );
+        func.push_inst(
+            join_b,
+            IrInst::CBranch {
+                cond: cond_out.clone(),
+                target_true: t_b,
+                target_false: f_b,
+            },
+        );
         func.push_inst(t_b, IrInst::Return { value: None });
         func.push_inst(f_b, IrInst::Return { value: None });
         func.build_cfg();
@@ -1196,42 +1340,60 @@ mod tests {
         let rax = Value::reg("rax", Ty::i64());
         let rbx = Value::reg("rbx", Ty::i64());
 
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: Value::reg("flag_cf", Ty::Bool),
-            op: OpCode::LtU,
-            lhs: rax.clone(),
-            rhs: rbx.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: Value::reg("flag_zf", Ty::Bool),
-            op: OpCode::Eq,
-            lhs: rax.clone(),
-            rhs: rbx.clone(),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: Value::reg("flag_cf", Ty::Bool),
+                op: OpCode::LtU,
+                lhs: rax.clone(),
+                rhs: rbx.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: Value::reg("flag_zf", Ty::Bool),
+                op: OpCode::Eq,
+                lhs: rax.clone(),
+                rhs: rbx.clone(),
+            },
+        );
         func.push_inst(func.entry_block, IrInst::Branch { target: next_b });
-        func.push_inst(next_b, IrInst::Binary {
-            dst: t_cf.clone(),
-            op: OpCode::Eq,
-            lhs: Value::reg("flag_cf", Ty::Bool),
-            rhs: Value::Const(1),
-        });
-        func.push_inst(next_b, IrInst::Binary {
-            dst: t_zf.clone(),
-            op: OpCode::Eq,
-            lhs: Value::reg("flag_zf", Ty::Bool),
-            rhs: Value::Const(1),
-        });
-        func.push_inst(next_b, IrInst::Binary {
-            dst: comb.clone(),
-            op: OpCode::Or,
-            lhs: t_cf.clone(),
-            rhs: t_zf.clone(),
-        });
-        func.push_inst(next_b, IrInst::CBranch {
-            cond: comb.clone(),
-            target_true: t_b,
-            target_false: f_b,
-        });
+        func.push_inst(
+            next_b,
+            IrInst::Binary {
+                dst: t_cf.clone(),
+                op: OpCode::Eq,
+                lhs: Value::reg("flag_cf", Ty::Bool),
+                rhs: Value::Const(1),
+            },
+        );
+        func.push_inst(
+            next_b,
+            IrInst::Binary {
+                dst: t_zf.clone(),
+                op: OpCode::Eq,
+                lhs: Value::reg("flag_zf", Ty::Bool),
+                rhs: Value::Const(1),
+            },
+        );
+        func.push_inst(
+            next_b,
+            IrInst::Binary {
+                dst: comb.clone(),
+                op: OpCode::Or,
+                lhs: t_cf.clone(),
+                rhs: t_zf.clone(),
+            },
+        );
+        func.push_inst(
+            next_b,
+            IrInst::CBranch {
+                cond: comb.clone(),
+                target_true: t_b,
+                target_false: f_b,
+            },
+        );
         func.push_inst(t_b, IrInst::Return { value: None });
         func.push_inst(f_b, IrInst::Return { value: None });
         func.build_cfg();
@@ -1264,25 +1426,34 @@ mod tests {
         let rcx = Value::reg("rcx", Ty::i64());
 
         // add rax, rbx  →  writes flag_cf = (rax <u rbx)
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: rax.clone(),
-            op: OpCode::Add,
-            lhs: rax.clone(),
-            rhs: rbx.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: Value::reg("flag_cf", Ty::Bool),
-            op: OpCode::LtU,
-            lhs: rax.clone(),
-            rhs: rbx.clone(),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: rax.clone(),
+                op: OpCode::Add,
+                lhs: rax.clone(),
+                rhs: rbx.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: Value::reg("flag_cf", Ty::Bool),
+                op: OpCode::LtU,
+                lhs: rax.clone(),
+                rhs: rbx.clone(),
+            },
+        );
         // adc rdx, rcx  →  reads flag_cf
-        func.push_inst(func.entry_block, IrInst::Adc {
-            dst: rdx.clone(),
-            a: rdx.clone(),
-            b: rcx.clone(),
-            carry: Value::reg("flag_cf", Ty::Bool),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Adc {
+                dst: rdx.clone(),
+                a: rdx.clone(),
+                b: rcx.clone(),
+                carry: Value::reg("flag_cf", Ty::Bool),
+            },
+        );
         func.push_inst(func.entry_block, IrInst::Return { value: None });
 
         // Before folding the carry, flag_cf is referenced by the adc.

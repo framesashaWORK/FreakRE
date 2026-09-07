@@ -62,6 +62,9 @@ mod tests {
     fn test_crc32_known_vectors() {
         assert_eq!(crc32(b""), 0x00000000);
         assert_eq!(crc32(b"123456789"), 0xCBF43926);
-        assert_eq!(crc32(b"The quick brown fox jumps over the lazy dog"), 0x414FA339);
+        assert_eq!(
+            crc32(b"The quick brown fox jumps over the lazy dog"),
+            0x414FA339
+        );
     }
 }

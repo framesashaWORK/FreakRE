@@ -1,12 +1,12 @@
 #[cfg(not(feature = "cli"))]
 compile_error!("The 'cli' feature is required to build the freakre binary");
 
+use clap::Parser;
 use freakre_scanner::{
     output,
     report::{FileReport, Finding, ScanSummary, Severity, Verdict},
     Scanner,
 };
-use clap::Parser;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -152,7 +152,10 @@ fn main() {
     let summary = ScanSummary {
         total_files,
         scanned_files: reports.len(),
-        clean: reports.iter().filter(|r| r.verdict == Verdict::Clean).count(),
+        clean: reports
+            .iter()
+            .filter(|r| r.verdict == Verdict::Clean)
+            .count(),
         suspicious: reports
             .iter()
             .filter(|r| r.verdict == Verdict::Suspicious)
@@ -337,25 +340,37 @@ h1{color:#58a6ff;border-bottom:2px solid #30363d;padding-bottom:10px}
 <div class="summary">
   <div class="stat"><div class="num">"#);
     html.push_str(&summary.total_files.to_string());
-    html.push_str(r#"</div><div class="label">Total Files</div></div>
-  <div class="stat clean"><div class="num">"#);
+    html.push_str(
+        r#"</div><div class="label">Total Files</div></div>
+  <div class="stat clean"><div class="num">"#,
+    );
     html.push_str(&summary.clean.to_string());
-    html.push_str(r#"</div><div class="label">Clean</div></div>
-  <div class="stat suspicious"><div class="num">"#);
+    html.push_str(
+        r#"</div><div class="label">Clean</div></div>
+  <div class="stat suspicious"><div class="num">"#,
+    );
     html.push_str(&summary.suspicious.to_string());
-    html.push_str(r#"</div><div class="label">Suspicious</div></div>
-  <div class="stat malicious"><div class="num">"#);
+    html.push_str(
+        r#"</div><div class="label">Suspicious</div></div>
+  <div class="stat malicious"><div class="num">"#,
+    );
     html.push_str(&summary.malicious.to_string());
-    html.push_str(r#"</div><div class="label">Malicious</div></div>
-  <div class="stat"><div class="num">"#);
+    html.push_str(
+        r#"</div><div class="label">Malicious</div></div>
+  <div class="stat"><div class="num">"#,
+    );
     html.push_str(&summary.total_findings.to_string());
-    html.push_str(r#"</div><div class="label">Findings</div></div>
-  <div class="stat"><div class="num">"#);
+    html.push_str(
+        r#"</div><div class="label">Findings</div></div>
+  <div class="stat"><div class="num">"#,
+    );
     html.push_str(&format!("{}ms", summary.scan_duration_ms));
-    html.push_str(r#"</div><div class="label">Scan Time</div></div>
+    html.push_str(
+        r#"</div><div class="label">Scan Time</div></div>
 </div>
 <hr style="border-color:#30363d">
-"#);
+"#,
+    );
 
     for r in reports {
         let vclass = match r.verdict {
@@ -383,7 +398,13 @@ h1{color:#58a6ff;border-bottom:2px solid #30363d;padding-bottom:10px}
             html.push_str(r#"<div class="findings">"#);
             for s in &r.sections_entropy {
                 let pct = ((s.entropy / 8.0) * 100.0) as u32;
-                let color = if s.entropy > 7.0 { "#f85149" } else if s.entropy > 6.0 { "#d29922" } else { "#3fb950" };
+                let color = if s.entropy > 7.0 {
+                    "#f85149"
+                } else if s.entropy > 6.0 {
+                    "#d29922"
+                } else {
+                    "#3fb950"
+                };
                 html.push_str(&format!(
                     r#"<div class="section-row"><div class="entropy-bar"><div class="entropy-fill" style="width:{}%;background:{}"></div></div> {} ({:.2}) {}</div>"#,
                     pct, color, htmlescape(&s.name), s.entropy, htmlescape(&s.classification)
@@ -425,7 +446,10 @@ h1{color:#58a6ff;border-bottom:2px solid #30363d;padding-bottom:10px}
 }
 
 fn htmlescape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn print_csv(reports: &[FileReport], summary: &ScanSummary) {
@@ -484,8 +508,7 @@ mod tests {
 
         let scanner = Arc::new(Scanner::new());
 
-        let mut sequential: Vec<FileReport> =
-            files.iter().map(|p| scanner.scan_file(p)).collect();
+        let mut sequential: Vec<FileReport> = files.iter().map(|p| scanner.scan_file(p)).collect();
         sequential.sort_by(|a, b| a.path.cmp(&b.path));
 
         let mut parallel: Vec<FileReport> =

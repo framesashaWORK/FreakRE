@@ -235,9 +235,7 @@ pub fn sliding_window_entropy(
 /// assert_eq!(results.len(), 2);
 /// assert_eq!(results[0].0, ".text");
 /// ```
-pub fn sections_entropy<'a>(
-    sections: &[(&'a str, &'a [u8])],
-) -> Vec<(&'a str, EntropyResult)> {
+pub fn sections_entropy<'a>(sections: &[(&'a str, &'a [u8])]) -> Vec<(&'a str, EntropyResult)> {
     sections
         .iter()
         .map(|&(name, data)| (name, calculate_entropy(data)))
@@ -770,7 +768,9 @@ mod tests {
     #[test]
     fn two_symbols_equal_distribution() {
         // Alternating 0x00 and 0xFF → exactly 1.0 bit/byte
-        let data: Vec<u8> = (0..1000).map(|i| if i % 2 == 0 { 0x00 } else { 0xFF }).collect();
+        let data: Vec<u8> = (0..1000)
+            .map(|i| if i % 2 == 0 { 0x00 } else { 0xFF })
+            .collect();
         let r = calculate_entropy(&data);
         assert!((r.entropy - 1.0).abs() < 0.01);
     }
@@ -867,7 +867,10 @@ mod tests {
         let offsets: Vec<usize> = results.iter().map(|&(o, _)| o).collect();
         assert_eq!(offsets.len(), (1024 - 256) / 128 + 1);
         assert_eq!(*offsets.last().unwrap(), 1024 - 256);
-        assert!(offsets.windows(2).all(|w| w[0] < w[1]), "no duplicated windows");
+        assert!(
+            offsets.windows(2).all(|w| w[0] < w[1]),
+            "no duplicated windows"
+        );
     }
 
     #[test]
@@ -1177,7 +1180,14 @@ mod tests {
     #[test]
     fn boundary_empty_input_is_low_entropy_with_zero_stats() {
         let s = region_stats(b"");
-        assert_eq!(s, RegionStats { entropy: 0.0, chi_square_norm: 0.0, printable_ratio: 0.0 });
+        assert_eq!(
+            s,
+            RegionStats {
+                entropy: 0.0,
+                chi_square_norm: 0.0,
+                printable_ratio: 0.0
+            }
+        );
         assert_eq!(classify_region(b""), RegionClass::LowEntropy);
     }
 
@@ -1193,7 +1203,10 @@ mod tests {
         assert_eq!(classify_from_stats(stats), RegionClass::CompressedLike);
 
         // Just below: LowEntropy wins regardless of other signals.
-        let stats = RegionStats { entropy: 3.4999, ..stats };
+        let stats = RegionStats {
+            entropy: 3.4999,
+            ..stats
+        };
         assert_eq!(classify_from_stats(stats), RegionClass::LowEntropy);
     }
 
@@ -1256,11 +1269,10 @@ mod tests {
             (1024, 512),
         ] {
             let windows = classify_windows(&data, window, step);
-            let expected: Vec<_> =
-                sliding_window_entropy_batched(&data, window, step)
-                    .into_iter()
-                    .map(|(off, _)| (off, classify_region(&data[off..off + window])))
-                    .collect();
+            let expected: Vec<_> = sliding_window_entropy_batched(&data, window, step)
+                .into_iter()
+                .map(|(off, _)| (off, classify_region(&data[off..off + window])))
+                .collect();
             assert_eq!(windows.len(), expected.len(), "w={} s={}", window, step);
             for (got, want) in windows.into_iter().zip(expected) {
                 assert_eq!(got, want, "w={} s={}", window, step);
@@ -1335,5 +1347,3 @@ mod tests {
         }
     }
 }
-
-

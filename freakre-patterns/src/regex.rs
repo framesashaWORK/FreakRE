@@ -51,7 +51,10 @@ struct NfaState {
 
 impl NfaState {
     fn new() -> Self {
-        Self { transitions: Vec::new(), epsilon: Vec::new() }
+        Self {
+            transitions: Vec::new(),
+            epsilon: Vec::new(),
+        }
     }
 }
 
@@ -125,7 +128,9 @@ impl NfaBuilder {
         if close == 0 {
             return false;
         }
-        body[..close].iter().all(|&b| b.is_ascii_alphabetic() || b == b'-')
+        body[..close]
+            .iter()
+            .all(|&b| b.is_ascii_alphabetic() || b == b'-')
     }
 
     fn parse_inline_flags(&mut self, input: &[u8], pos: usize) -> Result<usize, PatternError> {
@@ -150,7 +155,13 @@ impl NfaBuilder {
         Ok(p + 1)
     }
 
-    fn parse_concat(&mut self, input: &[u8], mut pos: usize, from: usize, end: usize) -> Result<usize, PatternError> {
+    fn parse_concat(
+        &mut self,
+        input: &[u8],
+        mut pos: usize,
+        from: usize,
+        end: usize,
+    ) -> Result<usize, PatternError> {
         let mut current = from;
 
         while pos < input.len() && input[pos] != b'|' && input[pos] != b')' {
@@ -165,7 +176,12 @@ impl NfaBuilder {
         Ok(pos)
     }
 
-    fn parse_atom_with_repeat(&mut self, input: &[u8], pos: usize, from: usize) -> Result<(usize, usize), PatternError> {
+    fn parse_atom_with_repeat(
+        &mut self,
+        input: &[u8],
+        pos: usize,
+        from: usize,
+    ) -> Result<(usize, usize), PatternError> {
         let frag_lo = self.states.len();
         let (atom_start, atom_end, new_pos) = self.parse_atom(input, pos)?;
         let frag_hi = self.states.len() - 1;
@@ -219,7 +235,11 @@ impl NfaBuilder {
         }
     }
 
-    fn parse_atom(&mut self, input: &[u8], pos: usize) -> Result<(usize, usize, usize), PatternError> {
+    fn parse_atom(
+        &mut self,
+        input: &[u8],
+        pos: usize,
+    ) -> Result<(usize, usize, usize), PatternError> {
         if pos >= input.len() {
             return Err(PatternError::Syntax("unexpected end of pattern".into()));
         }
@@ -308,12 +328,21 @@ impl NfaBuilder {
         }
     }
 
-    fn parse_char_class(&mut self, input: &[u8], pos: usize) -> Result<(usize, usize, usize), PatternError> {
+    fn parse_char_class(
+        &mut self,
+        input: &[u8],
+        pos: usize,
+    ) -> Result<(usize, usize, usize), PatternError> {
         if input[pos] != b'[' {
             return Err(PatternError::Syntax("expected '['".into()));
         }
         let mut p = pos + 1;
-        let negate = if p < input.len() && input[p] == b'^' { p += 1; true } else { false };
+        let negate = if p < input.len() && input[p] == b'^' {
+            p += 1;
+            true
+        } else {
+            false
+        };
 
         let mut ranges: Vec<(u8, u8)> = Vec::new();
         while p < input.len() && input[p] != b']' {
@@ -360,14 +389,20 @@ impl NfaBuilder {
             // Build complement: all bytes NOT in ranges
             let mut covered = [false; 256];
             for &(lo, hi) in &ranges {
-                for b in lo..=hi { covered[b as usize] = true; }
+                for b in lo..=hi {
+                    covered[b as usize] = true;
+                }
             }
             let mut i = 0usize;
             while i < 256 {
                 if !covered[i] {
                     let start = i;
-                    while i < 256 && !covered[i] { i += 1; }
-                    self.states[s].transitions.push((start as u8, (i - 1) as u8, e));
+                    while i < 256 && !covered[i] {
+                        i += 1;
+                    }
+                    self.states[s]
+                        .transitions
+                        .push((start as u8, (i - 1) as u8, e));
                 } else {
                     i += 1;
                 }
@@ -381,7 +416,11 @@ impl NfaBuilder {
         Ok((s, e, p))
     }
 
-    fn parse_bounded_repeat(&mut self, input: &[u8], pos: usize) -> Result<(usize, usize, usize), PatternError> {
+    fn parse_bounded_repeat(
+        &mut self,
+        input: &[u8],
+        pos: usize,
+    ) -> Result<(usize, usize, usize), PatternError> {
         if input[pos] != b'{' {
             return Err(PatternError::Syntax("expected '{'".into()));
         }
@@ -416,8 +455,10 @@ impl NfaBuilder {
         if *pos == start {
             return Err(PatternError::Syntax("expected number".into()));
         }
-        let s = core::str::from_utf8(&input[start..*pos]).map_err(|_| PatternError::Syntax("invalid utf8".into()))?;
-        s.parse::<usize>().map_err(|_| PatternError::Syntax("invalid number".into()))
+        let s = core::str::from_utf8(&input[start..*pos])
+            .map_err(|_| PatternError::Syntax("invalid utf8".into()))?;
+        s.parse::<usize>()
+            .map_err(|_| PatternError::Syntax("invalid number".into()))
     }
 
     fn duplicate_fragment(
@@ -539,7 +580,9 @@ impl Pattern {
     fn epsilon_closure(&self, states: &[usize]) -> Vec<usize> {
         let mut result = states.to_vec();
         let mut visited = vec![false; self.states.len()];
-        for &s in states { visited[s] = true; }
+        for &s in states {
+            visited[s] = true;
+        }
 
         let mut i = 0;
         while i < result.len() {
@@ -703,9 +746,7 @@ mod tests {
 
     #[test]
     fn test_too_complex_is_error_not_panic() {
-        let result = std::panic::catch_unwind(|| {
-            compile("(abcdefghijklmnop){4096}")
-        });
+        let result = std::panic::catch_unwind(|| compile("(abcdefghijklmnop){4096}"));
         match result {
             Ok(Ok(_)) => {}
             Ok(Err(PatternError::TooComplex)) => {}

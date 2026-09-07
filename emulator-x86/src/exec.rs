@@ -56,10 +56,16 @@ pub enum ExitReason {
 /// Per-step failure inside the interpreter loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StepError {
-    Unsupported { addr: u64, what: String },
+    Unsupported {
+        addr: u64,
+        what: String,
+    },
     BudgetExhausted(BudgetKind),
     /// Terminator targets a block that does not exist in the lifted function.
-    BadBlock { addr: u64, block: u32 },
+    BadBlock {
+        addr: u64,
+        block: u32,
+    },
 }
 
 impl From<StepError> for ExitReason {
@@ -168,7 +174,10 @@ pub fn block_coverage(trace: &[TraceEntry]) -> Vec<u64> {
 /// `loc_<hex>`, `fall_<hex>`), relative to the function base.
 pub fn block_address(label: &str, base: u64) -> Option<u64> {
     if let Some(rest) = label.strip_prefix("bb_") {
-        return rest.parse::<usize>().ok().map(|o| base.wrapping_add(o as u64));
+        return rest
+            .parse::<usize>()
+            .ok()
+            .map(|o| base.wrapping_add(o as u64));
     }
     if let Some(rest) = label.strip_prefix("loc_") {
         return u64::from_str_radix(rest, 16).ok();
@@ -257,7 +266,10 @@ fn find_entry_block(func: &IrFunction, base: u64, entry_offset: u64) -> Option<B
 }
 
 fn unsup(addr: u64, what: impl Into<String>) -> StepError {
-    StepError::Unsupported { addr, what: what.into() }
+    StepError::Unsupported {
+        addr,
+        what: what.into(),
+    }
 }
 
 /// Find the instruction index within a block whose source address matches `want`.
@@ -300,7 +312,9 @@ fn find_instruction_at(func: &IrFunction, base: u64, want: u64) -> Option<(Block
 fn split_block_at(func: &mut IrFunction, block_id: BlockId, split_idx: usize) {
     // Phase 1: extract data from the original block (no overlapping borrows)
     let (tail_insts, succs, source_tail, orig_label) = {
-        let Some(block) = func.block_mut(block_id) else { return };
+        let Some(block) = func.block_mut(block_id) else {
+            return;
+        };
         if split_idx == 0 || split_idx >= block.insts.len() {
             return;
         }
@@ -439,7 +453,13 @@ impl<E: EmuEnv> Emulator<E> {
     ///
     /// Never panics on adversarial IR: every failure mode collapses into
     /// the returned [`ExitReason`].
-    pub fn run(&mut self, func: &IrFunction, base: u64, entry_offset: u64, max_steps: u64) -> EmuResult {
+    pub fn run(
+        &mut self,
+        func: &IrFunction,
+        base: u64,
+        entry_offset: u64,
+        max_steps: u64,
+    ) -> EmuResult {
         // For mid-block entry (e.g., XOR_LOOP+4 where 0x04 is inside the entry block),
         // split the containing block at `want` so execution starts at the correct instruction.
         let func_owned: Option<IrFunction>;
@@ -492,10 +512,7 @@ impl<E: EmuEnv> Emulator<E> {
         loop {
             let Some(block) = func.block(cur) else {
                 let addr = self.last_addr;
-                return (
-                    steps,
-                    StepError::BadBlock { addr, block: cur.0 }.into(),
-                );
+                return (steps, StepError::BadBlock { addr, block: cur.0 }.into());
             };
             let baddr = block_address(&block.label, base).unwrap_or(self.last_addr);
             self.last_addr = baddr;
@@ -512,7 +529,10 @@ impl<E: EmuEnv> Emulator<E> {
                 if steps > max_steps {
                     return (steps, ExitReason::BudgetExhausted(BudgetKind::Steps));
                 }
-                self.push_trace(TraceEntry { addr: baddr, text: inst.display() });
+                self.push_trace(TraceEntry {
+                    addr: baddr,
+                    text: inst.display(),
+                });
                 match self.execute(inst, baddr) {
                     Ok(Flow::Next) => {}
                     Ok(Flow::Jump(target)) => {
@@ -591,7 +611,11 @@ impl<E: EmuEnv> Emulator<E> {
                 Ok(Flow::Next)
             }
 
-            IrInst::Store { addr: a, value, size } => {
+            IrInst::Store {
+                addr: a,
+                value,
+                size,
+            } => {
                 if *size == 0 || *size > 8 {
                     return Err(unsup(addr, format!("{size}-byte STORE unsupported")));
                 }
@@ -600,17 +624,25 @@ impl<E: EmuEnv> Emulator<E> {
                 let bytes = vv.to_le_bytes()[..*size as usize].to_vec();
                 self.env.mem_write(va, &bytes);
                 let status = self.mem.write_bytes(va, &bytes);
-                if status == crate::memory::MemStatus::OutOfBudget {
-                    return Err(StepError::BudgetExhausted(status.budget_kind()));
+                if let Some(kind) = status.budget_kind() {
+                    return Err(StepError::BudgetExhausted(kind));
                 }
                 Ok(Flow::Next)
             }
 
             IrInst::Branch { target } => Ok(Flow::Jump(*target)),
 
-            IrInst::CBranch { cond, target_true, target_false } => {
+            IrInst::CBranch {
+                cond,
+                target_true,
+                target_false,
+            } => {
                 let c = self.eval(cond, addr)?;
-                Ok(Flow::Jump(if c != 0 { *target_true } else { *target_false }))
+                Ok(Flow::Jump(if c != 0 {
+                    *target_true
+                } else {
+                    *target_false
+                }))
             }
 
             IrInst::Call { dst, target, args } => {
@@ -662,6 +694,24 @@ impl<E: EmuEnv> Emulator<E> {
             IrInst::IndirectBranch { .. } => {
                 Err(unsup(addr, "IndirectBranch (computed jmp) unsupported"))
             }
+
+            IrInst::Switch { index, cases, default } => {
+                let v = self.eval(index, addr)?;
+                // First case whose value matches wins; cases are expected to
+                // be unique, so scan order is irrelevant. Fall back to the
+                // default (or fail when the dispatch is exhaustive-only and
+                // the value matches nothing — same as an OOB jump table read).
+                let target = cases
+                    .iter()
+                    .find(|(cv, _)| *cv == v as i64)
+                    .map(|(_, b)| *b)
+                    .or(*default);
+                match target {
+                    Some(b) => Ok(Flow::Jump(b)),
+                    None => Err(unsup(addr, format!("SWITCH: no case for {v} and no default"))),
+                }
+            }
+
             IrInst::Phi { .. } => Err(unsup(addr, "Phi unsupported")),
         }
     }
@@ -824,7 +874,10 @@ mod tests {
     #[test]
     fn rotate_width_semantics() {
         assert_eq!(rotate(0x8000_0000_0000_0001, 64, 1, true), 3); // bits {63,0} -> {0,1}
-        assert_eq!(rotate(0x0000_0000_0000_0001, 64, 63, true), 0x8000_0000_0000_0000);
+        assert_eq!(
+            rotate(0x0000_0000_0000_0001, 64, 63, true),
+            0x8000_0000_0000_0000
+        );
         assert_eq!(rotate(0xABCD, 16, 4, true), 0xBCDA);
         assert_eq!(rotate(0xABCD, 16, 4, false), 0xDABC);
         assert_eq!(rotate(0xFF, 8, 8, true), 0xFF);
@@ -834,7 +887,10 @@ mod tests {
     fn trace_ring_respects_capacity() {
         let mut emu: Emulator<DefaultEnv> = Emulator::with_limits(DefaultEnv::new(), 1 << 20, 3);
         for i in 0..10u64 {
-            emu.push_trace(TraceEntry { addr: i, text: "NOP".into() });
+            emu.push_trace(TraceEntry {
+                addr: i,
+                text: "NOP".into(),
+            });
         }
         let t = emu.trace();
         assert_eq!(t.len(), 3);

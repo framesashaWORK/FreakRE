@@ -17,7 +17,7 @@ impl std::error::Error for EmptyPatternError {}
 struct Node {
     children: [u32; 256], // 0 = no edge (node 0 is root, so we use u32::MAX as sentinel)
     fail: u32,
-    output: Vec<usize>,   // pattern indices that end here
+    output: Vec<usize>, // pattern indices that end here
 }
 
 impl Node {
@@ -77,12 +77,15 @@ impl AhoCorasick {
                 let v = nodes[u as usize].children[b];
                 if v == u32::MAX {
                     // Set goto to follow fail chain
-                    nodes[u as usize].children[b] = nodes[nodes[u as usize].fail as usize].children[b];
+                    nodes[u as usize].children[b] =
+                        nodes[nodes[u as usize].fail as usize].children[b];
                     continue;
                 }
                 queue.push_back(v);
                 let mut f = nodes[u as usize].fail;
-                while nodes[f as usize].children[b] == u32::MAX || nodes[f as usize].children[b] == v {
+                while nodes[f as usize].children[b] == u32::MAX
+                    || nodes[f as usize].children[b] == v
+                {
                     f = nodes[f as usize].fail;
                 }
                 nodes[v as usize].fail = nodes[f as usize].children[b];
@@ -92,7 +95,10 @@ impl AhoCorasick {
             }
         }
 
-        Ok(Self { nodes, patterns: owned })
+        Ok(Self {
+            nodes,
+            patterns: owned,
+        })
     }
 
     pub fn pattern_count(&self) -> usize {

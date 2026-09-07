@@ -65,35 +65,107 @@ impl FeatureVector {
 pub(crate) fn feature_names() -> &'static [&'static str] {
     &[
         // 0-15: Byte histogram (16 bins, normalized)
-        "byte_hist_0", "byte_hist_1", "byte_hist_2", "byte_hist_3",
-        "byte_hist_4", "byte_hist_5", "byte_hist_6", "byte_hist_7",
-        "byte_hist_8", "byte_hist_9", "byte_hist_a", "byte_hist_b",
-        "byte_hist_c", "byte_hist_d", "byte_hist_e", "byte_hist_f",
+        "byte_hist_0",
+        "byte_hist_1",
+        "byte_hist_2",
+        "byte_hist_3",
+        "byte_hist_4",
+        "byte_hist_5",
+        "byte_hist_6",
+        "byte_hist_7",
+        "byte_hist_8",
+        "byte_hist_9",
+        "byte_hist_a",
+        "byte_hist_b",
+        "byte_hist_c",
+        "byte_hist_d",
+        "byte_hist_e",
+        "byte_hist_f",
         // 16-31: Byte-printable ratios + entropy stats
-        "printable_ratio", "uppercase_ratio", "digit_ratio", "null_ratio",
-        "high_byte_ratio", "global_entropy", "entropy_std", "entropy_max_section",
-        "file_size_log", "num_sections", "avg_section_size_log", "rwx_section_count",
-        "text_section_ratio", "data_section_ratio", "resource_section_ratio", "other_section_ratio",
+        "printable_ratio",
+        "uppercase_ratio",
+        "digit_ratio",
+        "null_ratio",
+        "high_byte_ratio",
+        "global_entropy",
+        "entropy_std",
+        "entropy_max_section",
+        "file_size_log",
+        "num_sections",
+        "avg_section_size_log",
+        "rwx_section_count",
+        "text_section_ratio",
+        "data_section_ratio",
+        "resource_section_ratio",
+        "other_section_ratio",
         // 32-47: String patterns
-        "string_url_count", "string_ip_count", "string_path_count", "string_registry_count",
-        "string_crypto_count", "string_cmd_count", "string_powershell_count", "string_encoding_count",
-        "string_error_count", "string_debug_count", "string_avg_length", "string_max_length",
-        "string_total_count", "string_unique_ratio", "string_suspicious_ratio", "string_base64_count",
+        "string_url_count",
+        "string_ip_count",
+        "string_path_count",
+        "string_registry_count",
+        "string_crypto_count",
+        "string_cmd_count",
+        "string_powershell_count",
+        "string_encoding_count",
+        "string_error_count",
+        "string_debug_count",
+        "string_avg_length",
+        "string_max_length",
+        "string_total_count",
+        "string_unique_ratio",
+        "string_suspicious_ratio",
+        "string_base64_count",
         // 48-63: Import/DLL features
-        "import_kernel32", "import_user32", "import_advapi32", "import_ws2_32",
-        "import_wininet", "import_urlmon", "import_shell32", "import_ole32",
-        "import_crypt32", "import_ntdll", "import_msvcrt", "import_wtsapi32",
-        "total_imports_log", "unique_dlls_log", "suspicious_import_ratio", "rare_dll_count",
+        "import_kernel32",
+        "import_user32",
+        "import_advapi32",
+        "import_ws2_32",
+        "import_wininet",
+        "import_urlmon",
+        "import_shell32",
+        "import_ole32",
+        "import_crypt32",
+        "import_ntdll",
+        "import_msvcrt",
+        "import_wtsapi32",
+        "total_imports_log",
+        "unique_dlls_log",
+        "suspicious_import_ratio",
+        "rare_dll_count",
         // 64-79: Structural features
-        "has_debug_info", "is_packed_entropy", "num_exports_log", "timestamp_age_years",
-        "checksum_valid", "has_overlay", "overlay_size_ratio", "num_data_dirs",
-        "has_tls", "has_resources", "has_security_dir", "has_relocations",
-        "code_section_entropy", "data_section_entropy", "entry_in_text", "num_segments_elf",
+        "has_debug_info",
+        "is_packed_entropy",
+        "num_exports_log",
+        "timestamp_age_years",
+        "checksum_valid",
+        "has_overlay",
+        "overlay_size_ratio",
+        "num_data_dirs",
+        "has_tls",
+        "has_resources",
+        "has_security_dir",
+        "has_relocations",
+        "code_section_entropy",
+        "data_section_entropy",
+        "entry_in_text",
+        "num_segments_elf",
         // 80-95: Behavioral features
-        "anti_debug_count", "anti_vm_count", "crypto_ops_count", "process_inject_count",
-        "keylog_count", "persistence_count", "network_count", "file_ops_count",
-        "shellcode_score", "obfuscation_score", "xref_correlation", "cfg_anomaly_count",
-        "backdoor_risk", "yara_match_count", "suspicion_score", "composite_threat",
+        "anti_debug_count",
+        "anti_vm_count",
+        "crypto_ops_count",
+        "process_inject_count",
+        "keylog_count",
+        "persistence_count",
+        "network_count",
+        "file_ops_count",
+        "shellcode_score",
+        "obfuscation_score",
+        "xref_correlation",
+        "cfg_anomaly_count",
+        "backdoor_risk",
+        "yara_match_count",
+        "suspicion_score",
+        "composite_threat",
     ]
 }
 
@@ -123,11 +195,21 @@ pub fn extract_features(data: &[u8], info: &BinaryInfo) -> FeatureVector {
     let mut null = 0u32;
     let mut high = 0u32;
     for &b in data {
-        if (0x20..0x7F).contains(&b) { printable += 1; }
-        if b.is_ascii_uppercase() { uppercase += 1; }
-        if b.is_ascii_digit() { digit += 1; }
-        if b == 0 { null += 1; }
-        if b > 0x7F { high += 1; }
+        if (0x20..0x7F).contains(&b) {
+            printable += 1;
+        }
+        if b.is_ascii_uppercase() {
+            uppercase += 1;
+        }
+        if b.is_ascii_digit() {
+            digit += 1;
+        }
+        if b == 0 {
+            null += 1;
+        }
+        if b > 0x7F {
+            high += 1;
+        }
     }
     if total > 0.0 {
         fv.features[16] = printable as f32 / total;
@@ -144,9 +226,8 @@ pub fn extract_features(data: &[u8], info: &BinaryInfo) -> FeatureVector {
     if !info.section_entropies.is_empty() {
         let entropies: Vec<f32> = info.section_entropies.to_vec();
         let mean = entropies.iter().sum::<f32>() / entropies.len() as f32;
-        let variance = entropies.iter()
-            .map(|e| (e - mean).powi(2))
-            .sum::<f32>() / entropies.len() as f32;
+        let variance =
+            entropies.iter().map(|e| (e - mean).powi(2)).sum::<f32>() / entropies.len() as f32;
         fv.features[22] = variance.sqrt(); // std
         fv.features[23] = entropies.iter().cloned().fold(0.0f32, f32::max);
     }
@@ -167,10 +248,12 @@ pub fn extract_features(data: &[u8], info: &BinaryInfo) -> FeatureVector {
         fv.features[28] = info.code_sections as f32 / n;
         fv.features[29] = info.data_sections as f32 / n;
         fv.features[30] = info.resource_sections as f32 / n;
-        fv.features[31] = info.num_sections
+        fv.features[31] = info
+            .num_sections
             .saturating_sub(info.code_sections)
             .saturating_sub(info.data_sections)
-            .saturating_sub(info.resource_sections) as f32 / n;
+            .saturating_sub(info.resource_sections) as f32
+            / n;
     }
 
     // ─── String patterns ────────────────────────────────────────
@@ -372,7 +455,10 @@ pub struct BehavioralStats {
 impl StringPatterns {
     /// Extract string patterns from a list of strings.
     pub fn from_strings(strings: &[&str]) -> Self {
-        let mut sp = StringPatterns { total_count: strings.len(), ..Default::default() };
+        let mut sp = StringPatterns {
+            total_count: strings.len(),
+            ..Default::default()
+        };
 
         let mut suspicious = 0usize;
         let mut total_len = 0usize;
@@ -384,24 +470,59 @@ impl StringPatterns {
             unique.insert(s);
             sp.max_length = sp.max_length.max(s.len());
 
-            if lower.starts_with("http://") || lower.starts_with("https://") { sp.url_count += 1; suspicious += 1; }
+            if lower.starts_with("http://") || lower.starts_with("https://") {
+                sp.url_count += 1;
+                suspicious += 1;
+            }
             // Note: url_count is already incremented above for http(s):// prefixes.
             // This line was a no-op bug (x.max(x)). Removed.
 
             // IP pattern: x.x.x.x
-            if is_ip_like(&lower) { sp.ip_count += 1; suspicious += 1; }
+            if is_ip_like(&lower) {
+                sp.ip_count += 1;
+                suspicious += 1;
+            }
 
-            if lower.contains("\\") || lower.starts_with('/') { sp.path_count += 1; }
-            if lower.contains("hklm") || lower.contains("hkcu") || lower.contains("software\\") { sp.registry_count += 1; suspicious += 1; }
-            if lower.contains("aes") || lower.contains("rsa") || lower.contains("encrypt") || lower.contains("decrypt") { sp.crypto_count += 1; suspicious += 1; }
-            if lower.contains("cmd.exe") || lower.contains("/c ") || lower.contains("command") { sp.cmd_count += 1; suspicious += 1; }
-            if lower.contains("powershell") || lower.contains("pwsh") { sp.powershell_count += 1; suspicious += 1; }
-            if lower.contains("base64") || lower.contains("utf-8") || lower.contains("ascii") { sp.encoding_count += 1; }
-            if lower.contains("error") || lower.contains("fail") || lower.contains("exception") { sp.error_count += 1; }
-            if lower.contains("debug") || lower.contains("isdebug") || lower.contains("breakpoint") { sp.debug_count += 1; suspicious += 1; }
+            if lower.contains("\\") || lower.starts_with('/') {
+                sp.path_count += 1;
+            }
+            if lower.contains("hklm") || lower.contains("hkcu") || lower.contains("software\\") {
+                sp.registry_count += 1;
+                suspicious += 1;
+            }
+            if lower.contains("aes")
+                || lower.contains("rsa")
+                || lower.contains("encrypt")
+                || lower.contains("decrypt")
+            {
+                sp.crypto_count += 1;
+                suspicious += 1;
+            }
+            if lower.contains("cmd.exe") || lower.contains("/c ") || lower.contains("command") {
+                sp.cmd_count += 1;
+                suspicious += 1;
+            }
+            if lower.contains("powershell") || lower.contains("pwsh") {
+                sp.powershell_count += 1;
+                suspicious += 1;
+            }
+            if lower.contains("base64") || lower.contains("utf-8") || lower.contains("ascii") {
+                sp.encoding_count += 1;
+            }
+            if lower.contains("error") || lower.contains("fail") || lower.contains("exception") {
+                sp.error_count += 1;
+            }
+            if lower.contains("debug") || lower.contains("isdebug") || lower.contains("breakpoint")
+            {
+                sp.debug_count += 1;
+                suspicious += 1;
+            }
 
             // Base64 pattern: long alphanumeric strings with padding
-            if is_base64_like(s) { sp.base64_count += 1; suspicious += 1; }
+            if is_base64_like(s) {
+                sp.base64_count += 1;
+                suspicious += 1;
+            }
         }
 
         if let Some(avg) = total_len.checked_div(sp.total_count) {
@@ -423,7 +544,9 @@ fn is_ip_like(s: &str) -> bool {
         None => s,
     };
     let parts: Vec<&str> = host.split('.').collect();
-    if parts.len() != 4 { return false; }
+    if parts.len() != 4 {
+        return false;
+    }
     parts.iter().all(|p| {
         // u8::from_str accepts a leading '+' as a sign; real dotted quads
         // never have one.
@@ -432,8 +555,12 @@ fn is_ip_like(s: &str) -> bool {
 }
 
 fn is_base64_like(s: &str) -> bool {
-    if s.len() < 20 { return false; }
-    let b64_chars = s.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=');
+    if s.len() < 20 {
+        return false;
+    }
+    let b64_chars = s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=');
     let has_padding = s.ends_with('=') || s.ends_with("==");
     b64_chars && (has_padding || s.len() >= 40)
 }

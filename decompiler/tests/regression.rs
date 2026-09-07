@@ -13,14 +13,31 @@ fn build_multi_def() -> IrFunction {
     let else_b = func.add_block("else");
     let merge = func.add_block("merge");
 
-    func.push_inst(func.entry_block, IrInst::CBranch {
-        cond,
-        target_true: then_b,
-        target_false: else_b,
-    });
-    func.push_inst(then_b, IrInst::Unary { dst: x.clone(), op: OpCode::Copy, src: Value::int(1) });
+    func.push_inst(
+        func.entry_block,
+        IrInst::CBranch {
+            cond,
+            target_true: then_b,
+            target_false: else_b,
+        },
+    );
+    func.push_inst(
+        then_b,
+        IrInst::Unary {
+            dst: x.clone(),
+            op: OpCode::Copy,
+            src: Value::int(1),
+        },
+    );
     func.push_inst(then_b, IrInst::Branch { target: merge });
-    func.push_inst(else_b, IrInst::Unary { dst: x.clone(), op: OpCode::Copy, src: Value::int(2) });
+    func.push_inst(
+        else_b,
+        IrInst::Unary {
+            dst: x.clone(),
+            op: OpCode::Copy,
+            src: Value::int(2),
+        },
+    );
     func.push_inst(else_b, IrInst::Branch { target: merge });
     func.push_inst(merge, IrInst::Return { value: Some(x) });
     func.build_cfg();
@@ -47,7 +64,10 @@ fn diamond_structuring_keeps_returns_and_needs_no_goto() {
     // a `goto` to a label that is not defined anywhere in the output.
     for line in c.lines() {
         if line.trim_start().starts_with("goto ") {
-            let label = line.trim().trim_start_matches("goto ").trim_end_matches(';');
+            let label = line
+                .trim()
+                .trim_start_matches("goto ")
+                .trim_end_matches(';');
             assert!(
                 c.contains(&format!("{}:", label)),
                 "goto without matching label '{}':\n{}",
@@ -83,38 +103,59 @@ fn while_loop_still_structures_end_to_end() {
     let exit = func.add_block("exit");
 
     // header: cond_t = i <u n; cbranch → body | exit
-    func.push_inst(header, IrInst::Binary {
-        dst: cond_t.clone(),
-        op: OpCode::LtU,
-        lhs: i_var.clone(),
-        rhs: n_var.clone(),
-    });
-    func.push_inst(header, IrInst::CBranch {
-        cond: cond_t.clone(),
-        target_true: body,
-        target_false: exit,
-    });
+    func.push_inst(
+        header,
+        IrInst::Binary {
+            dst: cond_t.clone(),
+            op: OpCode::LtU,
+            lhs: i_var.clone(),
+            rhs: n_var.clone(),
+        },
+    );
+    func.push_inst(
+        header,
+        IrInst::CBranch {
+            cond: cond_t.clone(),
+            target_true: body,
+            target_false: exit,
+        },
+    );
 
     // body: i = i + 1; goto header
-    func.push_inst(body, IrInst::Binary {
-        dst: inc_t.clone(),
-        op: OpCode::Add,
-        lhs: i_var.clone(),
-        rhs: Value::int(1),
-    });
-    func.push_inst(body, IrInst::Unary {
-        dst: i_var.clone(),
-        op: OpCode::Copy,
-        src: inc_t.clone(),
-    });
+    func.push_inst(
+        body,
+        IrInst::Binary {
+            dst: inc_t.clone(),
+            op: OpCode::Add,
+            lhs: i_var.clone(),
+            rhs: Value::int(1),
+        },
+    );
+    func.push_inst(
+        body,
+        IrInst::Unary {
+            dst: i_var.clone(),
+            op: OpCode::Copy,
+            src: inc_t.clone(),
+        },
+    );
     func.push_inst(body, IrInst::Branch { target: header });
 
     // exit: return n
-    func.push_inst(exit, IrInst::Return { value: Some(n_var.clone()) });
+    func.push_inst(
+        exit,
+        IrInst::Return {
+            value: Some(n_var.clone()),
+        },
+    );
 
     func.build_cfg();
     let c = decompile_function(&func).unwrap();
-    assert!(c.contains("while") || c.contains("for"), "loop lost:\n{}", c);
+    assert!(
+        c.contains("while") || c.contains("for"),
+        "loop lost:\n{}",
+        c
+    );
     assert!(c.contains("return"), "return lost:\n{}", c);
     assert!(!c.contains("WARNING:"), "unstructured gotos remain:\n{}", c);
 }
@@ -124,11 +165,14 @@ fn neg_i64_min_does_not_panic() {
     // Unary Neg folding used plain negation → debug panic on i64::MIN.
     let mut func = IrFunction::new("negmin", 0x3000);
     let dst = func.alloc_var(Ty::i64());
-    func.push_inst(func.entry_block, IrInst::Unary {
-        dst: dst.clone(),
-        op: OpCode::Neg,
-        src: Value::Const(i64::MIN),
-    });
+    func.push_inst(
+        func.entry_block,
+        IrInst::Unary {
+            dst: dst.clone(),
+            op: OpCode::Neg,
+            src: Value::Const(i64::MIN),
+        },
+    );
     func.push_inst(func.entry_block, IrInst::Return { value: Some(dst) });
     let c = decompile_function(&func).unwrap();
     assert!(c.contains("return"), "no return:\n{}", c);
@@ -139,11 +183,14 @@ fn zero_assignment_does_not_infer_u8() {
     // infer_int_type(0) used to yield u8, making `x = 0` declare uint8_t.
     let mut func = IrFunction::new("zero", 0x4000);
     let x = func.alloc_var(Ty::i32());
-    func.push_inst(func.entry_block, IrInst::Unary {
-        dst: x.clone(),
-        op: OpCode::Copy,
-        src: Value::int(0),
-    });
+    func.push_inst(
+        func.entry_block,
+        IrInst::Unary {
+            dst: x.clone(),
+            op: OpCode::Copy,
+            src: Value::int(0),
+        },
+    );
     func.push_inst(func.entry_block, IrInst::Return { value: Some(x) });
     let c = decompile_function(&func).unwrap();
     assert!(
@@ -159,12 +206,20 @@ fn dead_assignment_with_call_keeps_the_call() {
     // dead-assignment elimination even though v0 is never read.
     let mut func = IrFunction::new("side_effect", 0x5000);
     let v0 = func.alloc_var(Ty::i64());
-    func.push_inst(func.entry_block, IrInst::Call {
-        dst: Some(v0),
-        target: Value::Symbol("side_effect_fn".to_string()),
-        args: vec![],
-    });
-    func.push_inst(func.entry_block, IrInst::Return { value: Some(Value::int(1)) });
+    func.push_inst(
+        func.entry_block,
+        IrInst::Call {
+            dst: Some(v0),
+            target: Value::Symbol("side_effect_fn".to_string()),
+            args: vec![],
+        },
+    );
+    func.push_inst(
+        func.entry_block,
+        IrInst::Return {
+            value: Some(Value::int(1)),
+        },
+    );
     func.build_cfg();
     let c = decompile_function(&func).unwrap();
     assert!(
@@ -183,16 +238,22 @@ fn copy_prop_does_not_use_value_redefined_later_in_same_list() {
     let v1 = func.alloc_var(Ty::i64());
     let rax = Value::reg("rax", Ty::i64());
     let rcx = Value::reg("rcx", Ty::i64());
-    func.push_inst(func.entry_block, IrInst::Unary {
-        dst: v1.clone(),
-        op: OpCode::Copy,
-        src: rax.clone(),
-    });
-    func.push_inst(func.entry_block, IrInst::Unary {
-        dst: rax.clone(),
-        op: OpCode::Copy,
-        src: rcx.clone(),
-    });
+    func.push_inst(
+        func.entry_block,
+        IrInst::Unary {
+            dst: v1.clone(),
+            op: OpCode::Copy,
+            src: rax.clone(),
+        },
+    );
+    func.push_inst(
+        func.entry_block,
+        IrInst::Unary {
+            dst: rax.clone(),
+            op: OpCode::Copy,
+            src: rcx.clone(),
+        },
+    );
     func.push_inst(func.entry_block, IrInst::Return { value: Some(v1) });
     func.build_cfg();
     let c = decompile_function(&func).unwrap();

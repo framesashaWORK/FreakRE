@@ -12,15 +12,15 @@
 //! - Struct layout calculation
 //! - Type library management
 
-pub mod types;
-pub mod database;
 pub mod builtin;
+pub mod database;
 pub mod layout;
 pub mod printer;
+pub mod types;
 
-pub use types::*;
 pub use database::TypeDatabase;
 use thiserror::Error;
+pub use types::*;
 
 // Re-export the canonical TypeError from database module
 pub use database::TypeError as DbTypeError;
@@ -97,7 +97,9 @@ impl TypeEngine {
         if !sdef.packed {
             offset = (offset + max_align - 1) & !(max_align - 1);
         }
-        self.db.add_struct(sdef.clone()).map_err(TypeError::Database)?;
+        self.db
+            .add_struct(sdef.clone())
+            .map_err(TypeError::Database)?;
         Ok(sdef)
     }
 
@@ -117,7 +119,9 @@ impl TypeEngine {
         for (vname, vval) in variants {
             edef.add_variant(vname, vval);
         }
-        self.db.add_enum(edef.clone()).map_err(TypeError::Database)?;
+        self.db
+            .add_enum(edef.clone())
+            .map_err(TypeError::Database)?;
         Ok(edef)
     }
 
@@ -286,8 +290,9 @@ impl TypeParser {
         while matches!(
             words.last().map(|s| s.as_str()),
             Some("signed") | Some("unsigned") | Some("long") | Some("short")
-        ) || words.len() < 3 && matches!(words.last().map(|s| s.as_str()), Some("int"))
-               && words.len() > 1
+        ) || words.len() < 3
+            && matches!(words.last().map(|s| s.as_str()), Some("int"))
+            && words.len() > 1
         {
             let save = self.pos;
             self.skip_whitespace();
@@ -346,9 +351,13 @@ impl TypeParser {
             "int16_t" => Ok(Type::i16()),
             "uint16_t" | "unsigned short" | "unsigned short int" => Ok(Type::u16()),
             "int32_t" => Ok(Type::i32()),
-            "uint32_t" | "unsigned int" | "unsigned" | "unsigned long"
-            | "unsigned long int" => Ok(Type::u32()),
-            "int64_t" | "long long" | "long long int" | "signed long long"
+            "uint32_t" | "unsigned int" | "unsigned" | "unsigned long" | "unsigned long int" => {
+                Ok(Type::u32())
+            }
+            "int64_t"
+            | "long long"
+            | "long long int"
+            | "signed long long"
             | "signed long long int" => Ok(Type::i64()),
             "uint64_t" | "unsigned long long" | "unsigned long long int" => Ok(Type::u64()),
             name => {
@@ -375,7 +384,11 @@ impl TypeParser {
     fn read_identifier(&mut self) -> String {
         self.skip_whitespace();
         let start = self.pos;
-        while self.peek().map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) {
+        while self
+            .peek()
+            .map(|c| c.is_alphanumeric() || c == '_')
+            .unwrap_or(false)
+        {
             self.advance();
         }
         self.input[start..self.pos].iter().collect()
@@ -410,10 +423,15 @@ mod tests {
     fn test_struct_layout() {
         let mut engine = TypeEngine::new();
 
-        let s = engine.add_struct("Point", vec![
-            ("x".to_string(), Type::i32()),
-            ("y".to_string(), Type::i32()),
-        ]).unwrap();
+        let s = engine
+            .add_struct(
+                "Point",
+                vec![
+                    ("x".to_string(), Type::i32()),
+                    ("y".to_string(), Type::i32()),
+                ],
+            )
+            .unwrap();
 
         // Point has 2 x i32 = 8 bytes, alignment 4
         assert_eq!(s.fields.len(), 2);
@@ -423,11 +441,16 @@ mod tests {
     fn test_struct_alignment() {
         let mut engine = TypeEngine::new();
 
-        let s = engine.add_struct("Mixed", vec![
-            ("a".to_string(), Type::u8()),
-            ("b".to_string(), Type::u32()),
-            ("c".to_string(), Type::u8()),
-        ]).unwrap();
+        let s = engine
+            .add_struct(
+                "Mixed",
+                vec![
+                    ("a".to_string(), Type::u8()),
+                    ("b".to_string(), Type::u32()),
+                    ("c".to_string(), Type::u8()),
+                ],
+            )
+            .unwrap();
 
         // Should have proper offsets with padding
         assert_eq!(s.fields[0].offset, 0); // u8 at 0
@@ -439,11 +462,17 @@ mod tests {
     fn test_enum() {
         let mut engine = TypeEngine::new();
 
-        let e = engine.add_enum("Color", vec![
-            ("Red".to_string(), 0),
-            ("Green".to_string(), 1),
-            ("Blue".to_string(), 2),
-        ], PrimitiveType::I32).unwrap();
+        let e = engine
+            .add_enum(
+                "Color",
+                vec![
+                    ("Red".to_string(), 0),
+                    ("Green".to_string(), 1),
+                    ("Blue".to_string(), 2),
+                ],
+                PrimitiveType::I32,
+            )
+            .unwrap();
 
         assert_eq!(e.variants.len(), 3);
     }
@@ -530,10 +559,11 @@ mod tests {
         for garbage in ["", "   ", "*", "123", "123abc", "struct"] {
             match engine.parse_type(garbage) {
                 Err(TypeError::Parse(_)) => {}
-                other => panic!("parse_type({:?}) should be Parse error, got {:?}", garbage, other),
+                other => panic!(
+                    "parse_type({:?}) should be Parse error, got {:?}",
+                    garbage, other
+                ),
             }
         }
     }
 }
-
-

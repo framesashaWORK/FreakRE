@@ -1,6 +1,6 @@
 //! Built-in types for Windows, POSIX, and common libraries
 
-use crate::{TypeDatabase, TypedefDef, EnumDef, StructBuilder, Type};
+use crate::{EnumDef, StructBuilder, Type, TypeDatabase, TypedefDef};
 
 /// Register all built-in types
 pub fn register_all(db: &mut TypeDatabase) {

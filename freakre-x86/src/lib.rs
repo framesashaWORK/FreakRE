@@ -2,16 +2,16 @@
 //! Table-driven, zero-copy, no panics on malformed input.
 //! Supports: legacy prefixes, REX, ModR/M, SIB, displacement, immediate.
 
-pub mod types;
-pub mod lde;
 pub mod decoder;
-pub mod simd;
 pub mod formatter;
+pub mod lde;
+pub mod simd;
+pub mod types;
 
-pub use types::*;
-pub use lde::decode_len;
 pub use formatter::format_instruction;
 pub use formatter::format_instruction_att;
+pub use lde::decode_len;
+pub use types::*;
 
 /// Decode a single x86/x64 instruction.
 /// `is_64bit`: true for x86_64, false for x86 (32-bit).

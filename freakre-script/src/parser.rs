@@ -1,7 +1,7 @@
 //! Recursive descent parser for the sandbox DSL.
 
-use crate::lexer::Token;
 use crate::ast::*;
+use crate::lexer::Token;
 
 #[derive(Debug, Clone)]
 pub struct ParseError {
@@ -19,7 +19,12 @@ impl std::error::Error for ParseError {}
 const MAX_DEPTH: usize = 256;
 
 pub fn parse(tokens: &[Token]) -> Result<Vec<Stmt>, ParseError> {
-    let mut p = Parser { tokens, pos: 0, depth: 0, loop_depth: 0 };
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        depth: 0,
+        loop_depth: 0,
+    };
     p.parse_block()
 }
 
@@ -37,7 +42,9 @@ impl<'a> Parser<'a> {
     fn enter(&mut self) -> Result<(), ParseError> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
-            return Err(ParseError { message: "maximum nesting depth exceeded".into() });
+            return Err(ParseError {
+                message: "maximum nesting depth exceeded".into(),
+            });
         }
         Ok(())
     }
@@ -65,12 +72,17 @@ impl<'a> Parser<'a> {
         if core::mem::discriminant(&tok) == core::mem::discriminant(expected) {
             Ok(())
         } else {
-            Err(ParseError { message: format!("expected {:?}, got {:?}", expected, tok) })
+            Err(ParseError {
+                message: format!("expected {:?}, got {:?}", expected, tok),
+            })
         }
     }
 
     fn at_end(&self) -> bool {
-        matches!(self.peek(), Token::Eof | Token::End | Token::Else | Token::Elseif | Token::Until)
+        matches!(
+            self.peek(),
+            Token::Eof | Token::End | Token::Else | Token::Elseif | Token::Until
+        )
     }
 
     fn parse_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
@@ -105,7 +117,9 @@ impl<'a> Parser<'a> {
                 // Compile-time check: break must be enclosed by a loop in the
                 // SAME function body (loop_depth resets at function bodies).
                 if self.loop_depth == 0 {
-                    return Err(ParseError { message: "break outside loop".into() });
+                    return Err(ParseError {
+                        message: "break outside loop".into(),
+                    });
                 }
                 Ok(Stmt::Break)
             }
@@ -116,7 +130,10 @@ impl<'a> Parser<'a> {
                 if matches!(self.peek(), Token::Assign) {
                     self.advance();
                     let value = self.parse_expr()?;
-                    Ok(Stmt::Assign { target: expr, value })
+                    Ok(Stmt::Assign {
+                        target: expr,
+                        value,
+                    })
                 } else {
                     Ok(Stmt::ExprStmt(expr))
                 }
@@ -131,7 +148,11 @@ impl<'a> Parser<'a> {
         }
         let name = match self.advance() {
             Token::Ident(n) => n,
-            other => return Err(ParseError { message: format!("expected identifier after 'local', got {:?}", other) }),
+            other => {
+                return Err(ParseError {
+                    message: format!("expected identifier after 'local', got {:?}", other),
+                })
+            }
         };
         let value = if matches!(self.peek(), Token::Assign) {
             self.advance();
@@ -165,7 +186,12 @@ impl<'a> Parser<'a> {
         };
 
         self.expect(&Token::End)?;
-        Ok(Stmt::If { cond, then_body, elseifs, else_body })
+        Ok(Stmt::If {
+            cond,
+            then_body,
+            elseifs,
+            else_body,
+        })
     }
 
     fn parse_while(&mut self) -> Result<Stmt, ParseError> {
@@ -184,7 +210,11 @@ impl<'a> Parser<'a> {
         self.advance(); // consume 'for'
         let var = match self.advance() {
             Token::Ident(n) => n,
-            other => return Err(ParseError { message: format!("expected var name in for, got {:?}", other) }),
+            other => {
+                return Err(ParseError {
+                    message: format!("expected var name in for, got {:?}", other),
+                })
+            }
         };
         self.expect(&Token::Assign)?;
         let start = self.parse_expr()?;
@@ -202,7 +232,13 @@ impl<'a> Parser<'a> {
         self.loop_depth -= 1;
         let body = body?;
         self.expect(&Token::End)?;
-        Ok(Stmt::ForNumeric { var, start, stop, step, body })
+        Ok(Stmt::ForNumeric {
+            var,
+            start,
+            stop,
+            step,
+            body,
+        })
     }
 
     fn parse_return(&mut self) -> Result<Stmt, ParseError> {
@@ -222,7 +258,11 @@ impl<'a> Parser<'a> {
         self.advance(); // consume 'function' or already consumed 'local'
         let name = match self.advance() {
             Token::Ident(n) => n,
-            other => return Err(ParseError { message: format!("expected function name, got {:?}", other) }),
+            other => {
+                return Err(ParseError {
+                    message: format!("expected function name, got {:?}", other),
+                })
+            }
         };
         self.expect(&Token::LParen)?;
         let mut params = Vec::new();
@@ -263,7 +303,11 @@ impl<'a> Parser<'a> {
         while matches!(self.peek(), Token::Or) {
             self.advance();
             let right = self.parse_and()?;
-            left = Expr::BinOp { left: Box::new(left), op: BinOp::Or, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op: BinOp::Or,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -273,7 +317,11 @@ impl<'a> Parser<'a> {
         while matches!(self.peek(), Token::And) {
             self.advance();
             let right = self.parse_comparison()?;
-            left = Expr::BinOp { left: Box::new(left), op: BinOp::And, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op: BinOp::And,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -292,7 +340,11 @@ impl<'a> Parser<'a> {
             };
             self.advance();
             let right = self.parse_concat()?;
-            left = Expr::BinOp { left: Box::new(left), op, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -302,7 +354,11 @@ impl<'a> Parser<'a> {
         while matches!(self.peek(), Token::DotDot) {
             self.advance();
             let right = self.parse_additive()?;
-            left = Expr::BinOp { left: Box::new(left), op: BinOp::Concat, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op: BinOp::Concat,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -317,7 +373,11 @@ impl<'a> Parser<'a> {
             };
             self.advance();
             let right = self.parse_multiplicative()?;
-            left = Expr::BinOp { left: Box::new(left), op, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -333,7 +393,11 @@ impl<'a> Parser<'a> {
             };
             self.advance();
             let right = self.parse_unary()?;
-            left = Expr::BinOp { left: Box::new(left), op, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -350,17 +414,26 @@ impl<'a> Parser<'a> {
             Token::Minus => {
                 self.advance();
                 let operand = self.parse_unary()?;
-                Ok(Expr::UnOp { op: UnOp::Neg, operand: Box::new(operand) })
+                Ok(Expr::UnOp {
+                    op: UnOp::Neg,
+                    operand: Box::new(operand),
+                })
             }
             Token::Not => {
                 self.advance();
                 let operand = self.parse_unary()?;
-                Ok(Expr::UnOp { op: UnOp::Not, operand: Box::new(operand) })
+                Ok(Expr::UnOp {
+                    op: UnOp::Not,
+                    operand: Box::new(operand),
+                })
             }
             Token::Hash => {
                 self.advance();
                 let operand = self.parse_unary()?;
-                Ok(Expr::UnOp { op: UnOp::Len, operand: Box::new(operand) })
+                Ok(Expr::UnOp {
+                    op: UnOp::Len,
+                    operand: Box::new(operand),
+                })
             }
             _ => self.parse_pow(),
         }
@@ -368,12 +441,26 @@ impl<'a> Parser<'a> {
 
     /// Exponentiation: right-associative and binding tighter than unary
     /// minus (Lua semantics): `-2^2 == -(2^2)`, `2^3^2 == 2^(3^2)`.
+    ///
+    /// Right recursion (`2^3^2...`) goes through `enter()` like every other
+    /// nesting level — without it `1^1^1^…` overflows the stack.
     fn parse_pow(&mut self) -> Result<Expr, ParseError> {
+        self.enter()?;
+        let result = self.parse_pow_inner();
+        self.leave();
+        result
+    }
+
+    fn parse_pow_inner(&mut self) -> Result<Expr, ParseError> {
         let base = self.parse_postfix()?;
         if matches!(self.peek(), Token::Caret) {
             self.advance();
             let exp = self.parse_pow()?;
-            Ok(Expr::BinOp { left: Box::new(base), op: BinOp::Pow, right: Box::new(exp) })
+            Ok(Expr::BinOp {
+                left: Box::new(base),
+                op: BinOp::Pow,
+                right: Box::new(exp),
+            })
         } else {
             Ok(base)
         }
@@ -394,21 +481,34 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.expect(&Token::RParen)?;
-                    expr = Expr::Call { func: Box::new(expr), args };
+                    expr = Expr::Call {
+                        func: Box::new(expr),
+                        args,
+                    };
                 }
                 Token::LBracket => {
                     self.advance();
                     let key = self.parse_expr()?;
                     self.expect(&Token::RBracket)?;
-                    expr = Expr::Index { table: Box::new(expr), key: Box::new(key) };
+                    expr = Expr::Index {
+                        table: Box::new(expr),
+                        key: Box::new(key),
+                    };
                 }
                 Token::Dot => {
                     self.advance();
                     let name = match self.advance() {
                         Token::Ident(n) => n,
-                        other => return Err(ParseError { message: format!("expected field name, got {:?}", other) }),
+                        other => {
+                            return Err(ParseError {
+                                message: format!("expected field name, got {:?}", other),
+                            })
+                        }
                     };
-                    expr = Expr::Field { table: Box::new(expr), name };
+                    expr = Expr::Field {
+                        table: Box::new(expr),
+                        name,
+                    };
                 }
                 _ => break,
             }
@@ -436,14 +536,18 @@ impl<'a> Parser<'a> {
                     entries.push(self.parse_table_entry()?);
                     while matches!(self.peek(), Token::Comma | Token::Semicolon) {
                         self.advance();
-                        if matches!(self.peek(), Token::RBrace) { break; }
+                        if matches!(self.peek(), Token::RBrace) {
+                            break;
+                        }
                         entries.push(self.parse_table_entry()?);
                     }
                 }
                 self.expect(&Token::RBrace)?;
                 Ok(Expr::Table(entries))
             }
-            other => Err(ParseError { message: format!("unexpected token {:?}", other) }),
+            other => Err(ParseError {
+                message: format!("unexpected token {:?}", other),
+            }),
         }
     }
 
@@ -455,7 +559,8 @@ impl<'a> Parser<'a> {
     /// stored with a None key and get sequential integer indices.
     fn parse_table_entry(&mut self) -> Result<(Option<Expr>, Expr), ParseError> {
         // Lookahead: `Ident =` marks a named key, not an assignment expression.
-        if let (Token::Ident(name), Token::Assign) = (self.peek().clone(), self.peek_at(1).clone()) {
+        if let (Token::Ident(name), Token::Assign) = (self.peek().clone(), self.peek_at(1).clone())
+        {
             self.advance(); // consume Ident
             self.advance(); // consume '='
             let val = self.parse_expr()?;
@@ -467,19 +572,34 @@ impl<'a> Parser<'a> {
             self.advance(); // consume '['
             let key = self.parse_expr()?;
             match self.peek() {
-                Token::RBracket => { self.advance(); }
-                other => return Err(ParseError { message: format!("expected ']' in table key, got {:?}", other) }),
+                Token::RBracket => {
+                    self.advance();
+                }
+                other => {
+                    return Err(ParseError {
+                        message: format!("expected ']' in table key, got {:?}", other),
+                    })
+                }
             }
             match self.peek() {
-                Token::Assign => { self.advance(); }
-                other => return Err(ParseError { message: format!("expected '=' after table key, got {:?}", other) }),
+                Token::Assign => {
+                    self.advance();
+                }
+                other => {
+                    return Err(ParseError {
+                        message: format!("expected '=' after table key, got {:?}", other),
+                    })
+                }
             }
             let val = self.parse_expr()?;
             return Ok((Some(key), val));
         }
         let expr = self.parse_expr()?;
         if matches!(self.peek(), Token::Assign) {
-            return Err(ParseError { message: "invalid table key: only 'name = value' or '[expr] = value' name keys".into() });
+            return Err(ParseError {
+                message: "invalid table key: only 'name = value' or '[expr] = value' name keys"
+                    .into(),
+            });
         }
         Ok((None, expr))
     }
@@ -517,7 +637,10 @@ mod tests {
         let tokens = tokenize("local t = {a = 1, 5, b = 'x'}").unwrap();
         let stmts = parse(&tokens).unwrap();
         match &stmts[0] {
-            Stmt::LocalAssign { value: Some(Expr::Table(entries)), .. } => {
+            Stmt::LocalAssign {
+                value: Some(Expr::Table(entries)),
+                ..
+            } => {
                 assert_eq!(entries.len(), 3);
                 assert!(matches!(&entries[0].0, Some(Expr::StringLit(s)) if s == "a"));
                 assert!(entries[1].0.is_none());
@@ -540,7 +663,10 @@ mod tests {
 
         // -2^2 == -(2^2)
         match expr_of("-2^2") {
-            Expr::UnOp { op: UnOp::Neg, operand } => {
+            Expr::UnOp {
+                op: UnOp::Neg,
+                operand,
+            } => {
                 assert!(matches!(*operand, Expr::BinOp { op: BinOp::Pow, .. }));
             }
             other => panic!("expected negated pow, got {:?}", other),
@@ -548,7 +674,11 @@ mod tests {
 
         // 2^3^2 == 2^(3^2): right operand of the outer pow is itself a pow.
         match expr_of("2^3^2") {
-            Expr::BinOp { op: BinOp::Pow, right, .. } => {
+            Expr::BinOp {
+                op: BinOp::Pow,
+                right,
+                ..
+            } => {
                 assert!(matches!(*right, Expr::BinOp { op: BinOp::Pow, .. }));
             }
             other => panic!("expected pow, got {:?}", other),
@@ -567,6 +697,19 @@ mod tests {
     #[test]
     fn test_break_inside_loop_accepted() {
         let tokens = tokenize("while true do if x then break end end").unwrap();
+        assert!(parse(&tokens).is_ok());
+    }
+
+    #[test]
+    fn test_pow_chain_depth_limit() {
+        // Right-nested `1^1^1^…` used to recurse without a depth check
+        // (stack overflow). Now it must fail gracefully.
+        let src = format!("x = {}", vec!["1"; 10_000].join("^"));
+        let tokens = tokenize(&src).unwrap();
+        let err = parse(&tokens).unwrap_err();
+        assert!(err.message.contains("maximum nesting depth"), "{}", err);
+
+        let tokens = tokenize("x = 2^3^2").unwrap();
         assert!(parse(&tokens).is_ok());
     }
 }

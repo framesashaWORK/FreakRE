@@ -582,6 +582,8 @@ version = "0.1.0"
 dependencies = [
  "entropy-rs",
  "import-analyzer",
+ "serde",
+ "serde_json",
  "str-extract",
 ]
 
@@ -1821,8 +1823,10 @@ name = "freakre-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "backdoor-analyzer",
  "base64",
  "clap",
+ "diffing",
  "entropy-rs",
  "freakre-scanner",
  "func-sigs",
@@ -1891,8 +1895,16 @@ dependencies = [
 name = "fsig-gen"
 version = "0.1.0"
 dependencies = [
+ "capstone-ffi",
+ "freakre-ir",
  "freakre-x86",
+ "func-finder",
+ "func-sigs",
  "pe-parser",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1909,6 +1921,7 @@ name = "func-sigs"
 version = "0.1.0"
 dependencies = [
  "fxhash",
+ "memmap2",
  "pe-parser",
  "serde",
 ]
@@ -4161,6 +4174,17 @@ name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures",

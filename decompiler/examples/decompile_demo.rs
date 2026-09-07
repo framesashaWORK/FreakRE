@@ -3,10 +3,21 @@ use freakre_ir::x86_lifter::X86Lifter;
 use freakre_ir::Lifter;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: demo <exe> <offset-hex>");
-    let offset = usize::from_str_radix(std::env::args().nth(2).expect("offset").trim_start_matches("0x"), 16)
-        .expect("bad offset");
-    let count: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(300);
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: demo <exe> <offset-hex>");
+    let offset = usize::from_str_radix(
+        std::env::args()
+            .nth(2)
+            .expect("offset")
+            .trim_start_matches("0x"),
+        16,
+    )
+    .expect("bad offset");
+    let count: usize = std::env::args()
+        .nth(3)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
 
     let data = std::fs::read(&path).expect("read");
     let pe = pe_parser::PeFile::parse(&data).expect("pe");
@@ -37,11 +48,17 @@ fn main() {
             break 'found;
         }
     }
-    eprintln!("[demo] lifted from file offset {:#X} (rva {:#X})", text.raw_data_offset as usize + off, off);
+    eprintln!(
+        "[demo] lifted from file offset {:#X} (rva {:#X})",
+        text.raw_data_offset as usize + off,
+        off
+    );
     let code = &raw[off..];
 
     let lifter = X86Lifter::new(true);
-    let func = lifter.lift_function(code, 0x140001000u64, "demo").expect("lift");
+    let func = lifter
+        .lift_function(code, 0x140001000u64, "demo")
+        .expect("lift");
     let total_insts: usize = func.blocks.iter().map(|b| b.insts.len()).sum();
     eprintln!(
         "[ir] blocks={} insts={} entry={:?}",
@@ -65,15 +82,30 @@ fn main() {
         };
         match term {
             IrInst::Branch { target } => eprintln!("[t] b{} -> {}", b.id.0, name_of(target)),
-            IrInst::CBranch { target_true, target_false, .. } => {
-                eprintln!("[t] b{} -> T:{} F:{}", b.id.0, name_of(target_true), name_of(target_false))
+            IrInst::CBranch {
+                target_true,
+                target_false,
+                ..
+            } => {
+                eprintln!(
+                    "[t] b{} -> T:{} F:{}",
+                    b.id.0,
+                    name_of(target_true),
+                    name_of(target_false)
+                )
             }
             other => eprintln!("[t] b{} term={:?}", b.id.0, other),
         }
     }
 
     for b in func.blocks.iter().take(8) {
-        eprintln!("[ir] block {} preds={:?} succ={:?} insts={}", b.id.0, b.predecessors, b.successors, b.insts.len());
+        eprintln!(
+            "[ir] block {} preds={:?} succ={:?} insts={}",
+            b.id.0,
+            b.predecessors,
+            b.successors,
+            b.insts.len()
+        );
     }
 
     match decompile_function(&func) {

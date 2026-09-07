@@ -52,7 +52,13 @@ pub struct EmbeddedPe {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum DumpSeverity { Info, Low, Medium, High, Critical }
+pub enum DumpSeverity {
+    Info,
+    Low,
+    Medium,
+    High,
+    Critical,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DumpFinding {
@@ -84,7 +90,9 @@ const MINIDUMP_STREAM_TYPES: &[(&str, u32)] = &[
 /// Top-level entry point. Returns `Some(_)` for recognized dump types
 /// (including `RawMemory` if MZ candidates are present).
 pub fn analyze_dump(data: &[u8]) -> Option<DumpReport> {
-    if data.len() < 32 { return None; }
+    if data.len() < 32 {
+        return None;
+    }
 
     // Windows Minidump: "MDMP" + signature1 + signature2 + NumberOfStreams
     if data.starts_with(b"MDMP") {
@@ -108,7 +116,9 @@ pub fn analyze_dump(data: &[u8]) -> Option<DumpReport> {
 
     // Fallback: raw memory, only return Some if we find at least one MZ
     let hits = scan_for_mz(data);
-    if hits.is_empty() { return None; }
+    if hits.is_empty() {
+        return None;
+    }
     let mut report = DumpReport {
         kind: DumpKind::RawMemory,
         streams: Vec::new(),
@@ -125,8 +135,10 @@ pub fn analyze_dump(data: &[u8]) -> Option<DumpReport> {
         report.findings.push(DumpFinding {
             severity: DumpSeverity::Info,
             rule_id: "DUMP_EMBEDDED_PE".into(),
-            description: format!("{} embedded PE candidate(s) found",
-                report.embedded_pe.len()),
+            description: format!(
+                "{} embedded PE candidate(s) found",
+                report.embedded_pe.len()
+            ),
             offset: 0,
         });
     }
@@ -141,14 +153,20 @@ fn analyze_minidump(data: &[u8]) -> DumpReport {
         raw_mz_hits: 0,
         findings: Vec::new(),
     };
-    if data.len() < 32 { return report; }
+    if data.len() < 32 {
+        return report;
+    }
     let num_streams = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
     let mut p = 32;
     for _ in 0..num_streams {
-        if p + 12 > data.len() { break; }
+        if p + 12 > data.len() {
+            break;
+        }
         let kind = u32::from_le_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]]);
-        let size = u32::from_le_bytes([data[p + 8], data[p + 9], data[p + 10], data[p + 11]]) as usize;
-        let kind_name = MINIDUMP_STREAM_TYPES.iter()
+        let size =
+            u32::from_le_bytes([data[p + 8], data[p + 9], data[p + 10], data[p + 11]]) as usize;
+        let kind_name = MINIDUMP_STREAM_TYPES
+            .iter()
             .find(|(_, k)| *k == kind)
             .map(|(n, _)| n.to_string())
             .unwrap_or_else(|| format!("Stream_{}", kind));
@@ -178,8 +196,10 @@ fn analyze_minidump(data: &[u8]) -> DumpReport {
         report.findings.push(DumpFinding {
             severity: DumpSeverity::Info,
             rule_id: "DUMP_EMBEDDED_PE".into(),
-            description: format!("{} embedded PE candidate(s) found in dump",
-                report.embedded_pe.len()),
+            description: format!(
+                "{} embedded PE candidate(s) found in dump",
+                report.embedded_pe.len()
+            ),
             offset: 0,
         });
     }
@@ -249,12 +269,20 @@ fn scan_for_mz(data: &[u8]) -> Vec<usize> {
 }
 
 fn try_parse_pe_at(data: &[u8], off: usize) -> Option<EmbeddedPe> {
-    if off + 0x40 > data.len() { return None; }
-    if data[off] != b'M' || data[off + 1] != b'Z' { return None; }
+    if off + 0x40 > data.len() {
+        return None;
+    }
+    if data[off] != b'M' || data[off + 1] != b'Z' {
+        return None;
+    }
     let pe_off = read_u32(data, off + 0x3C)? as usize;
     let pe_abs = off.checked_add(pe_off)?;
-    if pe_abs + 24 > data.len() { return None; }
-    if &data[pe_abs..pe_abs + 4] != b"PE\0\0" { return None; }
+    if pe_abs + 24 > data.len() {
+        return None;
+    }
+    if &data[pe_abs..pe_abs + 4] != b"PE\0\0" {
+        return None;
+    }
     let coff = pe_abs + 4;
     let machine = read_u16(data, coff)?;
     let machine_name = match machine {
@@ -266,7 +294,9 @@ fn try_parse_pe_at(data: &[u8], off: usize) -> Option<EmbeddedPe> {
         _ => return None,
     };
     let opt_off = coff + 20;
-    if opt_off + 2 > data.len() { return None; }
+    if opt_off + 2 > data.len() {
+        return None;
+    }
     let opt_magic = read_u16(data, opt_off)?;
     let is_64bit = opt_magic == 0x20B;
     Some(EmbeddedPe {
@@ -278,12 +308,21 @@ fn try_parse_pe_at(data: &[u8], off: usize) -> Option<EmbeddedPe> {
 }
 
 fn read_u16(data: &[u8], off: usize) -> Option<u16> {
-    if off + 2 > data.len() { return None; }
+    if off + 2 > data.len() {
+        return None;
+    }
     Some(u16::from_le_bytes([data[off], data[off + 1]]))
 }
 fn read_u32(data: &[u8], off: usize) -> Option<u32> {
-    if off + 4 > data.len() { return None; }
-    Some(u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]))
+    if off + 4 > data.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        data[off],
+        data[off + 1],
+        data[off + 2],
+        data[off + 3],
+    ]))
 }
 
 #[cfg(test)]
@@ -298,8 +337,8 @@ mod tests {
     #[test]
     fn test_minidump_magic() {
         let mut v = b"MDMP".to_vec();
-        v.extend_from_slice(&[0, 0, 0, 0]);  // signature1
-        v.extend_from_slice(&[0, 0, 0, 0]);  // signature2
+        v.extend_from_slice(&[0, 0, 0, 0]); // signature1
+        v.extend_from_slice(&[0, 0, 0, 0]); // signature2
         v.extend_from_slice(&0u32.to_le_bytes()); // NumberOfStreams
         v.extend_from_slice(&0u32.to_le_bytes()); // StreamDirectoryRva
         v.extend_from_slice(&0u32.to_le_bytes()); // CheckSum
@@ -313,7 +352,8 @@ mod tests {
     fn test_elf_core() {
         let mut v = b"\x7FELF".to_vec();
         v.resize(0x14, 0);
-        v[0x10] = 4; v[0x11] = 0; // e_type = ET_CORE
+        v[0x10] = 4;
+        v[0x11] = 0; // e_type = ET_CORE
         let r = analyze_elf_core(&v);
         assert_eq!(r.kind, DumpKind::ElfCore);
     }

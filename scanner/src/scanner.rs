@@ -1,4 +1,4 @@
-﻿/// Re-exports of the pipeline modules split out of this file, kept here so
+/// Re-exports of the pipeline modules split out of this file, kept here so
 /// existing `freakre_scanner::scanner::*` paths (benches, downstream crates)
 /// keep working.
 pub use crate::filetype::{contains_any, detect_file_type, hex_md5, hex_sha256, strip_utf8_bom};
@@ -8,7 +8,9 @@ pub use crate::scoring::{
     calculate_suspicion_score, calculate_suspicion_score_with_config, determine_verdict,
     is_executable_section, is_weak_shellcode_finding, is_yara_budget_notice, ScoringConfig,
 };
-use backdoor_analyzer::analyze_backdoors;
+use backdoor_analyzer::{
+    analyze_backdoors, correlate_function_evidence, detect_platform_tactics, FunctionEvidence,
+};
 use cfg_builder::{build_cfg, CfgConfig};
 use elf_parser::ElfFile;
 use entropy_rs::calculate_entropy;
@@ -20,18 +22,65 @@ use shellcode_analyzer::{detect_architecture, detect_shellcode, Arch, ShellcodeC
 use std::path::Path;
 use std::time::Instant;
 use str_extract::{extract_strings, ExtractConfig};
-use xrefs::{build_string_xrefs, build_import_xrefs, XrefDatabase};
+use xrefs::{build_import_xrefs, build_string_xrefs, XrefDatabase};
 
-use script_analyzer::{analyze_script, detect_kind as script_detect_kind};
-use pdf_analyzer::analyze_pdf;
 use dotnet_analyzer::analyze_dotnet;
-use pyc_parser::analyze_python;
 use firmware_analyzer::analyze_firmware;
 use memdump_analyzer::analyze_dump;
+use pdf_analyzer::analyze_pdf;
+use pyc_parser::analyze_python;
+use script_analyzer::{analyze_script, detect_kind as script_detect_kind};
+
+/// Carve `size` bytes at virtual address `start` out of `code_region` (which
+/// is loaded at `code_base`), clamped to the region bounds.
+///
+/// The func-finder guarantees its results lie inside the region, but this is
+/// the last line of defense before slicing: a bogus `(start, size)` pair
+/// yields `None` instead of an underflow/overflow panic or OOB slice.
+#[cfg(any(test, feature = "decompiler"))]
+pub(crate) fn carve_func_slice(
+    code_region: &[u8],
+    code_base: u64,
+    start: u64,
+    size: usize,
+) -> Option<&[u8]> {
+    let off = start
+        .checked_sub(code_base)
+        .and_then(|o| usize::try_from(o).ok())
+        .filter(|&o| o <= code_region.len())?;
+    let end = off.saturating_add(size).min(code_region.len());
+    code_region.get(off..end)
+}
 
 /// Core scanner that orchestrates all analysis modules
 pub struct Scanner {
     yara_scanner: Option<yara_lite::Scanner>,
+    profile: AnalysisProfile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalysisProfile {
+    Quick,
+    Malware,
+    Deep,
+    Firmware,
+    Decompiler,
+}
+
+impl AnalysisProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Quick => "quick",
+            Self::Malware => "malware",
+            Self::Deep => "deep",
+            Self::Firmware => "firmware",
+            Self::Decompiler => "decompiler",
+        }
+    }
+
+    fn runs_ml(self) -> bool { !matches!(self, Self::Quick | Self::Firmware) }
+    #[cfg(feature = "decompiler")]
+    fn runs_decompiler(self) -> bool { matches!(self, Self::Deep | Self::Decompiler) }
 }
 
 impl Default for Scanner {
@@ -45,8 +94,15 @@ impl Scanner {
         // Best-effort: harvested FLIRT overlay (Once-cached; silent when the
         // data file is not deployed — the embedded curated DB still applies).
         let _ = func_sigs::auto_load_overlay();
-        Self { yara_scanner: None }
+        Self { yara_scanner: None, profile: AnalysisProfile::Malware }
     }
+
+    pub fn with_profile(mut self, profile: AnalysisProfile) -> Self {
+        self.profile = profile;
+        self
+    }
+
+    pub fn profile(&self) -> AnalysisProfile { self.profile }
 
     pub fn with_yara_rules(mut self, rules_path: &Path) -> Result<Self, String> {
         let source = std::fs::read_to_string(rules_path)
@@ -107,6 +163,7 @@ impl Scanner {
                     dll_info: None,
                     architecture_info: None,
                     backdoor_report: None,
+                    backdoor_analysis: None,
                     shellcode_report: None,
                     xref_summary: None,
                     cfg_summary: None,
@@ -114,6 +171,7 @@ impl Scanner {
                     ml_classification: None,
                     scan_duration_ms: start.elapsed().as_millis(),
                     functions: Vec::new(),
+                    analysis_profile: self.profile.as_str().into(),
                 };
             }
         };
@@ -283,7 +341,11 @@ impl Scanner {
                 entry_point: Some(format!("0x{:X}", pe.entry_point)),
                 image_base: Some(format!("0x{:X}", pe.image_base)),
                 dll_characteristics: pe.dll_characteristics_flags(),
-                tls_callbacks: pe.tls_callbacks().iter().map(|cb| format!("0x{:X}", cb)).collect(),
+                tls_callbacks: pe
+                    .tls_callbacks()
+                    .iter()
+                    .map(|cb| format!("0x{:X}", cb))
+                    .collect(),
                 is_dotnet: pe.is_dotnet(),
                 has_overlay: pe.overlay_size() > 0,
                 overlay_size: pe.overlay_size(),
@@ -316,18 +378,26 @@ impl Scanner {
                 is_com: dll_raw.is_com,
                 is_wdm_driver: dll_raw.is_wdm_driver,
                 is_injectable: dll_raw.is_injectable,
-                calling_conventions: dll_raw.calling_conventions.iter().map(|c| format!("{:?}", c)).collect(),
+                calling_conventions: dll_raw
+                    .calling_conventions
+                    .iter()
+                    .map(|c| format!("{:?}", c))
+                    .collect(),
                 exports: dll_raw.exports,
                 dll_name: dll_raw.dll_name,
                 export_count: dll_raw.export_count,
                 import_count: dll_raw.import_count,
                 characteristics: dll_raw.characteristics,
                 suspicion_score: dll_raw.suspicion_score,
-                findings: dll_raw.findings.into_iter().map(|f| DllFindingInfo {
-                    severity: f.severity,
-                    rule_id: f.rule_id,
-                    description: f.description,
-                }).collect(),
+                findings: dll_raw
+                    .findings
+                    .into_iter()
+                    .map(|f| DllFindingInfo {
+                        severity: f.severity,
+                        rule_id: f.rule_id,
+                        description: f.description,
+                    })
+                    .collect(),
             });
 
             // в”Ђв”Ђв”Ђ PE Security Findings в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
@@ -363,7 +433,11 @@ impl Scanner {
             // TLS callbacks вЂ” execute before entry point
             let tls_cbs = pe.tls_callbacks();
             if !tls_cbs.is_empty() {
-                let sev = if tls_cbs.len() > 3 { Severity::High } else { Severity::Medium };
+                let sev = if tls_cbs.len() > 3 {
+                    Severity::High
+                } else {
+                    Severity::Medium
+                };
                 findings.push(Finding {
                     severity: sev,
                     module: "pe-parser".into(),
@@ -382,7 +456,8 @@ impl Scanner {
                     severity: Severity::Info,
                     module: "pe-parser".into(),
                     rule_id: "PE_DOTNET".into(),
-                    description: ".NET CLR assembly detected вЂ” static x86/x64 analysis limited".into(),
+                    description: ".NET CLR assembly detected вЂ” static x86/x64 analysis limited"
+                        .into(),
                     details: Some("Use IL disassembler (ILSpy/dnSpy) for full analysis".into()),
                 });
             }
@@ -401,7 +476,9 @@ impl Scanner {
                         "Overlay data detected: {} bytes appended after last section",
                         overlay_size
                     ),
-                    details: Some("Common technique to hide encrypted payloads or appended droppers".into()),
+                    details: Some(
+                        "Common technique to hide encrypted payloads or appended droppers".into(),
+                    ),
                 });
             }
 
@@ -537,10 +614,15 @@ impl Scanner {
             let macho_data: &[u8] = match macho_parser::parse_any(&data) {
                 Ok(macho_parser::MachoObject::Fat(archs)) if !archs.is_empty() => {
                     // Prefer 64-bit ARM or x86_64, fall back to first arch
-                    let preferred = archs.iter().find(|a| a.cpu_type.is_64bit())
+                    let preferred = archs
+                        .iter()
+                        .find(|a| a.cpu_type.is_64bit())
                         .unwrap_or(&archs[0]);
                     let start = preferred.offset as usize;
-                    let end = (start + preferred.size as usize).min(data.len());
+                    // saturating: a crafted Fat header can set size = u32::MAX
+                    let end = start
+                        .saturating_add(preferred.size as usize)
+                        .min(data.len());
                     if start < data.len() {
                         &data[start..end]
                     } else {
@@ -604,13 +686,15 @@ impl Scanner {
                         }
                     }
 
-                    let rwx_segs: Vec<String> = macho.segments()
+                    let rwx_segs: Vec<String> = macho
+                        .segments()
                         .iter()
                         .filter(|s| s.is_rwx())
                         .map(|s| s.name.clone())
                         .collect();
 
-                    let dylibs: Vec<String> = macho.imported_dylibs()
+                    let dylibs: Vec<String> = macho
+                        .imported_dylibs()
                         .iter()
                         .map(|s| s.to_string())
                         .collect();
@@ -674,7 +758,10 @@ impl Scanner {
                     // Check for suspicious imports
                     for func in &imported_funcs {
                         let lower = func.to_lowercase();
-                        if lower.contains("eval") || lower.contains("exec") || lower.contains("spawn") {
+                        if lower.contains("eval")
+                            || lower.contains("exec")
+                            || lower.contains("spawn")
+                        {
                             findings.push(Finding {
                                 severity: Severity::Medium,
                                 module: "wasm-parser".into(),
@@ -692,7 +779,10 @@ impl Scanner {
                             severity: Severity::Low,
                             module: "wasm-parser".into(),
                             rule_id: "WASM_LARGE_CODE".into(),
-                            description: format!("WASM module has large code section: {} bytes", code_size),
+                            description: format!(
+                                "WASM module has large code section: {} bytes",
+                                code_size
+                            ),
                             details: None,
                         });
                     }
@@ -709,7 +799,11 @@ impl Scanner {
                         num_data_segments: wasm.data.len(),
                         imported_functions: imported_funcs,
                         exported_functions: exported_funcs,
-                        custom_sections: wasm.custom_sections.iter().map(|c| c.name.clone()).collect(),
+                        custom_sections: wasm
+                            .custom_sections
+                            .iter()
+                            .map(|c| c.name.clone())
+                            .collect(),
                         total_code_size: code_size,
                     });
                 }
@@ -731,7 +825,9 @@ impl Scanner {
         if file_type == "DEX" {
             match dex_parser::parse_dex(&data) {
                 Ok(dex) => {
-                    let class_names: Vec<String> = dex.class_defs.iter()
+                    let class_names: Vec<String> = dex
+                        .class_defs
+                        .iter()
                         .filter_map(|cd| dex.get_class_name(cd))
                         .collect();
                     let method_names = dex.all_method_names();
@@ -739,7 +835,10 @@ impl Scanner {
                     // Check for suspicious method names
                     for method in &method_names {
                         let lower = method.to_lowercase();
-                        if lower.contains("runtime") || lower.contains("exec") || lower.contains("loadclass") {
+                        if lower.contains("runtime")
+                            || lower.contains("exec")
+                            || lower.contains("loadclass")
+                        {
                             findings.push(Finding {
                                 severity: Severity::Medium,
                                 module: "dex-parser".into(),
@@ -784,15 +883,12 @@ impl Scanner {
         if file_type == "COFF" {
             match coff_parser::parse_coff(&data) {
                 Ok(coff) => {
-                    let section_names: Vec<String> = coff.sections.iter()
-                        .map(|s| s.name.clone())
-                        .collect();
-                    let functions: Vec<String> = coff.functions().iter()
-                        .map(|s| s.name.clone())
-                        .collect();
-                    let externals: Vec<String> = coff.externals().iter()
-                        .map(|s| s.name.clone())
-                        .collect();
+                    let section_names: Vec<String> =
+                        coff.sections.iter().map(|s| s.name.clone()).collect();
+                    let functions: Vec<String> =
+                        coff.functions().iter().map(|s| s.name.clone()).collect();
+                    let externals: Vec<String> =
+                        coff.externals().iter().map(|s| s.name.clone()).collect();
 
                     // Cache COFF symbols for backdoor analysis
                     if cached_import_names.is_empty() {
@@ -801,7 +897,8 @@ impl Scanner {
 
                     // Check for RWX sections
                     for section in &coff.sections {
-                        if section.is_readable() && section.is_writable() && section.is_executable() {
+                        if section.is_readable() && section.is_writable() && section.is_executable()
+                        {
                             findings.push(Finding {
                                 severity: Severity::High,
                                 module: "coff-parser".into(),
@@ -920,27 +1017,30 @@ impl Scanner {
                 && std::str::from_utf8(&data).is_ok()
                 && script_detect_kind(&data).is_some())
         {
-            if let Some(kind) = script_detect_kind(&data)
-                .or(match file_type.as_str() {
-                    "Script/PowerShell" => Some(script_analyzer::ScriptKind::PowerShell),
-                    "Script/AutoIt" => Some(script_analyzer::ScriptKind::AutoIt),
-                    "Script/AutoHotkey" => Some(script_analyzer::ScriptKind::AutoHotkey),
-                    "Script/Batch" => Some(script_analyzer::ScriptKind::Batch),
-                    "Script/VBScript" => Some(script_analyzer::ScriptKind::VBScript),
-                    _ => None,
-                })
-            {
+            if let Some(kind) = script_detect_kind(&data).or(match file_type.as_str() {
+                "Script/PowerShell" => Some(script_analyzer::ScriptKind::PowerShell),
+                "Script/AutoIt" => Some(script_analyzer::ScriptKind::AutoIt),
+                "Script/AutoHotkey" => Some(script_analyzer::ScriptKind::AutoHotkey),
+                "Script/Batch" => Some(script_analyzer::ScriptKind::Batch),
+                "Script/VBScript" => Some(script_analyzer::ScriptKind::VBScript),
+                _ => None,
+            }) {
                 let report = analyze_script(kind, &data);
-                let highest_severity = report.findings.iter()
+                let highest_severity = report
+                    .findings
+                    .iter()
                     .map(|f| f.severity)
                     .max()
-                    .map(|s| match s {
-                        script_analyzer::ScriptSeverity::Critical => "Critical",
-                        script_analyzer::ScriptSeverity::High => "High",
-                        script_analyzer::ScriptSeverity::Medium => "Medium",
-                        script_analyzer::ScriptSeverity::Low => "Low",
-                        script_analyzer::ScriptSeverity::Info => "Info",
-                    }.to_string())
+                    .map(|s| {
+                        match s {
+                            script_analyzer::ScriptSeverity::Critical => "Critical",
+                            script_analyzer::ScriptSeverity::High => "High",
+                            script_analyzer::ScriptSeverity::Medium => "Medium",
+                            script_analyzer::ScriptSeverity::Low => "Low",
+                            script_analyzer::ScriptSeverity::Info => "Info",
+                        }
+                        .to_string()
+                    })
                     .unwrap_or_else(|| "Info".into());
                 for f in &report.findings {
                     let sev = match f.severity {
@@ -979,10 +1079,14 @@ impl Scanner {
                     finding_count: report.findings.len(),
                     highest_severity,
                     suspicious_calls: report.suspicious_calls,
-                    iocs: report.iocs.into_iter().map(|i| ScriptIoc {
-                        kind: format!("{:?}", i.kind),
-                        value: i.value,
-                    }).collect(),
+                    iocs: report
+                        .iocs
+                        .into_iter()
+                        .map(|i| ScriptIoc {
+                            kind: format!("{:?}", i.kind),
+                            value: i.value,
+                        })
+                        .collect(),
                 });
             }
         }
@@ -990,15 +1094,21 @@ impl Scanner {
         // --- PDF Analysis ---
         if file_type == "PDF" {
             if let Some(report) = analyze_pdf(&data) {
-                let highest = report.findings.iter()
-                    .map(|f| f.severity).max()
-                    .map(|s| match s {
-                        pdf_analyzer::PdfSeverity::Critical => "Critical",
-                        pdf_analyzer::PdfSeverity::High => "High",
-                        pdf_analyzer::PdfSeverity::Medium => "Medium",
-                        pdf_analyzer::PdfSeverity::Low => "Low",
-                        pdf_analyzer::PdfSeverity::Info => "Info",
-                    }.to_string())
+                let highest = report
+                    .findings
+                    .iter()
+                    .map(|f| f.severity)
+                    .max()
+                    .map(|s| {
+                        match s {
+                            pdf_analyzer::PdfSeverity::Critical => "Critical",
+                            pdf_analyzer::PdfSeverity::High => "High",
+                            pdf_analyzer::PdfSeverity::Medium => "Medium",
+                            pdf_analyzer::PdfSeverity::Low => "Low",
+                            pdf_analyzer::PdfSeverity::Info => "Info",
+                        }
+                        .to_string()
+                    })
                     .unwrap_or_else(|| "Info".into());
                 for f in &report.findings {
                     let sev = match f.severity {
@@ -1041,15 +1151,21 @@ impl Scanner {
         if let Some(ref pei) = pe_info {
             if pei.is_dotnet {
                 if let Some(report) = analyze_dotnet(&data) {
-                    let highest = report.findings.iter()
-                        .map(|f| f.severity).max()
-                        .map(|s| match s {
-                            dotnet_analyzer::DotnetSeverity::Critical => "Critical",
-                            dotnet_analyzer::DotnetSeverity::High => "High",
-                            dotnet_analyzer::DotnetSeverity::Medium => "Medium",
-                            dotnet_analyzer::DotnetSeverity::Low => "Low",
-                            dotnet_analyzer::DotnetSeverity::Info => "Info",
-                        }.to_string())
+                    let highest = report
+                        .findings
+                        .iter()
+                        .map(|f| f.severity)
+                        .max()
+                        .map(|s| {
+                            match s {
+                                dotnet_analyzer::DotnetSeverity::Critical => "Critical",
+                                dotnet_analyzer::DotnetSeverity::High => "High",
+                                dotnet_analyzer::DotnetSeverity::Medium => "Medium",
+                                dotnet_analyzer::DotnetSeverity::Low => "Low",
+                                dotnet_analyzer::DotnetSeverity::Info => "Info",
+                            }
+                            .to_string()
+                        })
                         .unwrap_or_else(|| "Info".into());
                     for f in &report.findings {
                         let sev = match f.severity {
@@ -1091,15 +1207,21 @@ impl Scanner {
         // --- Python / .pyc / PyInstaller ---
         if file_type == "Python/Compiled" {
             if let Some(report) = analyze_python(&data) {
-                let highest = report.findings.iter()
-                    .map(|f| f.severity).max()
-                    .map(|s| match s {
-                        pyc_parser::PycSeverity::Critical => "Critical",
-                        pyc_parser::PycSeverity::High => "High",
-                        pyc_parser::PycSeverity::Medium => "Medium",
-                        pyc_parser::PycSeverity::Low => "Low",
-                        pyc_parser::PycSeverity::Info => "Info",
-                    }.to_string())
+                let highest = report
+                    .findings
+                    .iter()
+                    .map(|f| f.severity)
+                    .max()
+                    .map(|s| {
+                        match s {
+                            pyc_parser::PycSeverity::Critical => "Critical",
+                            pyc_parser::PycSeverity::High => "High",
+                            pyc_parser::PycSeverity::Medium => "Medium",
+                            pyc_parser::PycSeverity::Low => "Low",
+                            pyc_parser::PycSeverity::Info => "Info",
+                        }
+                        .to_string()
+                    })
                     .unwrap_or_else(|| "Info".into());
                 for f in &report.findings {
                     let sev = match f.severity {
@@ -1127,8 +1249,11 @@ impl Scanner {
                     high_risk_imports: report.high_risk_imports,
                     urls: report.urls,
                     archive_entry_count: report.archive_entry_count,
-                    archive_entries_sample: report.archive_entries.into_iter()
-                        .map(|e| e.name).collect(),
+                    archive_entries_sample: report
+                        .archive_entries
+                        .into_iter()
+                        .map(|e| e.name)
+                        .collect(),
                     finding_count: report.findings.len(),
                     highest_severity: highest,
                 });
@@ -1136,11 +1261,14 @@ impl Scanner {
         }
 
         // --- Firmware (UEFI / BIOS) ---
-        if matches!(file_type.as_str(),
-            "UEFI/FirmwareVolume" | "UEFI/FFS" | "UEFI/GPT-Disk" | "BIOS/MBR")
-        {
+        if matches!(
+            file_type.as_str(),
+            "UEFI/FirmwareVolume" | "UEFI/FFS" | "UEFI/GPT-Disk" | "BIOS/MBR"
+        ) {
             if let Some(report) = analyze_firmware(&data) {
-                let finding_strs: Vec<String> = report.findings.iter()
+                let finding_strs: Vec<String> = report
+                    .findings
+                    .iter()
                     .map(|f| format!("[{:?}] {}: {}", f.severity, f.rule_id, f.description))
                     .collect();
                 for f in &report.findings {
@@ -1171,8 +1299,7 @@ impl Scanner {
         }
 
         // --- Memory Dump ---
-        if matches!(file_type.as_str(),
-            "Minidump" | "ELF Core" | "Mach-O Core")
+        if matches!(file_type.as_str(), "Minidump" | "ELF Core" | "Mach-O Core")
             || (file_type == "unknown" && analyze_dump(&data).is_some())
         {
             if let Some(report) = analyze_dump(&data) {
@@ -1197,18 +1324,24 @@ impl Scanner {
                     stream_count: report.streams.len(),
                     embedded_pe_count: report.embedded_pe.len(),
                     raw_mz_hits: report.raw_mz_hits,
-                    embedded_pe: report.embedded_pe.iter()
-                        .map(|p| format!("{} {}-bit @ 0x{:X}",
-                            p.machine, if p.is_64bit { 64 } else { 32 }, p.offset))
+                    embedded_pe: report
+                        .embedded_pe
+                        .iter()
+                        .map(|p| {
+                            format!(
+                                "{} {}-bit @ 0x{:X}",
+                                p.machine,
+                                if p.is_64bit { 64 } else { 32 },
+                                p.offset
+                            )
+                        })
                         .collect(),
                 });
             }
         }
 
         // --- Architecture auto-detection (ARM / AArch64 / x86_64 / x86) ---
-        if file_type == "unknown" || file_type.starts_with("Mach-O")
-            || flat_binary_info.is_some()
-        {
+        if file_type == "unknown" || file_type.starts_with("Mach-O") || flat_binary_info.is_some() {
             let arch_from_pe = if let Some(ref pi) = pe_info {
                 match pi.machine.as_str() {
                     "Machine(0x14C)" => Some(("x86".to_string(), "little".to_string(), 32u8)),
@@ -1218,7 +1351,9 @@ impl Scanner {
                     "Machine(0x1C4)" => Some(("ARMNT".to_string(), "little".to_string(), 32u8)),
                     _ => None,
                 }
-            } else { None };
+            } else {
+                None
+            };
             if let Some((a, e, b)) = arch_from_pe {
                 architecture_info = Some(ArchitectureInfo {
                     arch: a,
@@ -1244,50 +1379,74 @@ impl Scanner {
                     confidence: 1.0,
                     indicators: vec!["ELF e_machine".into()],
                 });
-            } else if (file_type == "unknown" || file_type.starts_with("BIOS") || file_type.starts_with("UEFI")) && pe_info.is_none() && elf_info.is_none() && !data.is_empty() {
+            } else if (file_type == "unknown"
+                || file_type.starts_with("BIOS")
+                || file_type.starts_with("UEFI"))
+                && pe_info.is_none()
+                && elf_info.is_none()
+                && !data.is_empty()
+            {
                 // Only run arch detection on raw binaries — skip text-like files
-                let printable_count = data.iter().take(256).filter(|&&b| (0x20..=0x7E).contains(&b) || b == 0x09 || b == 0x0A || b == 0x0D).count();
+                let printable_count = data
+                    .iter()
+                    .take(256)
+                    .filter(|&&b| (0x20..=0x7E).contains(&b) || b == 0x09 || b == 0x0A || b == 0x0D)
+                    .count();
                 let total = data.len().min(256);
                 let is_text = total > 0 && (printable_count as f64 / total as f64) > 0.85;
                 if !is_text {
                     let d = detect_architecture(&data);
-                let bitness = d.arch.bitness();
-                let endian = d.arch.is_little_endian()
-                    .map(|b| if b { "little".to_string() } else { "big".to_string() })
-                    .unwrap_or_else(|| "unknown".into());
-                let arch_name = match d.arch {
-                    Arch::X86 => "x86",
-                    Arch::X86_64 => "x86_64",
-                    Arch::ArmLe | Arch::ArmBe => "ARM",
-                    Arch::AArch64Le | Arch::AArch64Be => "AArch64",
-                    Arch::Unknown => "unknown",
-                }.to_string();
-                if d.arch != Arch::Unknown {
-                    architecture_info = Some(ArchitectureInfo {
-                        arch: arch_name,
-                        endian,
-                        bitness,
-                        confidence: d.confidence as f64 as f32,
-                        indicators: d.indicators,
-                    });
-                }
+                    let bitness = d.arch.bitness();
+                    let endian = d
+                        .arch
+                        .is_little_endian()
+                        .map(|b| {
+                            if b {
+                                "little".to_string()
+                            } else {
+                                "big".to_string()
+                            }
+                        })
+                        .unwrap_or_else(|| "unknown".into());
+                    let arch_name = match d.arch {
+                        Arch::X86 => "x86",
+                        Arch::X86_64 => "x86_64",
+                        Arch::ArmLe | Arch::ArmBe => "ARM",
+                        Arch::AArch64Le | Arch::AArch64Be => "AArch64",
+                        Arch::Unknown => "unknown",
+                    }
+                    .to_string();
+                    if d.arch != Arch::Unknown {
+                        architecture_info = Some(ArchitectureInfo {
+                            arch: arch_name,
+                            endian,
+                            bitness,
+                            confidence: d.confidence as f64 as f32,
+                            indicators: d.indicators,
+                        });
+                    }
                 } // if !is_text
             }
         }
 
         // [BACKDOOR]
         let mut backdoor_report = None;
+        let backdoor_analysis = if !is_library {
+            Some(analyze_backdoors(&data, &cached_import_names, &string_values))
+        } else {
+            None
+        };
 
         // Backdoor/behavioral *pattern* detection (C2 beacon loops, DLL
         // hijacking) is unreliable for libraries вЂ” skipped for DLLs.
-        if !is_library {
-            let bd_report = analyze_backdoors(&data, &cached_import_names, &string_values);
+        if let Some(ref bd_report) = backdoor_analysis {
             if !bd_report.findings.is_empty() {
                 for bd_finding in &bd_report.findings {
                     let sev = match bd_finding.severity {
                         backdoor_analyzer::BackdoorSeverity::Critical => Severity::Critical,
                         backdoor_analyzer::BackdoorSeverity::High => Severity::High,
                         backdoor_analyzer::BackdoorSeverity::Medium => Severity::Medium,
+                        backdoor_analyzer::BackdoorSeverity::Low => Severity::Low,
                     };
                     findings.push(Finding {
                         severity: sev,
@@ -1322,6 +1481,20 @@ impl Scanner {
                 });
             }
         }
+        let platform_strings: Vec<String> = string_values.iter().map(|value| (*value).to_string()).collect();
+        for finding in detect_platform_tactics(&platform_strings) {
+            findings.push(Finding {
+                severity: if finding.confidence >= 0.8 {
+                    Severity::Medium
+                } else {
+                    Severity::Low
+                },
+                module: "platform-tactics".into(),
+                rule_id: format!("PLATFORM_{:?}", finding.tactic),
+                description: format!("Platform tactic detected: {:?}", finding.tactic),
+                details: Some(format!("evidence: {}", finding.evidence.join(", "))),
+            });
+        }
 
         // в”Ђв”Ђв”Ђ Shellcode Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         let mut shellcode_report = None;
@@ -1342,7 +1515,10 @@ impl Scanner {
             }
         }
 
-        let mut sc_config = ShellcodeConfig { ignore_ranges, ..Default::default() };
+        let mut sc_config = ShellcodeConfig {
+            ignore_ranges,
+            ..Default::default()
+        };
         // The XOR-encoded-blob brute force (255 keys x every window) is very
         // expensive on large PE files and only produces coincidental hits in
         // normal code. For PEs, staged shellcode is already caught by the
@@ -1371,22 +1547,17 @@ impl Scanner {
             // blobs are scanned whole and kept as-is.
             if file_type.starts_with("PE") {
                 if let Some(pe_ref) = pe.as_ref() {
-                    if let Some(sec_idx) =
-                        section_index_for_offset(pe_ref, sc_finding.offset)
-                    {
-                        let ent = *sc_section_entropy
-                            .entry(sec_idx)
-                            .or_insert_with(|| {
-                                let s = &pe_ref.sections[sec_idx];
-                                let start = s.raw_data_offset as usize;
-                                let end =
-                                    (start + s.raw_data_size as usize).min(data.len());
-                                if end <= start {
-                                    Some(0.0)
-                                } else {
-                                    Some(calculate_entropy(&data[start..end]).entropy)
-                                }
-                            });
+                    if let Some(sec_idx) = section_index_for_offset(pe_ref, sc_finding.offset) {
+                        let ent = *sc_section_entropy.entry(sec_idx).or_insert_with(|| {
+                            let s = &pe_ref.sections[sec_idx];
+                            let start = s.raw_data_offset as usize;
+                            let end = (start + s.raw_data_size as usize).min(data.len());
+                            if end <= start {
+                                Some(0.0)
+                            } else {
+                                Some(calculate_entropy(&data[start..end]).entropy)
+                            }
+                        });
                         if ent.unwrap_or(0.0) < 7.0 {
                             continue;
                         }
@@ -1407,7 +1578,8 @@ impl Scanner {
                 description: sc_finding.description.clone(),
                 details: Some(format!(
                     "Offset: 0x{:X}, Confidence: {:.0}%",
-                    sc_finding.offset, sc_finding.confidence * 100.0
+                    sc_finding.offset,
+                    sc_finding.confidence * 100.0
                 )),
             });
             pushed_shellcode = true;
@@ -1431,6 +1603,7 @@ impl Scanner {
 
         // в”Ђв”Ђв”Ђ Cross-Reference Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         let mut xref_summary = None;
+        let mut function_infos: Vec<FunctionInfo> = Vec::new();
         {
             let __tx = std::time::Instant::now();
             let string_xrefs = build_string_xrefs(&data, &strings);
@@ -1440,8 +1613,81 @@ impl Scanner {
             db.add_all(string_xrefs);
             db.add_all(import_xrefs_list);
 
+            if let Some(pe_file) = pe {
+                if let Some(sec) = pe_file.sections.iter().find(|section| {
+                    let name = section.name_string();
+                    name == ".text" || name == "CODE"
+                }) {
+                    let code = sec.raw_data(&data);
+                    let arch = if pe_file.is_64bit {
+                        func_finder::Architecture::X86_64
+                    } else {
+                        func_finder::Architecture::X86
+                    };
+                    let finder = func_finder::FunctionFinder::new(arch)
+                        .with_code_base(pe_file.image_base + sec.virtual_address as u64);
+                    let entry = pe_file.image_base + pe_file.entry_point as u64;
+                    for function in finder.find_all(code, &[entry]).unwrap_or_default().into_iter().take(4096) {
+                        let start = function
+                            .start
+                            .saturating_sub(pe_file.image_base + sec.virtual_address as u64)
+                            as usize;
+                        let end = start.saturating_add(function.size).min(code.len());
+                        let mut api_references = Vec::new();
+                        let mut xref_offsets = Vec::new();
+                        for xref in db.xrefs_by_kind(xrefs::XrefTargetKind::Import) {
+                            let source_start = sec.raw_data_offset as usize + start;
+                            let source_end = sec.raw_data_offset as usize + end;
+                            if xref.source_offset >= source_start && xref.source_offset < source_end {
+                                api_references.push(xref.target.label.clone());
+                                xref_offsets.push(xref.source_offset);
+                            }
+                        }
+                        api_references.sort();
+                        api_references.dedup();
+                        xref_offsets.sort_unstable();
+                        xref_offsets.dedup();
+                        function_infos.push(FunctionInfo {
+                            address: function.start,
+                            name: format!("sub_{:X}", function.start),
+                            size: function.size,
+                            func_type: if function.is_library {
+                                FunctionType::Library
+                            } else {
+                                FunctionType::User
+                            },
+                            confidence: function.confidence,
+                            api_references,
+                            xref_offsets,
+                            reachable_from_entry: Some(function.start == entry),
+                        });
+                    }
+                }
+            }
+
+            for function in &function_infos {
+                let evidence = FunctionEvidence {
+                    address: function.address,
+                    name: function.name.clone(),
+                    apis: function.api_references.clone(),
+                };
+                for correlated in correlate_function_evidence(&evidence) {
+                    findings.push(Finding {
+                        severity: Severity::High,
+                        module: "function-correlation".into(),
+                        rule_id: format!("{:?}", correlated.rule_id),
+                        description: correlated.description,
+                        details: Some(format!(
+                            "confidence: {:.2} | {}",
+                            correlated.confidence,
+                            correlated.evidence.join(", ")
+                        )),
+                    });
+                }
+            }
+
             if !db.is_empty() {
-            let summary = db.summary();
+                let summary = db.summary();
 
                 let correlated_pairs = [
                     ("cmd.exe", "CreateProcessA"),
@@ -1450,9 +1696,7 @@ impl Scanner {
                     ("powershell", "CreateProcessW"),
                 ]
                 .iter()
-                .filter(|(a, b)| {
-                    !db.xrefs_to(a).is_empty() && !db.xrefs_to(b).is_empty()
-                })
+                .filter(|(a, b)| !db.xrefs_to(a).is_empty() && !db.xrefs_to(b).is_empty())
                 .count();
 
                 if correlated_pairs > 0 {
@@ -1464,7 +1708,9 @@ impl Scanner {
                             "{} correlated string+import xref pair(s) detected",
                             correlated_pairs
                         ),
-                        details: Some("Code references both suspicious strings and dangerous APIs".into()),
+                        details: Some(
+                            "Code references both suspicious strings and dangerous APIs".into(),
+                        ),
                     });
                 }
 
@@ -1492,7 +1738,9 @@ impl Scanner {
                 });
                 // Fall back to any section with EXECUTE + CODE flags
                 let code_section = text_section.or_else(|| {
-                    pe.sections.iter().find(|s| s.is_executable() && s.is_code())
+                    pe.sections
+                        .iter()
+                        .find(|s| s.is_executable() && s.is_code())
                 });
                 code_section.map(|sec| {
                     let raw = sec.raw_data(&data);
@@ -1504,51 +1752,61 @@ impl Scanner {
             };
 
             if let Some((code_region, code_base, is_64bit)) = code_tuple {
-            if !code_region.is_empty() {
-                let cfg_config = CfgConfig {
-                    is_64bit,
-                    base_va: code_base as u64,
-                    max_instructions: 50_000,
-                    ..Default::default()
-                };
-                let __tc = std::time::Instant::now();
-                let cfg = build_cfg(code_region, code_base, &cfg_config);
+                if !code_region.is_empty() {
+                    let cfg_config = CfgConfig {
+                        is_64bit,
+                        base_va: code_base as u64,
+                        max_instructions: 50_000,
+                        ..Default::default()
+                    };
+                    let __tc = std::time::Instant::now();
+                    let cfg = build_cfg(code_region, code_base, &cfg_config);
 
-                if !cfg.anomalies.is_empty() {
-                    for anomaly in &cfg.anomalies {
-                        let sev = match anomaly.severity {
-                            cfg_builder::AnomalySeverity::High => Severity::High,
-                            cfg_builder::AnomalySeverity::Medium => Severity::Medium,
-                            cfg_builder::AnomalySeverity::Low => Severity::Low,
-                            cfg_builder::AnomalySeverity::Info => Severity::Info,
-                        };
-                        findings.push(Finding {
-                            severity: sev,
-                            module: "cfg-builder".into(),
-                            rule_id: "CFG_ANOMALY".into(),
-                            description: anomaly.description.clone(),
-                            details: if anomaly.offsets.is_empty() {
-                                None
-                            } else {
-                                Some(format!("Offsets: {:?}", anomaly.offsets))
-                            },
-                        });
+                    if !cfg.anomalies.is_empty() {
+                        for anomaly in &cfg.anomalies {
+                            let sev = match anomaly.severity {
+                                cfg_builder::AnomalySeverity::High => Severity::High,
+                                cfg_builder::AnomalySeverity::Medium => Severity::Medium,
+                                cfg_builder::AnomalySeverity::Low => Severity::Low,
+                                cfg_builder::AnomalySeverity::Info => Severity::Info,
+                            };
+                            findings.push(Finding {
+                                severity: sev,
+                                module: "cfg-builder".into(),
+                                rule_id: "CFG_ANOMALY".into(),
+                                description: anomaly.description.clone(),
+                                details: if anomaly.offsets.is_empty() {
+                                    None
+                                } else {
+                                    Some(format!("Offsets: {:?}", anomaly.offsets))
+                                },
+                            });
+                        }
                     }
-                }
 
-                cfg_summary_info = Some(CfgSummaryInfo {
-                    num_blocks: cfg.num_blocks(),
-                    num_edges: cfg.num_edges(),
-                    total_instructions: cfg.total_instructions,
-                    num_anomalies: cfg.anomalies.len(),
-                    anomalies: cfg.anomalies.iter().map(|a| a.description.clone()).collect(),
-                    // Collect real edges for graph visualization
-                    edges: cfg.blocks.iter()
-                        .flat_map(|b| b.successors.iter().map(move |succ| (b.id as u32, *succ as u32)))
-                        .collect(),
-                });
-            }
-            // else: no code section found, skip CFG analysis
+                    cfg_summary_info = Some(CfgSummaryInfo {
+                        num_blocks: cfg.num_blocks(),
+                        num_edges: cfg.num_edges(),
+                        total_instructions: cfg.total_instructions,
+                        num_anomalies: cfg.anomalies.len(),
+                        anomalies: cfg
+                            .anomalies
+                            .iter()
+                            .map(|a| a.description.clone())
+                            .collect(),
+                        // Collect real edges for graph visualization
+                        edges: cfg
+                            .blocks
+                            .iter()
+                            .flat_map(|b| {
+                                b.successors
+                                    .iter()
+                                    .map(move |succ| (b.id as u32, *succ as u32))
+                            })
+                            .collect(),
+                    });
+                }
+                // else: no code section found, skip CFG analysis
             }
         }
 
@@ -1557,6 +1815,22 @@ impl Scanner {
         {
             let sig_config = SigScanConfig::default();
             let sig_result = scan_signatures(&data, 0, &sig_config);
+            let mut semantic_roles = Vec::new();
+            let mut semantic_sources = Vec::new();
+            let mut semantic_sinks = Vec::new();
+            for hit in &sig_result.matches {
+                if !hit.semantic_role.is_empty() {
+                    semantic_roles.push(hit.semantic_role.to_string());
+                }
+                semantic_sources.extend(hit.sources.iter().map(|value| (*value).to_string()));
+                semantic_sinks.extend(hit.sinks.iter().map(|value| (*value).to_string()));
+            }
+            semantic_roles.sort();
+            semantic_roles.dedup();
+            semantic_sources.sort();
+            semantic_sources.dedup();
+            semantic_sinks.sort();
+            semantic_sinks.dedup();
 
             // NOTE: `KNOWN_FUNCTION` and `COMPILER_DETECTED` were previously
             // emitted as Info-level findings, but they are benign context that
@@ -1569,6 +1843,9 @@ impl Scanner {
                     .compiler_info
                     .as_ref()
                     .map(|c| c.compiler.clone()),
+                semantic_roles,
+                semantic_sources,
+                semantic_sinks,
             });
         }
 
@@ -1592,7 +1869,10 @@ impl Scanner {
                     severity: Severity::High,
                     module: "yara-lite".into(),
                     rule_id: m.rule_name.clone(),
-                    description: format!("YARA rule '{}' matched at offset 0x{:X}", m.rule_name, m.offset),
+                    description: format!(
+                        "YARA rule '{}' matched at offset 0x{:X}",
+                        m.rule_name, m.offset
+                    ),
                     details: Some(format!(
                         "String '{}' matched ({} bytes)",
                         m.string_id, m.length
@@ -1604,22 +1884,24 @@ impl Scanner {
         // в”Ђв”Ђв”Ђ ML Classification в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         let mut ml_classification = None;
         let mut ml_malicious_confidence: f64 = 0.0;
-        {
+        if self.profile.runs_ml() {
             // Real RWX section counts reported by the format parsers (PE
             // section flags, ELF/Mach-O RWX lists) — not an entropy proxy.
-            let rwx_section_count = pe.map(|p| p.sections.iter().filter(|s| s.is_rwx()).count())
+            let rwx_section_count = pe
+                .map(|p| p.sections.iter().filter(|s| s.is_rwx()).count())
                 .unwrap_or(0)
                 + elf_info.as_ref().map(|e| e.rwx_sections.len()).unwrap_or(0)
-                + macho_info.as_ref().map(|m| m.rwx_segments.len()).unwrap_or(0);
+                + macho_info
+                    .as_ref()
+                    .map(|m| m.rwx_segments.len())
+                    .unwrap_or(0);
 
             // Build BinaryInfo from all gathered data
             let mut binary_info = ml_detection::BinaryInfo {
                 num_sections: sections_entropy.len(),
                 section_entropies: sections_entropy.iter().map(|s| s.entropy as f32).collect(),
                 rwx_section_count,
-                string_patterns: ml_detection::StringPatterns::from_strings(
-                    &string_values
-                ),
+                string_patterns: ml_detection::StringPatterns::from_strings(&string_values),
                 ..Default::default()
             };
 
@@ -1631,18 +1913,42 @@ impl Scanner {
             imp.unique_dlls = dll_names.len();
             for name in dll_names {
                 let lower = name.to_lowercase();
-                if lower.contains("kernel32") { imp.kernel32 += 1; }
-                if lower.contains("user32") { imp.user32 += 1; }
-                if lower.contains("advapi32") { imp.advapi32 += 1; }
-                if lower.contains("ws2_32") { imp.ws2_32 += 1; }
-                if lower.contains("wininet") { imp.wininet += 1; }
-                if lower.contains("urlmon") { imp.urlmon += 1; }
-                if lower.contains("shell32") { imp.shell32 += 1; }
-                if lower.contains("ole32") { imp.ole32 += 1; }
-                if lower.contains("crypt32") { imp.crypt32 += 1; }
-                if lower.contains("ntdll") { imp.ntdll += 1; }
-                if lower.contains("msvcrt") { imp.msvcrt += 1; }
-                if lower.contains("wtsapi32") { imp.wtsapi32 += 1; }
+                if lower.contains("kernel32") {
+                    imp.kernel32 += 1;
+                }
+                if lower.contains("user32") {
+                    imp.user32 += 1;
+                }
+                if lower.contains("advapi32") {
+                    imp.advapi32 += 1;
+                }
+                if lower.contains("ws2_32") {
+                    imp.ws2_32 += 1;
+                }
+                if lower.contains("wininet") {
+                    imp.wininet += 1;
+                }
+                if lower.contains("urlmon") {
+                    imp.urlmon += 1;
+                }
+                if lower.contains("shell32") {
+                    imp.shell32 += 1;
+                }
+                if lower.contains("ole32") {
+                    imp.ole32 += 1;
+                }
+                if lower.contains("crypt32") {
+                    imp.crypt32 += 1;
+                }
+                if lower.contains("ntdll") {
+                    imp.ntdll += 1;
+                }
+                if lower.contains("msvcrt") {
+                    imp.msvcrt += 1;
+                }
+                if lower.contains("wtsapi32") {
+                    imp.wtsapi32 += 1;
+                }
             }
             // NOTE: We intentionally do NOT double-count function names here.
             // DLL module names already capture the import source (e.g., kernel32.dll).
@@ -1654,30 +1960,44 @@ impl Scanner {
                 binary_info.has_overlay = pei.has_overlay;
                 binary_info.overlay_size_ratio = if size > 0 {
                     pei.overlay_size as f32 / size as f32
-                } else { 0.0 };
+                } else {
+                    0.0
+                };
                 binary_info.has_tls = !pei.tls_callbacks.is_empty();
                 binary_info.has_resources = pei.num_resources > 0;
-                binary_info.num_data_dirs = pe_parse_result.as_ref()
+                binary_info.num_data_dirs = pe_parse_result
+                    .as_ref()
                     .and_then(|r| r.as_ref().ok())
                     .map(|p| p.data_directories.len())
                     .unwrap_or(0);
                 binary_info.is_packed = sections_entropy.iter().any(|s| s.entropy > 7.5);
-                binary_info.code_section_entropy = sections_entropy.iter()
+                binary_info.code_section_entropy = sections_entropy
+                    .iter()
                     .find(|s| is_executable_section(&s.name))
                     .map(|s| s.entropy as f32)
                     .unwrap_or(0.0);
             }
             if let Some(ref elfi) = elf_info {
                 binary_info.num_segments = elfi.num_segments;
-                binary_info.is_packed = binary_info.is_packed
-                    || sections_entropy.iter().any(|s| s.entropy > 7.5);
+                binary_info.is_packed =
+                    binary_info.is_packed || sections_entropy.iter().any(|s| s.entropy > 7.5);
             }
 
             // Behavioral signals
-            binary_info.behavioral.backdoor_risk = backdoor_report.as_ref().map(|b| b.risk_score as f32).unwrap_or(0.0);
-            binary_info.behavioral.shellcode_score = if shellcode_report.is_some() { 1.0 } else { 0.0 };
-            binary_info.behavioral.cfg_anomaly_count = cfg_summary_info.as_ref().map(|c| c.num_anomalies).unwrap_or(0);
-            binary_info.behavioral.xref_correlation = xref_summary.as_ref().map(|x| x.correlated_pairs).unwrap_or(0);
+            binary_info.behavioral.backdoor_risk = backdoor_report
+                .as_ref()
+                .map(|b| b.risk_score as f32)
+                .unwrap_or(0.0);
+            binary_info.behavioral.shellcode_score =
+                if shellcode_report.is_some() { 1.0 } else { 0.0 };
+            binary_info.behavioral.cfg_anomaly_count = cfg_summary_info
+                .as_ref()
+                .map(|c| c.num_anomalies)
+                .unwrap_or(0);
+            binary_info.behavioral.xref_correlation = xref_summary
+                .as_ref()
+                .map(|x| x.correlated_pairs)
+                .unwrap_or(0);
             binary_info.behavioral.yara_match_count = findings
                 .iter()
                 .filter(|f| f.module == "yara-lite" && !is_yara_budget_notice(f))
@@ -1689,7 +2009,8 @@ impl Scanner {
 
             ml_malicious_confidence = result.probabilities.malicious as f64;
 
-            let top_features: Vec<(String, f32)> = result.important_features
+            let top_features: Vec<(String, f32)> = result
+                .important_features
                 .iter()
                 .take(5)
                 .map(|fi| (fi.name.to_string(), fi.contribution))
@@ -1707,7 +2028,9 @@ impl Scanner {
                     ),
                     details: Some(result.explanation.clone()),
                 });
-            } else if result.class == ml_detection::MalwareClass::Suspicious && result.confidence > 0.6 {
+            } else if result.class == ml_detection::MalwareClass::Suspicious
+                && result.confidence > 0.6
+            {
                 findings.push(Finding {
                     severity: Severity::Medium,
                     module: "ml-detection".into(),
@@ -1718,7 +2041,8 @@ impl Scanner {
                     ),
                     details: Some(result.explanation.clone()),
                 });
-            } else if result.class == ml_detection::MalwareClass::Packed && result.confidence > 0.7 {
+            } else if result.class == ml_detection::MalwareClass::Packed && result.confidence > 0.7
+            {
                 findings.push(Finding {
                     severity: Severity::Medium,
                     module: "ml-detection".into(),
@@ -1745,19 +2069,20 @@ impl Scanner {
         // blindly lifting the first N bytes (which may be data/padding).
         // This is opt-in via `decompiler` feature; failures don't affect scan results.
         #[cfg(feature = "decompiler")]
+        if self.profile.runs_decompiler() {
         if let Some(pe) = pe {
             if let Some(ref _cfg_summary) = cfg_summary_info {
+                use decompiler::{decompile_function, DecompilerConfig};
                 use freakre_ir::x86_lifter::X86Lifter;
                 use freakre_ir::Lifter;
                 use func_finder::{Architecture, FunctionFinder};
-                use decompiler::{decompile_function, DecompilerConfig};
-                
+
                 // Extract code region from .text section
                 let text_section = pe.sections.iter().find(|s| {
                     let name = s.name_string();
                     name == ".text" || name == "CODE"
                 });
-                
+
                 if let Some(sec) = text_section {
                     let code_region = sec.raw_data(&data);
                     if !code_region.is_empty() {
@@ -1767,26 +2092,33 @@ impl Scanner {
                         } else {
                             Architecture::X86
                         };
-                        let finder = FunctionFinder::new(arch)
-                            .with_code_base(sec.virtual_address as u64);
+                        let finder =
+                            FunctionFinder::new(arch).with_code_base(sec.virtual_address as u64);
                         // pe.entry_point and sec.virtual_address are both RVAs from image base.
                         // FunctionFinder needs the VA, so use image_base + entry_point_rva.
                         let entry_va = pe.image_base + pe.entry_point as u64;
-                        let detected = finder.find_all(code_region, &[entry_va])
+                        let detected = finder
+                            .find_all(code_region, &[entry_va])
                             .unwrap_or_default();
-                        
+
                         // Pick the largest function (most meaningful to decompile)
-                        let best = detected.iter()
+                        let best = detected
+                            .iter()
                             .max_by_key(|f| f.size)
                             .or_else(|| detected.first());
-                        
-                        if let Some(func) = best {
-                            let func_offset = (func.start - sec.virtual_address as u64) as usize;
+
+                        let carved = best.and_then(|func| {
+                            carve_func_slice(
+                                code_region,
+                                sec.virtual_address as u64,
+                                func.start,
+                                func.size,
+                            )
+                            .map(|slice| (func, slice))
+                        });
+                        if let Some((func, func_slice)) = carved {
                             let func_size = func.size;
-                            // Safety: clamp to bounds
-                            let func_end = (func_offset + func_size).min(code_region.len());
-                            let func_slice = &code_region[func_offset..func_end];
-                            
+
                             // Lift to IR
                             let lifter = X86Lifter::new(pe.is_64bit);
                             let func_name = format!("sub_{:X}", func.start);
@@ -1833,6 +2165,7 @@ impl Scanner {
                 }
             }
         }
+        }
 
         // в”Ђв”Ђв”Ђ Strong-signal gate (noise-free) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         // Pattern / behavioral heuristics (backdoor strings, import
@@ -1859,14 +2192,20 @@ impl Scanner {
         // в”Ђв”Ђв”Ђ Final Scoring в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         let (suspicion_score, verdict) = if has_strong_signal {
             let max_severity = findings.iter().map(|f| f.severity).max();
-            let backdoor_score = backdoor_report.as_ref().map(|b| b.risk_score).unwrap_or(0.0);
+            let backdoor_score = backdoor_report
+                .as_ref()
+                .map(|b| b.risk_score)
+                .unwrap_or(0.0);
             let suspicion_score = calculate_suspicion_score(
                 &findings,
                 import_score,
                 backdoor_score,
                 &sections_entropy,
                 shellcode_report.is_some(),
-                xref_summary.as_ref().map(|x| x.correlated_pairs).unwrap_or(0),
+                xref_summary
+                    .as_ref()
+                    .map(|x| x.correlated_pairs)
+                    .unwrap_or(0),
                 ml_malicious_confidence,
             );
 
@@ -1879,14 +2218,20 @@ impl Scanner {
                 (0.0, Verdict::Clean)
             } else {
                 let max_severity = findings.iter().map(|f| f.severity).max();
-                let backdoor_score = backdoor_report.as_ref().map(|b| b.risk_score).unwrap_or(0.0);
+                let backdoor_score = backdoor_report
+                    .as_ref()
+                    .map(|b| b.risk_score)
+                    .unwrap_or(0.0);
                 let suspicion_score = calculate_suspicion_score(
                     &findings,
                     import_score,
                     backdoor_score,
                     &sections_entropy,
                     shellcode_report.is_some(),
-                    xref_summary.as_ref().map(|x| x.correlated_pairs).unwrap_or(0),
+                    xref_summary
+                        .as_ref()
+                        .map(|x| x.correlated_pairs)
+                        .unwrap_or(0),
                     ml_malicious_confidence,
                 );
                 let verdict =
@@ -1922,13 +2267,52 @@ impl Scanner {
             dll_info,
             architecture_info,
             backdoor_report,
+            backdoor_analysis,
             shellcode_report,
             xref_summary,
             cfg_summary: cfg_summary_info,
             signature_summary: signature_summary_info,
             ml_classification,
             scan_duration_ms: start.elapsed().as_millis(),
-            functions: Vec::new(),
+            functions: function_infos,
+            analysis_profile: self.profile.as_str().into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod carve_tests {
+    use super::carve_func_slice;
+
+    #[test]
+    fn carve_inside_bounds() {
+        let region = vec![0x90u8; 64];
+        let s = carve_func_slice(&region, 0x1000, 0x1010, 16).unwrap();
+        assert_eq!(s.len(), 16);
+        assert!(std::ptr::eq(s.as_ptr(), unsafe {
+            region.as_ptr().add(0x10)
+        }));
+    }
+
+    #[test]
+    fn carve_clamps_to_region_end() {
+        let region = vec![0x90u8; 64];
+        assert_eq!(
+            carve_func_slice(&region, 0x1000, 0x1030, 0x1000)
+                .unwrap()
+                .len(),
+            16
+        );
+    }
+
+    #[test]
+    fn carve_rejects_bogus_finder_output() {
+        let region = vec![0x90u8; 64];
+        // start below code base (would underflow on subtraction)
+        assert!(carve_func_slice(&region, 0x1000, 0x0FFF, 16).is_none());
+        // start beyond the region (would slice OOB)
+        assert!(carve_func_slice(&region, 0x1000, 0x2000, 16).is_none());
+        // offset overflow on 32-bit targets
+        assert!(carve_func_slice(&region, 0, u64::MAX, 16).is_none());
     }
 }

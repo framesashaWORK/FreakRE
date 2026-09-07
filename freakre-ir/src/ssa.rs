@@ -32,6 +32,15 @@ const PENDING: u32 = u32::MAX;
 /// Errors produced by SSA construction.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SsaError {
+    /// The function entry block does not exist.
+    #[error("entry block bb{0} does not exist")]
+    InvalidEntry(u32),
+    /// The function contains duplicate block identifiers.
+    #[error("duplicate block id bb{0}")]
+    DuplicateBlock(u32),
+    /// A terminator appears before the end of a basic block.
+    #[error("terminator in the middle of block bb{0}")]
+    TerminatorInMiddle(BlockId),
     /// A terminator references a block that does not exist in the function.
     #[error("terminator references unknown block bb{0}")]
     UnknownBlock(u32),
@@ -43,6 +52,13 @@ pub enum SsaError {
     /// (the constructor expects phi-free, mutable-register form).
     #[error("unexpected Phi instruction at block {0}; input IR must be phi-free")]
     UnexpectedPhi(BlockId),
+    /// An instruction writes to a non-variable destination (constant, symbol,
+    /// …) which has no SSA version to assign.
+    #[error("instruction in block bb{0} writes to a non-variable destination")]
+    InvalidDestination(BlockId),
+    /// Block-id space is exhausted (the input already uses `u32::MAX`).
+    #[error("block id space exhausted")]
+    IdExhausted,
 }
 
 /// Identity of a mutable storage location in the input IR: either a numbered
@@ -150,9 +166,7 @@ pub enum SsaInst {
         size: u32,
     },
     /// Unconditional branch.
-    Branch {
-        target: BlockId,
-    },
+    Branch { target: BlockId },
     /// Conditional branch.
     CBranch {
         cond: SsaVal,
@@ -166,12 +180,14 @@ pub enum SsaInst {
         args: Vec<SsaVal>,
     },
     /// Return from function.
-    Return {
-        value: Option<SsaVal>,
-    },
+    Return { value: Option<SsaVal> },
     /// Indirect branch.
-    IndirectBranch {
-        target: SsaVal,
+    IndirectBranch { target: SsaVal },
+    /// Multi-way dispatch (jump-table switch).
+    Switch {
+        index: SsaVal,
+        cases: Vec<(i64, BlockId)>,
+        default: Option<BlockId>,
     },
     /// System call.
     Syscall {
@@ -227,6 +243,13 @@ impl SsaInst {
                 None => "RETURN".to_string(),
             },
             SsaInst::IndirectBranch { target } => format!("IBRANCH {}", val(target)),
+            SsaInst::Switch { index, cases, default } => {
+                let cs: Vec<String> = cases.iter().map(|(v, b)| format!("{}=>bb{}", v, b.0)).collect();
+                match default {
+                    Some(d) => format!("SWITCH {} {{ {} default=>bb{} }}", val(index), cs.join(", "), d.0),
+                    None => format!("SWITCH {} {{ {} }}", val(index), cs.join(", ")),
+                }
+            }
             SsaInst::Syscall { number, args } => {
                 let args_str: Vec<String> = args.iter().map(val).collect();
                 match number {
@@ -287,7 +310,11 @@ impl SsaFunction {
         for b in &self.blocks {
             out.push_str(&format!("  {} ({})\n", b.label, b.id));
             for p in &b.phis {
-                let inputs: Vec<String> = p.inputs.iter().map(|(bl, v)| format!("{}: {}", bl, v)).collect();
+                let inputs: Vec<String> = p
+                    .inputs
+                    .iter()
+                    .map(|(bl, v)| format!("{}: {}", bl, v))
+                    .collect();
                 out.push_str(&format!("    {} = PHI({})\n", p.dst, inputs.join(", ")));
             }
             for i in &b.insts {
@@ -471,25 +498,31 @@ fn base_of(v: &Value) -> Option<BaseVar> {
     }
 }
 
-fn ver_of(v: &Value) -> VersionedVar {
+/// `None` when `v` is not a variable/register (constant, symbol, …) — the
+/// caller maps that to [`SsaError::InvalidDestination`] instead of panicking.
+fn ver_of(v: &Value) -> Option<VersionedVar> {
     match v {
-        Value::Var { id, ty } => VersionedVar {
+        Value::Var { id, ty } => Some(VersionedVar {
             base: BaseVar::Var(*id),
             version: PENDING,
             ty: ty.clone(),
-        },
-        Value::Register { name, ty } => VersionedVar {
+        }),
+        Value::Register { name, ty } => Some(VersionedVar {
             base: BaseVar::Reg(name.clone()),
             version: PENDING,
             ty: ty.clone(),
-        },
-        _ => unreachable!("ver_of called on non-variable"),
+        }),
+        _ => None,
     }
 }
 
 fn val_to_ssa(v: &Value) -> SsaVal {
     match v {
-        Value::Var { .. } | Value::Register { .. } => SsaVal::Ver(ver_of(v)),
+        // Safe by construction: this arm already matched Var/Register, for
+        // which `ver_of` always returns `Some`.
+        Value::Var { .. } | Value::Register { .. } => {
+            SsaVal::Ver(ver_of(v).expect("ver_of succeeds for Var/Register"))
+        }
         Value::Const(c) => SsaVal::Const(*c),
         Value::WideConst(b) => SsaVal::WideConst(b.clone()),
         Value::StringRef(s) => SsaVal::StringRef(s.clone()),
@@ -497,33 +530,35 @@ fn val_to_ssa(v: &Value) -> SsaVal {
     }
 }
 
-fn to_ssa_inst(inst: &IrInst) -> SsaInst {
-    match inst {
+/// Returns `None` when the instruction writes to a non-variable destination;
+/// the caller maps that to [`SsaError::InvalidDestination`].
+fn to_ssa_inst(inst: &IrInst) -> Option<SsaInst> {
+    let ssa = match inst {
         IrInst::Binary { dst, op, lhs, rhs } => SsaInst::Binary {
-            dst: ver_of(dst),
+            dst: ver_of(dst)?,
             op: *op,
             lhs: val_to_ssa(lhs),
             rhs: val_to_ssa(rhs),
         },
         IrInst::Adc { dst, a, b, carry } => SsaInst::Adc {
-            dst: ver_of(dst),
+            dst: ver_of(dst)?,
             a: val_to_ssa(a),
             b: val_to_ssa(b),
             carry: val_to_ssa(carry),
         },
         IrInst::Sbb { dst, a, b, carry } => SsaInst::Sbb {
-            dst: ver_of(dst),
+            dst: ver_of(dst)?,
             a: val_to_ssa(a),
             b: val_to_ssa(b),
             carry: val_to_ssa(carry),
         },
         IrInst::Unary { dst, op, src } => SsaInst::Unary {
-            dst: ver_of(dst),
+            dst: ver_of(dst)?,
             op: *op,
             src: val_to_ssa(src),
         },
         IrInst::Load { dst, addr, size } => SsaInst::Load {
-            dst: ver_of(dst),
+            dst: ver_of(dst)?,
             addr: val_to_ssa(addr),
             size: *size,
         },
@@ -543,7 +578,10 @@ fn to_ssa_inst(inst: &IrInst) -> SsaInst {
             target_false: *target_false,
         },
         IrInst::Call { dst, target, args } => SsaInst::Call {
-            dst: dst.as_ref().map(ver_of),
+            dst: match dst.as_ref() {
+                Some(d) => Some(ver_of(d)?),
+                None => None,
+            },
             target: val_to_ssa(target),
             args: args.iter().map(val_to_ssa).collect(),
         },
@@ -553,13 +591,23 @@ fn to_ssa_inst(inst: &IrInst) -> SsaInst {
         IrInst::IndirectBranch { target } => SsaInst::IndirectBranch {
             target: val_to_ssa(target),
         },
+        IrInst::Switch {
+            index,
+            cases,
+            default,
+        } => SsaInst::Switch {
+            index: val_to_ssa(index),
+            cases: cases.clone(),
+            default: *default,
+        },
         IrInst::Syscall { number, args } => SsaInst::Syscall {
             number: number.as_ref().map(val_to_ssa),
             args: args.iter().map(val_to_ssa).collect(),
         },
         IrInst::Nop => SsaInst::Nop,
         IrInst::Phi { .. } => unreachable!("Phi instructions are rejected before conversion"),
-    }
+    };
+    Some(ssa)
 }
 
 /// Mutable access to the destination slot of an SSA instruction.
@@ -611,6 +659,7 @@ fn ssa_inst_map_vals(inst: &mut SsaInst, f: &mut impl FnMut(&mut SsaVal)) {
             }
         }
         SsaInst::IndirectBranch { target } => f(target),
+        SsaInst::Switch { index, .. } => f(index),
         SsaInst::Syscall { number, args } => {
             for a in args {
                 f(a);
@@ -650,9 +699,60 @@ fn define(
 ///
 /// Fails with [`SsaError::UnreachableBlocks`] if the function contains blocks
 /// unreachable from the entry (they cannot be renamed soundly), with
-/// [`SsaError::UnexpectedPhi`] if the input already contains phi nodes, or
-/// with [`SsaError::UnknownBlock`] if a terminator references a missing block.
+/// [`SsaError::UnexpectedPhi`] if the input already contains phi nodes, with
+/// [`SsaError::UnknownBlock`] if a terminator references a missing block, or
+/// with [`SsaError::InvalidDestination`] if an instruction writes to a
+/// non-variable destination.
 pub fn to_ssa(func: &mut IrFunction) -> Result<SsaFunction, SsaError> {
+    // `build_cfg` intentionally debug-asserts on dangling edges. Validate the
+    // graph first so malformed input has the documented Result-based failure
+    // mode in both debug and release builds.
+    let mut seen_blocks = HashSet::new();
+    for block in &func.blocks {
+        if !seen_blocks.insert(block.id) {
+            return Err(SsaError::DuplicateBlock(block.id.0));
+        }
+        for (index, inst) in block.insts.iter().enumerate() {
+            if inst.is_terminator() && index + 1 != block.insts.len() {
+                return Err(SsaError::TerminatorInMiddle(block.id));
+            }
+        }
+    }
+    if func.block(func.entry_block).is_none() {
+        return Err(SsaError::InvalidEntry(func.entry_block.0));
+    }
+    for block in &func.blocks {
+        if let Some(IrInst::Branch { target }) = block.terminator() {
+            if func.block(*target).is_none() {
+                return Err(SsaError::UnknownBlock(target.0));
+            }
+        }
+        if let Some(IrInst::CBranch {
+            target_true,
+            target_false,
+            ..
+        }) = block.terminator()
+        {
+            if func.block(*target_true).is_none() {
+                return Err(SsaError::UnknownBlock(target_true.0));
+            }
+            if func.block(*target_false).is_none() {
+                return Err(SsaError::UnknownBlock(target_false.0));
+            }
+        }
+        if let Some(IrInst::Switch { cases, default, .. }) = block.terminator() {
+            for (_, t) in cases {
+                if func.block(*t).is_none() {
+                    return Err(SsaError::UnknownBlock(t.0));
+                }
+            }
+            if let Some(d) = default {
+                if func.block(*d).is_none() {
+                    return Err(SsaError::UnknownBlock(d.0));
+                }
+            }
+        }
+    }
     func.build_cfg();
     let entry = func.entry_block;
 
@@ -738,20 +838,28 @@ pub fn to_ssa(func: &mut IrFunction) -> Result<SsaFunction, SsaError> {
         bases.sort();
     }
 
-    // Materialise blocks with pending phi placeholders.
-    let mut blocks: Vec<SsaBlock> = func
-        .blocks
-        .iter()
-        .map(|b| SsaBlock {
+    // Materialise blocks with pending phi placeholders. A `None` from
+    // `to_ssa_inst` means a non-variable destination — fail with a proper
+    // error instead of the old `unreachable!` panic.
+    let mut blocks: Vec<SsaBlock> = Vec::with_capacity(func.blocks.len());
+    for b in &func.blocks {
+        let mut insts = Vec::with_capacity(b.insts.len());
+        for inst in &b.insts {
+            match to_ssa_inst(inst) {
+                Some(si) => insts.push(si),
+                None => return Err(SsaError::InvalidDestination(b.id)),
+            }
+        }
+        blocks.push(SsaBlock {
             id: b.id,
             label: b.label.clone(),
             phis: Vec::new(),
-            insts: b.insts.iter().map(to_ssa_inst).collect(),
+            insts,
             source_range: b.source_range,
             predecessors: b.predecessors.clone(),
             successors: b.successors.clone(),
-        })
-        .collect();
+        });
+    }
     let idx: HashMap<BlockId, usize> = blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
 
     for (block_id, bases) in &phi_bases {
@@ -961,11 +1069,7 @@ fn concrete(
     v
 }
 
-fn lower_val(
-    vals: &mut HashMap<VersionedVar, Value>,
-    out: &mut IrFunction,
-    v: &SsaVal,
-) -> Value {
+fn lower_val(vals: &mut HashMap<VersionedVar, Value>, out: &mut IrFunction, v: &SsaVal) -> Value {
     match v {
         SsaVal::Ver(vv) => concrete(vals, out, vv),
         SsaVal::Const(c) => Value::Const(*c),
@@ -1035,6 +1139,15 @@ fn lower_inst(
         SsaInst::IndirectBranch { target } => IrInst::IndirectBranch {
             target: lower_val(vals, out, target),
         },
+        SsaInst::Switch {
+            index,
+            cases,
+            default,
+        } => IrInst::Switch {
+            index: lower_val(vals, out, index),
+            cases: cases.clone(),
+            default: *default,
+        },
         SsaInst::Syscall { number, args } => IrInst::Syscall {
             number: number.as_ref().map(|n| lower_val(vals, out, n)),
             args: args.iter().map(|a| lower_val(vals, out, a)).collect(),
@@ -1056,7 +1169,11 @@ fn lower_inst(
 /// copy stays reachable and executes. Unique temporaries keep parallel-copy
 /// semantics (swap / lost-copy cases stay correct); only copy coalescing
 /// opportunities are missed.
-pub fn from_ssa(ssa: &SsaFunction) -> IrFunction {
+///
+/// Fails with [`SsaError::UnknownBlock`] if a phi references a predecessor
+/// block missing from the function, or with [`SsaError::IdExhausted`] if the
+/// input already uses `u32::MAX` block ids and no split-block id is left.
+pub fn from_ssa(ssa: &SsaFunction) -> Result<IrFunction, SsaError> {
     let mut out = IrFunction::new(&ssa.name, ssa.entry_address);
     out.metadata = ssa.metadata.clone();
     out.entry_block = ssa.entry_block;
@@ -1080,7 +1197,14 @@ pub fn from_ssa(ssa: &SsaFunction) -> IrFunction {
         .map(|(i, b)| (b.id, i))
         .collect();
 
-    let mut next_id = ssa.blocks.iter().map(|b| b.id.0).max().unwrap_or(0) + 1;
+    let mut next_id = ssa
+        .blocks
+        .iter()
+        .map(|b| b.id.0)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or(SsaError::IdExhausted)?;
     let mut splits: HashMap<(BlockId, BlockId), BlockId> = HashMap::new();
     let mut vals: HashMap<VersionedVar, Value> = HashMap::new();
     let mut edge_copies: Vec<Vec<IrInst>> = vec![Vec::new(); ssa.blocks.len()];
@@ -1098,8 +1222,10 @@ pub fn from_ssa(ssa: &SsaFunction) -> IrFunction {
             for (pred, input) in &phi.inputs {
                 let src_val = concrete(&mut vals, &mut out, input);
                 let tmp = out.alloc_var(input.ty.clone());
-                let pi = pos[pred];
-                let copies: &mut Vec<IrInst> = if ssa.blocks[pi].successors.len() > 1 {
+                let pi = *pos.get(pred).ok_or(SsaError::UnknownBlock(pred.0))?;
+                let pred_block =
+                    ssa.blocks.get(pi).ok_or(SsaError::UnknownBlock(pred.0))?;
+                let copies: &mut Vec<IrInst> = if pred_block.successors.len() > 1 {
                     split_copies.entry((*pred, sb.id)).or_default()
                 } else {
                     &mut edge_copies[pi]
@@ -1125,7 +1251,7 @@ pub fn from_ssa(ssa: &SsaFunction) -> IrFunction {
 
     for ((pred, succ), mut insts) in split_copies {
         let mid = BlockId(next_id);
-        next_id += 1;
+        next_id = next_id.checked_add(1).ok_or(SsaError::IdExhausted)?;
         insts.push(IrInst::Branch { target: succ });
         out.blocks.push(IrBlock {
             id: mid,
@@ -1177,6 +1303,18 @@ pub fn from_ssa(ssa: &SsaFunction) -> IrFunction {
                             *target_false = mid;
                         }
                     }
+                    IrInst::Switch { cases, default, .. } => {
+                        for (_, t) in cases.iter_mut() {
+                            if let Some(&mid) = splits.get(&(src, *t)) {
+                                *t = mid;
+                            }
+                        }
+                        if let Some(d) = default {
+                            if let Some(&mid) = splits.get(&(src, *d)) {
+                                *d = mid;
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1185,7 +1323,7 @@ pub fn from_ssa(ssa: &SsaFunction) -> IrFunction {
 
     out.rebuild_index();
     out.build_cfg();
-    out
+    Ok(out)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────
@@ -1204,24 +1342,33 @@ mod tests {
         let b3 = f.add_block("merge");
         let x = Value::reg("x", Ty::i64());
 
-        f.push_inst(f.entry_block, IrInst::CBranch {
-            cond,
-            target_true: b1,
-            target_false: b2,
-        });
-        f.push_inst(b1, IrInst::Binary {
-            dst: x.clone(),
-            op: OpCode::Add,
-            lhs: Value::int(1),
-            rhs: Value::int(0),
-        });
+        f.push_inst(
+            f.entry_block,
+            IrInst::CBranch {
+                cond,
+                target_true: b1,
+                target_false: b2,
+            },
+        );
+        f.push_inst(
+            b1,
+            IrInst::Binary {
+                dst: x.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(1),
+                rhs: Value::int(0),
+            },
+        );
         f.push_inst(b1, IrInst::Branch { target: b3 });
-        f.push_inst(b2, IrInst::Binary {
-            dst: x.clone(),
-            op: OpCode::Add,
-            lhs: Value::int(2),
-            rhs: Value::int(0),
-        });
+        f.push_inst(
+            b2,
+            IrInst::Binary {
+                dst: x.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(2),
+                rhs: Value::int(0),
+            },
+        );
         f.push_inst(b2, IrInst::Branch { target: b3 });
         f.push_inst(b3, IrInst::Return { value: Some(x) });
         f
@@ -1267,7 +1414,10 @@ mod tests {
         assert_ne!(phi.dst.version, 2);
 
         let ret = merge.insts.last().unwrap();
-        if let SsaInst::Return { value: Some(SsaVal::Ver(vv)) } = ret {
+        if let SsaInst::Return {
+            value: Some(SsaVal::Ver(vv)),
+        } = ret
+        {
             assert_eq!(vv.version, phi.dst.version);
         } else {
             panic!("merge must return the phi result");
@@ -1283,24 +1433,33 @@ mod tests {
         let exit = f.add_block("exit");
         let i = Value::reg("i", Ty::i64());
 
-        f.push_inst(f.entry_block, IrInst::Binary {
-            dst: i.clone(),
-            op: OpCode::Add,
-            lhs: Value::int(0),
-            rhs: Value::int(0),
-        });
+        f.push_inst(
+            f.entry_block,
+            IrInst::Binary {
+                dst: i.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(0),
+                rhs: Value::int(0),
+            },
+        );
         f.push_inst(f.entry_block, IrInst::Branch { target: header });
-        f.push_inst(header, IrInst::CBranch {
-            cond,
-            target_true: latch,
-            target_false: exit,
-        });
-        f.push_inst(latch, IrInst::Binary {
-            dst: i.clone(),
-            op: OpCode::Add,
-            lhs: i.clone(),
-            rhs: Value::int(1),
-        });
+        f.push_inst(
+            header,
+            IrInst::CBranch {
+                cond,
+                target_true: latch,
+                target_false: exit,
+            },
+        );
+        f.push_inst(
+            latch,
+            IrInst::Binary {
+                dst: i.clone(),
+                op: OpCode::Add,
+                lhs: i.clone(),
+                rhs: Value::int(1),
+            },
+        );
         f.push_inst(latch, IrInst::Branch { target: header });
         f.push_inst(exit, IrInst::Return { value: Some(i) });
 
@@ -1309,12 +1468,20 @@ mod tests {
         assert_eq!(h.phis.len(), 1);
         let phi = &h.phis[0];
 
-        let from_entry = phi.inputs.iter().find(|(b, _)| *b == f.entry_block).unwrap();
+        let from_entry = phi
+            .inputs
+            .iter()
+            .find(|(b, _)| *b == f.entry_block)
+            .unwrap();
         let from_latch = phi.inputs.iter().find(|(b, _)| *b == latch).unwrap();
         assert_ne!(from_entry.1.version, from_latch.1.version);
 
         let latch_inst = &ssa.block(latch).unwrap().insts[0];
-        if let SsaInst::Binary { lhs: SsaVal::Ver(use_vv), .. } = latch_inst {
+        if let SsaInst::Binary {
+            lhs: SsaVal::Ver(use_vv),
+            ..
+        } = latch_inst
+        {
             assert_eq!(use_vv.version, phi.dst.version);
         } else {
             panic!("latch must read the phi result");
@@ -1328,35 +1495,51 @@ mod tests {
         let y = f.alloc_var(Ty::i64());
         let z = f.alloc_var(Ty::i64());
 
-        f.push_inst(f.entry_block, IrInst::Binary {
-            dst: x.clone(),
-            op: OpCode::Add,
-            lhs: Value::int(1),
-            rhs: Value::int(0),
-        });
-        f.push_inst(f.entry_block, IrInst::Unary {
-            dst: y.clone(),
-            op: OpCode::Copy,
-            src: x.clone(),
-        });
-        f.push_inst(f.entry_block, IrInst::Binary {
-            dst: x.clone(),
-            op: OpCode::Add,
-            lhs: Value::int(2),
-            rhs: Value::int(0),
-        });
-        f.push_inst(f.entry_block, IrInst::Unary {
-            dst: z.clone(),
-            op: OpCode::Copy,
-            src: x.clone(),
-        });
+        f.push_inst(
+            f.entry_block,
+            IrInst::Binary {
+                dst: x.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(1),
+                rhs: Value::int(0),
+            },
+        );
+        f.push_inst(
+            f.entry_block,
+            IrInst::Unary {
+                dst: y.clone(),
+                op: OpCode::Copy,
+                src: x.clone(),
+            },
+        );
+        f.push_inst(
+            f.entry_block,
+            IrInst::Binary {
+                dst: x.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(2),
+                rhs: Value::int(0),
+            },
+        );
+        f.push_inst(
+            f.entry_block,
+            IrInst::Unary {
+                dst: z.clone(),
+                op: OpCode::Copy,
+                src: x.clone(),
+            },
+        );
         f.push_inst(f.entry_block, IrInst::Return { value: Some(z) });
 
         let ssa = to_ssa(&mut f).unwrap();
         let insts = &ssa.block(f.entry_block).unwrap().insts;
 
         let y_def_version = match &insts[1] {
-            SsaInst::Unary { dst, src: SsaVal::Ver(src), .. } => {
+            SsaInst::Unary {
+                dst,
+                src: SsaVal::Ver(src),
+                ..
+            } => {
                 assert_eq!(src.base, BaseVar::Reg("x".to_string()));
                 assert_eq!(src.version, 1);
                 dst.version
@@ -1364,7 +1547,10 @@ mod tests {
             other => panic!("expected copy into y, got {:?}", other),
         };
         match &insts[3] {
-            SsaInst::Unary { src: SsaVal::Ver(src), .. } => {
+            SsaInst::Unary {
+                src: SsaVal::Ver(src),
+                ..
+            } => {
                 assert_eq!(src.version, 2);
                 assert_ne!(src.version, y_def_version);
             }
@@ -1377,7 +1563,7 @@ mod tests {
     fn test_from_ssa_edge_copies_structure() {
         let mut func = diamond();
         let ssa = to_ssa(&mut func).unwrap();
-        let ir = from_ssa(&ssa);
+        let ir = from_ssa(&ssa).unwrap();
 
         for b in &ir.blocks {
             for inst in &b.insts {
@@ -1389,7 +1575,15 @@ mod tests {
         let copies_then: Vec<&IrInst> = then_b
             .insts
             .iter()
-            .filter(|i| matches!(**i, IrInst::Unary { op: OpCode::Copy, .. }))
+            .filter(|i| {
+                matches!(
+                    **i,
+                    IrInst::Unary {
+                        op: OpCode::Copy,
+                        ..
+                    }
+                )
+            })
             .collect();
         assert_eq!(copies_then.len(), 2);
         assert!(matches!(
@@ -1397,7 +1591,11 @@ mod tests {
             Some(IrInst::Branch { target }) if *target == BlockId(3)
         ));
         let merged = match copies_then[1] {
-            IrInst::Unary { dst, op: OpCode::Copy, .. } => dst.clone(),
+            IrInst::Unary {
+                dst,
+                op: OpCode::Copy,
+                ..
+            } => dst.clone(),
             _ => unreachable!(),
         };
 
@@ -1405,7 +1603,15 @@ mod tests {
         let copies_else: Vec<&IrInst> = else_b
             .insts
             .iter()
-            .filter(|i| matches!(**i, IrInst::Unary { op: OpCode::Copy, .. }))
+            .filter(|i| {
+                matches!(
+                    **i,
+                    IrInst::Unary {
+                        op: OpCode::Copy,
+                        ..
+                    }
+                )
+            })
             .collect();
         assert_eq!(copies_else.len(), 2);
 
@@ -1426,28 +1632,40 @@ mod tests {
         let merge = f.add_block("merge");
         let x = Value::reg("x", Ty::i64());
 
-        f.push_inst(f.entry_block, IrInst::CBranch {
-            cond: cond.clone(),
-            target_true: b1,
-            target_false: b2,
-        });
-        f.push_inst(b1, IrInst::Binary {
-            dst: x.clone(),
-            op: OpCode::Add,
-            lhs: Value::int(1),
-            rhs: Value::int(0),
-        });
-        f.push_inst(b1, IrInst::CBranch {
-            cond: cond.clone(),
-            target_true: merge,
-            target_false: b2,
-        });
-        f.push_inst(b2, IrInst::Binary {
-            dst: x.clone(),
-            op: OpCode::Add,
-            lhs: Value::int(2),
-            rhs: Value::int(0),
-        });
+        f.push_inst(
+            f.entry_block,
+            IrInst::CBranch {
+                cond: cond.clone(),
+                target_true: b1,
+                target_false: b2,
+            },
+        );
+        f.push_inst(
+            b1,
+            IrInst::Binary {
+                dst: x.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(1),
+                rhs: Value::int(0),
+            },
+        );
+        f.push_inst(
+            b1,
+            IrInst::CBranch {
+                cond: cond.clone(),
+                target_true: merge,
+                target_false: b2,
+            },
+        );
+        f.push_inst(
+            b2,
+            IrInst::Binary {
+                dst: x.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(2),
+                rhs: Value::int(0),
+            },
+        );
         f.push_inst(b2, IrInst::Branch { target: merge });
         f.push_inst(merge, IrInst::Return { value: Some(x) });
 
@@ -1455,7 +1673,7 @@ mod tests {
         let phi = &ssa.block(merge).unwrap().phis[0];
         assert_eq!(phi.inputs.len(), 2);
 
-        let ir = from_ssa(&ssa);
+        let ir = from_ssa(&ssa).unwrap();
 
         let edge_blocks: Vec<&IrBlock> = ir
             .blocks
@@ -1464,9 +1682,9 @@ mod tests {
             .collect();
         let edges_to_merge: Vec<&&IrBlock> = edge_blocks
             .iter()
-            .filter(|b| {
-                matches!(b.insts.last(), Some(IrInst::Branch { target }) if *target == merge)
-            })
+            .filter(
+                |b| matches!(b.insts.last(), Some(IrInst::Branch { target }) if *target == merge),
+            )
             .collect();
         assert_eq!(
             edges_to_merge.len(),
@@ -1486,11 +1704,17 @@ mod tests {
             Some(IrInst::CBranch { target_true, .. }) => *target_true == edge.id,
             _ => false,
         };
-        assert!(redirected, "critical edge must be routed through the split block");
+        assert!(
+            redirected,
+            "critical edge must be routed through the split block"
+        );
 
         let merge_ir = ir.block(merge).unwrap();
         assert_eq!(merge_ir.insts.len(), 1);
-        assert!(matches!(&merge_ir.insts[0], IrInst::Return { value: Some(_) }));
+        assert!(matches!(
+            &merge_ir.insts[0],
+            IrInst::Return { value: Some(_) }
+        ));
 
         for b in &ir.blocks {
             if b.label.starts_with("edge_") {
@@ -1511,6 +1735,47 @@ mod tests {
     }
 
     #[test]
+    fn test_unknown_branch_target_returns_error_without_panicking() {
+        let mut f = IrFunction::new("dangling", 0x0);
+        f.push_inst(
+            f.entry_block,
+            IrInst::Branch {
+                target: BlockId(99),
+            },
+        );
+
+        assert!(matches!(
+            to_ssa(&mut f),
+            Err(SsaError::UnknownBlock(99))
+        ));
+    }
+
+    #[test]
+    fn test_missing_entry_returns_error_without_panicking() {
+        let mut f = IrFunction::new("bad_entry", 0x0);
+        f.entry_block = BlockId(99);
+
+        assert!(matches!(to_ssa(&mut f), Err(SsaError::InvalidEntry(99))));
+    }
+
+    #[test]
+    fn test_terminator_in_middle_returns_error() {
+        let mut f = IrFunction::new("middle_term", 0x0);
+        f.push_inst(
+            f.entry_block,
+            IrInst::Branch {
+                target: f.entry_block,
+            },
+        );
+        f.blocks[0].insts.push(IrInst::Nop);
+
+        assert!(matches!(
+            to_ssa(&mut f),
+            Err(SsaError::TerminatorInMiddle(BlockId(0)))
+        ));
+    }
+
+    #[test]
     fn test_from_ssa_shares_split_block_per_critical_edge() {
         // Two phis fed across the SAME critical edge must share one split
         // block holding all four copies — per-edge keying guarantees every
@@ -1523,50 +1788,72 @@ mod tests {
         let x = Value::reg("x", Ty::i64());
         let y = Value::reg("y", Ty::i64());
 
-        f.push_inst(f.entry_block, IrInst::CBranch {
-            cond: cond.clone(),
-            target_true: b1,
-            target_false: b2,
-        });
-        f.push_inst(b1, IrInst::Binary {
-            dst: x.clone(),
-            op: OpCode::Add,
-            lhs: Value::int(1),
-            rhs: Value::int(0),
-        });
-        f.push_inst(b1, IrInst::Binary {
-            dst: y.clone(),
-            op: OpCode::Add,
-            lhs: Value::int(2),
-            rhs: Value::int(0),
-        });
-        f.push_inst(b1, IrInst::CBranch { cond, target_true: merge, target_false: b2 });
-        f.push_inst(b2, IrInst::Binary {
-            dst: x.clone(),
-            op: OpCode::Add,
-            lhs: Value::int(3),
-            rhs: Value::int(0),
-        });
-        f.push_inst(b2, IrInst::Binary {
-            dst: y.clone(),
-            op: OpCode::Add,
-            lhs: Value::int(4),
-            rhs: Value::int(0),
-        });
+        f.push_inst(
+            f.entry_block,
+            IrInst::CBranch {
+                cond: cond.clone(),
+                target_true: b1,
+                target_false: b2,
+            },
+        );
+        f.push_inst(
+            b1,
+            IrInst::Binary {
+                dst: x.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(1),
+                rhs: Value::int(0),
+            },
+        );
+        f.push_inst(
+            b1,
+            IrInst::Binary {
+                dst: y.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(2),
+                rhs: Value::int(0),
+            },
+        );
+        f.push_inst(
+            b1,
+            IrInst::CBranch {
+                cond,
+                target_true: merge,
+                target_false: b2,
+            },
+        );
+        f.push_inst(
+            b2,
+            IrInst::Binary {
+                dst: x.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(3),
+                rhs: Value::int(0),
+            },
+        );
+        f.push_inst(
+            b2,
+            IrInst::Binary {
+                dst: y.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(4),
+                rhs: Value::int(0),
+            },
+        );
         f.push_inst(b2, IrInst::Branch { target: merge });
         f.push_inst(merge, IrInst::Return { value: Some(x) });
 
         let ssa = to_ssa(&mut f).unwrap();
         assert_eq!(ssa.block(merge).unwrap().phis.len(), 2);
 
-        let ir = from_ssa(&ssa);
+        let ir = from_ssa(&ssa).unwrap();
         let edges_to_merge: Vec<&IrBlock> = ir
             .blocks
             .iter()
             .filter(|b| b.label.starts_with("edge_"))
-            .filter(|b| {
-                matches!(b.insts.last(), Some(IrInst::Branch { target }) if *target == merge)
-            })
+            .filter(
+                |b| matches!(b.insts.last(), Some(IrInst::Branch { target }) if *target == merge),
+            )
             .collect();
         assert_eq!(
             edges_to_merge.len(),
@@ -1595,17 +1882,23 @@ mod tests {
         let merge = f.add_block("merge");
         let x = Value::reg("x", Ty::i64());
 
-        f.push_inst(f.entry_block, IrInst::CBranch {
-            cond,
-            target_true: then_b,
-            target_false: merge,
-        });
-        f.push_inst(then_b, IrInst::Binary {
-            dst: x.clone(),
-            op: OpCode::Add,
-            lhs: Value::int(1),
-            rhs: Value::int(0),
-        });
+        f.push_inst(
+            f.entry_block,
+            IrInst::CBranch {
+                cond,
+                target_true: then_b,
+                target_false: merge,
+            },
+        );
+        f.push_inst(
+            then_b,
+            IrInst::Binary {
+                dst: x.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(1),
+                rhs: Value::int(0),
+            },
+        );
         f.push_inst(then_b, IrInst::Branch { target: merge });
         f.push_inst(merge, IrInst::Return { value: Some(x) });
 
@@ -1628,17 +1921,23 @@ mod tests {
         let merge = f.add_block("merge");
         let x = Value::reg("x", Ty::i64());
 
-        f.push_inst(f.entry_block, IrInst::Binary {
-            dst: x.clone(),
-            op: OpCode::Add,
-            lhs: Value::int(7),
-            rhs: Value::int(0),
-        });
-        f.push_inst(f.entry_block, IrInst::CBranch {
-            cond,
-            target_true: b1,
-            target_false: b2,
-        });
+        f.push_inst(
+            f.entry_block,
+            IrInst::Binary {
+                dst: x.clone(),
+                op: OpCode::Add,
+                lhs: Value::int(7),
+                rhs: Value::int(0),
+            },
+        );
+        f.push_inst(
+            f.entry_block,
+            IrInst::CBranch {
+                cond,
+                target_true: b1,
+                target_false: b2,
+            },
+        );
         f.push_inst(b1, IrInst::Branch { target: merge });
         f.push_inst(b2, IrInst::Branch { target: merge });
         f.push_inst(merge, IrInst::Return { value: Some(x) });
@@ -1676,10 +1975,7 @@ mod tests {
                 source_range: None,
                 phis: vec![Phi {
                     dst: x3.clone(),
-                    inputs: vec![
-                        (BlockId(1), x1.clone()),
-                        (BlockId(2), x1.clone()),
-                    ],
+                    inputs: vec![(BlockId(1), x1.clone()), (BlockId(2), x1.clone())],
                 }],
                 insts: vec![SsaInst::Return {
                     value: Some(SsaVal::Ver(x3.clone())),
@@ -1691,8 +1987,89 @@ mod tests {
 
         assert!(ssa.blocks[0].phis.is_empty());
         match &ssa.blocks[0].insts[0] {
-            SsaInst::Return { value: Some(SsaVal::Ver(vv)) } => assert_eq!(*vv, x1),
+            SsaInst::Return {
+                value: Some(SsaVal::Ver(vv)),
+            } => assert_eq!(*vv, x1),
             other => panic!("expected substituted return, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_to_ssa_rejects_const_destination() {
+        // `v0 = ...` is fine, but writing into a constant has no SSA version;
+        // it used to hit `unreachable!` and panic.
+        let mut func = IrFunction::new("const_dst", 0x0);
+        let entry = func.entry_block;
+        func.push_inst(
+            entry,
+            IrInst::Binary {
+                dst: Value::Const(0),
+                op: OpCode::Add,
+                lhs: Value::Const(1),
+                rhs: Value::Const(2),
+            },
+        );
+        assert!(matches!(
+            to_ssa(&mut func),
+            Err(SsaError::InvalidDestination(_))
+        ));
+    }
+
+    #[test]
+    fn test_from_ssa_rejects_unknown_phi_pred() {
+        // Hand-built SSA whose phi cites a predecessor that does not exist.
+        // The old `pos[pred]` indexing panicked.
+        let v0 = VersionedVar {
+            base: BaseVar::Var(0),
+            version: 0,
+            ty: Ty::i64(),
+        };
+        let ssa = SsaFunction {
+            name: "bad_pred".to_string(),
+            entry_address: 0x0,
+            entry_block: BlockId(0),
+            blocks: vec![SsaBlock {
+                id: BlockId(0),
+                label: "entry".to_string(),
+                predecessors: vec![],
+                successors: vec![],
+                source_range: None,
+                phis: vec![Phi {
+                    dst: v0.clone(),
+                    inputs: vec![(BlockId(99), v0.clone())],
+                }],
+                insts: vec![SsaInst::Return {
+                    value: Some(SsaVal::Ver(v0.clone())),
+                }],
+            }],
+            versions: HashMap::new(),
+            metadata: FunctionMetadata::default(),
+        };
+        assert!(matches!(
+            from_ssa(&ssa),
+            Err(SsaError::UnknownBlock(99))
+        ));
+    }
+
+    #[test]
+    fn test_from_ssa_rejects_exhausted_block_ids() {
+        // Input already sitting on `u32::MAX`: no id left for split blocks.
+        let ssa = SsaFunction {
+            name: "max_id".to_string(),
+            entry_address: 0x0,
+            entry_block: BlockId(u32::MAX),
+            blocks: vec![SsaBlock {
+                id: BlockId(u32::MAX),
+                label: "entry".to_string(),
+                predecessors: vec![],
+                successors: vec![],
+                source_range: None,
+                phis: vec![],
+                insts: vec![SsaInst::Return { value: None }],
+            }],
+            versions: HashMap::new(),
+            metadata: FunctionMetadata::default(),
+        };
+        assert!(matches!(from_ssa(&ssa), Err(SsaError::IdExhausted)));
     }
 }

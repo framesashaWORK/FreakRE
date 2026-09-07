@@ -17,6 +17,4 @@ pub mod types;
 
 pub use parser::ImportAnalyzer;
 pub use rules::{RuleMatch, SuspicionLevel};
-pub use types::{ImportDescriptor, ImportedFunction, ImportedModule, AnalysisReport};
-
-
+pub use types::{AnalysisReport, ImportDescriptor, ImportedFunction, ImportedModule};

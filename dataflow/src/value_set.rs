@@ -28,9 +28,15 @@ pub enum AbstractValue {
 }
 
 impl AbstractValue {
-    pub fn bottom() -> Self { AbstractValue::Bottom }
-    pub fn top() -> Self { AbstractValue::Top }
-    pub fn constant(v: i64) -> Self { AbstractValue::Constant(v) }
+    pub fn bottom() -> Self {
+        AbstractValue::Bottom
+    }
+    pub fn top() -> Self {
+        AbstractValue::Top
+    }
+    pub fn constant(v: i64) -> Self {
+        AbstractValue::Constant(v)
+    }
 
     pub fn range(lo: i64, hi: i64) -> Self {
         if lo == hi {
@@ -64,15 +70,26 @@ impl AbstractValue {
                     hi: (*hi).max(*c),
                 }
             }
-            (AbstractValue::Range { lo: a_lo, hi: a_hi }, AbstractValue::Range { lo: b_lo, hi: b_hi }) => {
-                AbstractValue::Range {
-                    lo: (*a_lo).min(*b_lo),
-                    hi: (*a_hi).max(*b_hi),
-                }
-            }
+            (
+                AbstractValue::Range { lo: a_lo, hi: a_hi },
+                AbstractValue::Range { lo: b_lo, hi: b_hi },
+            ) => AbstractValue::Range {
+                lo: (*a_lo).min(*b_lo),
+                hi: (*a_hi).max(*b_hi),
+            },
             // Strided ∪ Strided with same values → itself; otherwise widen to range
-            (AbstractValue::Strided { base: a_base, stride: a_stride, count: a_count },
-             AbstractValue::Strided { base: b_base, stride: b_stride, count: b_count }) => {
+            (
+                AbstractValue::Strided {
+                    base: a_base,
+                    stride: a_stride,
+                    count: a_count,
+                },
+                AbstractValue::Strided {
+                    base: b_base,
+                    stride: b_stride,
+                    count: b_count,
+                },
+            ) => {
                 if self == other {
                     self.clone()
                 } else {
@@ -88,8 +105,11 @@ impl AbstractValue {
             (s @ AbstractValue::Strided { .. }, AbstractValue::Constant(c))
             | (AbstractValue::Constant(c), s @ AbstractValue::Strided { .. }) => {
                 let (lo, hi) = match s {
-                    AbstractValue::Strided { base, stride, count } =>
-                        strided_extremes(*base, *stride, *count),
+                    AbstractValue::Strided {
+                        base,
+                        stride,
+                        count,
+                    } => strided_extremes(*base, *stride, *count),
                     _ => unreachable!(),
                 };
                 AbstractValue::Range {
@@ -101,8 +121,11 @@ impl AbstractValue {
             (s @ AbstractValue::Strided { .. }, AbstractValue::Range { lo, hi })
             | (AbstractValue::Range { lo, hi }, s @ AbstractValue::Strided { .. }) => {
                 let (s_lo, s_hi) = match s {
-                    AbstractValue::Strided { base, stride, count } =>
-                        strided_extremes(*base, *stride, *count),
+                    AbstractValue::Strided {
+                        base,
+                        stride,
+                        count,
+                    } => strided_extremes(*base, *stride, *count),
                     _ => unreachable!(),
                 };
                 AbstractValue::Range {
@@ -114,7 +137,9 @@ impl AbstractValue {
     }
 
     /// Whether this is the bottom element.
-    pub fn is_bottom(&self) -> bool { matches!(self, AbstractValue::Bottom) }
+    pub fn is_bottom(&self) -> bool {
+        matches!(self, AbstractValue::Bottom)
+    }
 
     /// Whether this is a known constant.
     pub fn as_constant(&self) -> Option<i64> {
@@ -200,7 +225,8 @@ impl ValueSetAnalysis {
                 for &pred in &block.predecessors {
                     if let Some(pred_exit) = vsa.exit_states.get(&pred) {
                         for (&var_id, val) in pred_exit {
-                            let existing = entry_state.entry(var_id).or_insert(AbstractValue::Bottom);
+                            let existing =
+                                entry_state.entry(var_id).or_insert(AbstractValue::Bottom);
                             let new_val = if iterations > 50 {
                                 existing.widen(val)
                             } else {
@@ -276,10 +302,10 @@ fn transfer_inst(
         IrInst::Unary { dst, op, src } => {
             let s = eval_abstract(src, state);
             let result = match (&s, op) {
-                (AbstractValue::Constant(c), OpCode::Neg) =>
-                    AbstractValue::Constant(c.wrapping_neg()),
-                (AbstractValue::Constant(c), OpCode::Not) =>
-                    AbstractValue::Constant(!*c),
+                (AbstractValue::Constant(c), OpCode::Neg) => {
+                    AbstractValue::Constant(c.wrapping_neg())
+                }
+                (AbstractValue::Constant(c), OpCode::Not) => AbstractValue::Constant(!*c),
                 _ => s,
             };
             if let Some(id) = dst.var_id() {
@@ -315,7 +341,9 @@ fn transfer_inst(
                 state.insert(id, result);
             }
         }
-        IrInst::Call { dst: Some(dst_val), .. } => {
+        IrInst::Call {
+            dst: Some(dst_val), ..
+        } => {
             // Calls produce Top (unknown return value)
             if let Some(id) = dst_val.var_id() {
                 state.insert(id, AbstractValue::Top);
@@ -328,9 +356,7 @@ fn transfer_inst(
 fn eval_abstract(value: &Value, state: &HashMap<u32, AbstractValue>) -> AbstractValue {
     match value {
         Value::Const(v) => AbstractValue::Constant(*v),
-        Value::Var { id, .. } => {
-            state.get(id).cloned().unwrap_or(AbstractValue::Top)
-        }
+        Value::Var { id, .. } => state.get(id).cloned().unwrap_or(AbstractValue::Top),
         _ => AbstractValue::Top,
     }
 }
@@ -348,27 +374,42 @@ fn abstract_binop(op: OpCode, lhs: &AbstractValue, rhs: &AbstractValue) -> Abstr
                 OpCode::Or => Some(a | b),
                 OpCode::Xor => Some(a ^ b),
                 OpCode::Shl if *b >= 0 && *b < 64 => Some(a.wrapping_shl(*b as u32)),
-                OpCode::Shr if *b >= 0 && *b < 64 => Some((*a as u64).wrapping_shr(*b as u32) as i64),
+                OpCode::Shr if *b >= 0 && *b < 64 => {
+                    Some((*a as u64).wrapping_shr(*b as u32) as i64)
+                }
                 _ => None,
             };
-            result.map(AbstractValue::Constant).unwrap_or(AbstractValue::Top)
+            result
+                .map(AbstractValue::Constant)
+                .unwrap_or(AbstractValue::Top)
         }
         // Range arithmetic (simplified)
-        (AbstractValue::Range { lo: a_lo, hi: a_hi }, AbstractValue::Constant(b)) => {
-            match op {
-                OpCode::Add => AbstractValue::Range { lo: a_lo.wrapping_add(*b), hi: a_hi.wrapping_add(*b) },
-                OpCode::Sub => AbstractValue::Range { lo: a_lo.wrapping_sub(*b), hi: a_hi.wrapping_sub(*b) },
-                OpCode::Mul if *b >= 0 => AbstractValue::Range { lo: a_lo.wrapping_mul(*b), hi: a_hi.wrapping_mul(*b) },
-                _ => AbstractValue::Top,
-            }
-        }
-        (AbstractValue::Constant(a), AbstractValue::Range { lo: b_lo, hi: b_hi }) => {
-            match op {
-                OpCode::Add => AbstractValue::Range { lo: a.wrapping_add(*b_lo), hi: a.wrapping_add(*b_hi) },
-                OpCode::Sub => AbstractValue::Range { lo: a.wrapping_sub(*b_hi), hi: a.wrapping_sub(*b_lo) },
-                _ => AbstractValue::Top,
-            }
-        }
+        (AbstractValue::Range { lo: a_lo, hi: a_hi }, AbstractValue::Constant(b)) => match op {
+            OpCode::Add => AbstractValue::Range {
+                lo: a_lo.wrapping_add(*b),
+                hi: a_hi.wrapping_add(*b),
+            },
+            OpCode::Sub => AbstractValue::Range {
+                lo: a_lo.wrapping_sub(*b),
+                hi: a_hi.wrapping_sub(*b),
+            },
+            OpCode::Mul if *b >= 0 => AbstractValue::Range {
+                lo: a_lo.wrapping_mul(*b),
+                hi: a_hi.wrapping_mul(*b),
+            },
+            _ => AbstractValue::Top,
+        },
+        (AbstractValue::Constant(a), AbstractValue::Range { lo: b_lo, hi: b_hi }) => match op {
+            OpCode::Add => AbstractValue::Range {
+                lo: a.wrapping_add(*b_lo),
+                hi: a.wrapping_add(*b_hi),
+            },
+            OpCode::Sub => AbstractValue::Range {
+                lo: a.wrapping_sub(*b_hi),
+                hi: a.wrapping_sub(*b_lo),
+            },
+            _ => AbstractValue::Top,
+        },
         _ => AbstractValue::Top,
     }
 }
@@ -407,8 +448,14 @@ mod tests {
 
     #[test]
     fn test_widen_large_range() {
-        let a = AbstractValue::Range { lo: 0, hi: 1_000_000_000 };
-        let b = AbstractValue::Range { lo: 0, hi: 10_000_000_000 };
+        let a = AbstractValue::Range {
+            lo: 0,
+            hi: 1_000_000_000,
+        };
+        let b = AbstractValue::Range {
+            lo: 0,
+            hi: 10_000_000_000,
+        };
         assert_eq!(a.widen(&b), AbstractValue::Top);
     }
 
@@ -416,7 +463,10 @@ mod tests {
     fn test_abstract_add() {
         let a = AbstractValue::Constant(3);
         let b = AbstractValue::Constant(7);
-        assert_eq!(abstract_binop(OpCode::Add, &a, &b), AbstractValue::Constant(10));
+        assert_eq!(
+            abstract_binop(OpCode::Add, &a, &b),
+            AbstractValue::Constant(10)
+        );
     }
 
     #[test]

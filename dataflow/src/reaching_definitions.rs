@@ -80,7 +80,10 @@ impl<'a> ReachingDefFramework<'a> {
         let mut defs_by_var: HashMap<Value, Vec<Definition>> = HashMap::new();
         for defs in &block_def_sets {
             for def in defs {
-                defs_by_var.entry(def.var.clone()).or_default().push(def.clone());
+                defs_by_var
+                    .entry(def.var.clone())
+                    .or_default()
+                    .push(def.clone());
             }
         }
 
@@ -197,7 +200,12 @@ impl ReachingDefinitions {
     }
 
     /// Get definitions reaching a specific instruction
-    pub fn reaching_at(&self, func: &IrFunction, block_id: BlockId, inst_offset: usize) -> BTreeSet<Definition> {
+    pub fn reaching_at(
+        &self,
+        func: &IrFunction,
+        block_id: BlockId,
+        inst_offset: usize,
+    ) -> BTreeSet<Definition> {
         // Start with IN[block]
         let mut reaching = self.in_sets.get(&block_id).cloned().unwrap_or_default();
 
@@ -230,11 +238,7 @@ impl ReachingDefinitions {
     pub fn definitions_of(&self, var: &Value, block_id: BlockId) -> Vec<&Definition> {
         self.in_sets
             .get(&block_id)
-            .map(|defs| {
-                defs.iter()
-                    .filter(|def| def.var == *var)
-                    .collect()
-            })
+            .map(|defs| defs.iter().filter(|def| def.var == *var).collect())
             .unwrap_or_default()
     }
 }
@@ -257,21 +261,30 @@ mod tests {
         let v2 = Value::reg("v2", Ty::i32());
         let v3 = func.alloc_var(Ty::i32());
 
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v0.clone(),
-            op: OpCode::Add,
-            lhs: v1.clone(),
-            rhs: v2.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Binary {
-            dst: v3.clone(),
-            op: OpCode::Add,
-            lhs: v0.clone(),
-            rhs: v1.clone(),
-        });
-        func.push_inst(func.entry_block, IrInst::Return {
-            value: Some(v3.clone()),
-        });
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v0.clone(),
+                op: OpCode::Add,
+                lhs: v1.clone(),
+                rhs: v2.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: v3.clone(),
+                op: OpCode::Add,
+                lhs: v0.clone(),
+                rhs: v1.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Return {
+                value: Some(v3.clone()),
+            },
+        );
 
         let rd = ReachingDefinitions::analyze(&func);
 

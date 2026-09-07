@@ -1,10 +1,67 @@
-use crate::ir::{BlockId, IrFunction, IrInst, OpCode, Value};
+﻿use crate::ir::{BlockId, IrBlock, IrFunction, IrInst, OpCode, Value};
 use crate::lifter::{Lifter, LifterError};
 use crate::types::Ty;
 
 pub struct X86Lifter {
     is_64bit: bool,
     max_instructions: usize,
+    /// Optional image context for jump-table recovery: (virtual address в†’
+    /// bytes). Only used to *read* dispatch tables; lifting never executes
+    /// or re-decodes image content outside the recovered targets.
+    image: Option<ImageCtx>,
+}
+
+/// Read-only view of the binary image for jump-table recovery.
+#[derive(Debug, Clone)]
+pub struct ImageCtx {
+    /// Sections as (vaddr, size) вЂ” vaddrв†’offset resolution via containment.
+    sections: Vec<(u64, u64)>,
+    /// Image base (VA of the first mapped byte in `bytes[0]` coordinate).
+    image_base: u64,
+    /// The mapped image bytes, starting at `image_base`.
+    bytes: Vec<u8>,
+}
+
+impl ImageCtx {
+    /// Build from section list + raw image bytes (offset 0 = `image_base`).
+    pub fn new(sections: Vec<(u64, u64)>, image_base: u64, bytes: Vec<u8>) -> Self {
+        ImageCtx {
+            sections,
+            image_base,
+            bytes,
+        }
+    }
+
+    /// Resolve a virtual address to a byte slice if it lies inside a mapped
+    /// section and the full `len` window is present.
+    fn read(&self, va: u64, len: usize) -> Option<&[u8]> {
+        let off = va.checked_sub(self.image_base)?;
+        for &(sva, ssize) in &self.sections {
+            if off >= sva && off < sva.checked_add(ssize)? {
+                let start = off as usize;
+                let end = start.checked_add(len)?;
+                return self.bytes.get(start..end);
+            }
+        }
+        None
+    }
+
+    /// Read `size` bytes (4 or 8) at a virtual address as a little-endian
+    /// unsigned value.
+    fn read_ptr(&self, va: u64, size: u64) -> Option<u64> {
+        let b = self.read(va, size as usize)?;
+        match size {
+            4 => Some(u32::from_le_bytes(b.try_into().ok()?) as u64),
+            8 => Some(u64::from_le_bytes(b.try_into().ok()?)),
+            _ => None,
+        }
+    }
+
+    /// Read a little-endian pointer-sized value.
+    fn read_u64(&self, va: u64) -> Option<u64> {
+        let b = self.read(va, 8)?;
+        Some(u64::from_le_bytes(b.try_into().ok()?))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,7 +178,7 @@ struct SubregWrite {
     zero_high: bool,
 }
 
-/// Alias table for nested x86 registers (al/ah/ax/eax/... → widest parent).
+/// Alias table for nested x86 registers (al/ah/ax/eax/... в†’ widest parent).
 ///
 /// Writes to narrow views are canonicalized through `write_reg` as a
 /// read-modify-write of the parent so narrow writes stay visible to wider
@@ -145,7 +202,12 @@ fn subreg_write(name: &str, bits: u32, is_64bit: bool) -> Option<SubregWrite> {
         _ => None,
     };
     if let Some((idx, off)) = byte_word {
-        return Some(SubregWrite { parent_idx: idx, offset: off, width: bits, zero_high: false });
+        return Some(SubregWrite {
+            parent_idx: idx,
+            offset: off,
+            width: bits,
+            zero_high: false,
+        });
     }
     if !is_64bit {
         // 32-bit mode: the e-names already are the widest view.
@@ -153,7 +215,12 @@ fn subreg_write(name: &str, bits: u32, is_64bit: bool) -> Option<SubregWrite> {
     }
     const LEGACY32: [&str; 8] = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"];
     if let Some(idx) = LEGACY32.iter().position(|&n| n == name) {
-        return Some(SubregWrite { parent_idx: idx as u8, offset: 0, width: 32, zero_high: true });
+        return Some(SubregWrite {
+            parent_idx: idx as u8,
+            offset: 0,
+            width: 32,
+            zero_high: true,
+        });
     }
     // Extended registers: r8b/r8w/r8d alias r8.
     let rest = name.strip_prefix('r')?;
@@ -166,9 +233,24 @@ fn subreg_write(name: &str, bits: u32, is_64bit: bool) -> Option<SubregWrite> {
         return None;
     }
     match &rest[split..] {
-        "b" => Some(SubregWrite { parent_idx: idx, offset: 0, width: 8, zero_high: false }),
-        "w" => Some(SubregWrite { parent_idx: idx, offset: 0, width: 16, zero_high: false }),
-        "d" => Some(SubregWrite { parent_idx: idx, offset: 0, width: 32, zero_high: true }),
+        "b" => Some(SubregWrite {
+            parent_idx: idx,
+            offset: 0,
+            width: 8,
+            zero_high: false,
+        }),
+        "w" => Some(SubregWrite {
+            parent_idx: idx,
+            offset: 0,
+            width: 16,
+            zero_high: false,
+        }),
+        "d" => Some(SubregWrite {
+            parent_idx: idx,
+            offset: 0,
+            width: 32,
+            zero_high: true,
+        }),
         _ => None,
     }
 }
@@ -266,20 +348,37 @@ impl RmLoc {
         }
         let v = func.alloc_var(int_ty(bits));
         let addr = self.addr.clone().unwrap_or(Value::Const(0));
-        func.push_inst(block, IrInst::Load {
-            dst: v.clone(),
-            addr,
-            size: bits / 8,
-        });
+        func.push_inst(
+            block,
+            IrInst::Load {
+                dst: v.clone(),
+                addr,
+                size: bits / 8,
+            },
+        );
         v
     }
 
-    fn store(&self, lifter: &X86Lifter, func: &mut IrFunction, block: BlockId, val: Value, bits: u32) {
+    fn store(
+        &self,
+        lifter: &X86Lifter,
+        func: &mut IrFunction,
+        block: BlockId,
+        val: Value,
+        bits: u32,
+    ) {
         if let Some(r) = &self.reg {
             lifter.write_reg(func, block, r, OpCode::Copy, val, bits);
         } else {
             let addr = self.addr.clone().unwrap_or(Value::Const(0));
-            func.push_inst(block, IrInst::Store { addr, value: val, size: bits / 8 });
+            func.push_inst(
+                block,
+                IrInst::Store {
+                    addr,
+                    value: val,
+                    size: bits / 8,
+                },
+            );
         }
     }
 }
@@ -289,11 +388,23 @@ impl X86Lifter {
         X86Lifter {
             is_64bit,
             max_instructions: 100_000,
+            image: None,
         }
     }
 
+    /// Attach an image context so jump-table recovery can read dispatch
+    /// tables out of the binary. Without it, `FF /4` lifts to `IndirectBranch`.
+    pub fn with_image(mut self, image: ImageCtx) -> Self {
+        self.image = Some(image);
+        self
+    }
+
     fn ptr_bits(&self) -> u32 {
-        if self.is_64bit { 64 } else { 32 }
+        if self.is_64bit {
+            64
+        } else {
+            32
+        }
     }
 
     fn stack_bits(&self, o16: bool) -> u32 {
@@ -307,7 +418,10 @@ impl X86Lifter {
     }
 
     fn reg64(&self, name: &str) -> Value {
-        Value::Register { name: name.to_string(), ty: Ty::i64() }
+        Value::Register {
+            name: name.to_string(),
+            ty: Ty::i64(),
+        }
     }
 
     fn flag(&self, name: &str) -> Value {
@@ -319,7 +433,14 @@ impl X86Lifter {
 
     fn flag_cmp(&self, func: &mut IrFunction, block: BlockId, op: OpCode, name: &str) -> Value {
         let cond = func.alloc_var(Ty::Bool);
-        push_bin(func, block, cond.clone(), op, self.flag(name), Value::Const(1));
+        push_bin(
+            func,
+            block,
+            cond.clone(),
+            op,
+            self.flag(name),
+            Value::Const(1),
+        );
         cond
     }
 
@@ -336,7 +457,14 @@ impl X86Lifter {
         cond
     }
 
-    fn combine(&self, func: &mut IrFunction, block: BlockId, op: OpCode, a: Value, b: Value) -> Value {
+    fn combine(
+        &self,
+        func: &mut IrFunction,
+        block: BlockId,
+        op: OpCode,
+        a: Value,
+        b: Value,
+    ) -> Value {
         let dst = func.alloc_var(Ty::Bool);
         push_bin(func, block, dst.clone(), op, a, b);
         dst
@@ -451,9 +579,30 @@ impl X86Lifter {
     /// Record ZF/CF/SF definitions for a `sub`-style operation so that
     /// later Jcc conditions can be folded into direct comparisons.
     fn write_sub_flags(&self, func: &mut IrFunction, block: BlockId, a: &Value, b: &Value) {
-        push_bin(func, block, self.flag("zf"), OpCode::Eq, a.clone(), b.clone());
-        push_bin(func, block, self.flag("cf"), OpCode::LtU, a.clone(), b.clone());
-        push_bin(func, block, self.flag("sf"), OpCode::LtS, a.clone(), b.clone());
+        push_bin(
+            func,
+            block,
+            self.flag("zf"),
+            OpCode::Eq,
+            a.clone(),
+            b.clone(),
+        );
+        push_bin(
+            func,
+            block,
+            self.flag("cf"),
+            OpCode::LtU,
+            a.clone(),
+            b.clone(),
+        );
+        push_bin(
+            func,
+            block,
+            self.flag("sf"),
+            OpCode::LtS,
+            a.clone(),
+            b.clone(),
+        );
     }
 
     /// Write `op(src)` into register `dst`, keeping x86 sub-register
@@ -462,8 +611,8 @@ impl X86Lifter {
     /// Design (stays within the existing IR ops): the narrow-name copy is
     /// emitted unchanged so narrow readers still see the write, and the
     /// value is additionally merged into the widest enclosing parent via a
-    /// masked read-modify-write — `parent = (parent & !field) | value_field`
-    /// — so later wider reads observe it too. 32-bit writes in 64-bit mode
+    /// masked read-modify-write вЂ” `parent = (parent & !field) | value_field`
+    /// вЂ” so later wider reads observe it too. 32-bit writes in 64-bit mode
     /// clear the upper half instead (`parent = zext(value)`), matching the
     /// architectural zero-extension.
     fn write_reg(
@@ -491,15 +640,33 @@ impl X86Lifter {
             push_un(func, block, parent, OpCode::Copy, widened);
             return;
         }
-        let field = if info.width >= 64 { u64::MAX } else { (1u64 << info.width) - 1 };
+        let field = if info.width >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << info.width) - 1
+        };
         let keep = (!field << info.offset) as i64;
         let preserved = func.alloc_var(int_ty(pbits));
-        push_bin(func, block, preserved.clone(), OpCode::And, parent.clone(), Value::Const(keep));
+        push_bin(
+            func,
+            block,
+            preserved.clone(),
+            OpCode::And,
+            parent.clone(),
+            Value::Const(keep),
+        );
         let field_val: Value = match src {
             Value::Const(c) => Value::Const((((c as u64) & field) << info.offset) as i64),
             v => {
                 let masked = func.alloc_var(int_ty(pbits));
-                push_bin(func, block, masked.clone(), OpCode::And, v, Value::Const(field as i64));
+                push_bin(
+                    func,
+                    block,
+                    masked.clone(),
+                    OpCode::And,
+                    v,
+                    Value::Const(field as i64),
+                );
                 if info.offset > 0 {
                     let shifted = func.alloc_var(int_ty(pbits));
                     push_bin(
@@ -517,7 +684,14 @@ impl X86Lifter {
             }
         };
         let merged = func.alloc_var(int_ty(pbits));
-        push_bin(func, block, merged.clone(), OpCode::Or, preserved, field_val);
+        push_bin(
+            func,
+            block,
+            merged.clone(),
+            OpCode::Or,
+            preserved,
+            field_val,
+        );
         push_un(func, block, parent, OpCode::Copy, merged);
     }
 
@@ -527,17 +701,38 @@ impl X86Lifter {
     fn write_pf(&self, func: &mut IrFunction, block: BlockId, result: &Value) {
         let pb = self.ptr_bits();
         let mut cur = func.alloc_var(int_ty(pb));
-        push_bin(func, block, cur.clone(), OpCode::And, result.clone(), Value::Const(0xFF));
+        push_bin(
+            func,
+            block,
+            cur.clone(),
+            OpCode::And,
+            result.clone(),
+            Value::Const(0xFF),
+        );
         for sh in [4i64, 2, 1] {
             let hi = func.alloc_var(int_ty(pb));
-            push_bin(func, block, hi.clone(), OpCode::Shr, cur.clone(), Value::Const(sh));
+            push_bin(
+                func,
+                block,
+                hi.clone(),
+                OpCode::Shr,
+                cur.clone(),
+                Value::Const(sh),
+            );
             let next = func.alloc_var(int_ty(pb));
             push_bin(func, block, next.clone(), OpCode::Xor, cur, hi);
             cur = next;
         }
         let low = func.alloc_var(int_ty(pb));
         push_bin(func, block, low.clone(), OpCode::And, cur, Value::Const(1));
-        push_bin(func, block, self.flag("pf"), OpCode::Eq, low, Value::Const(0));
+        push_bin(
+            func,
+            block,
+            self.flag("pf"),
+            OpCode::Eq,
+            low,
+            Value::Const(0),
+        );
     }
 
     /// ADD-family flags: ZF/SF/PF from the result, CF from unsigned wrap,
@@ -550,20 +745,76 @@ impl X86Lifter {
         b: &Value,
         result: &Value,
     ) {
-        push_bin(func, block, self.flag("zf"), OpCode::Eq, result.clone(), Value::Const(0));
-        push_bin(func, block, self.flag("sf"), OpCode::LtS, result.clone(), Value::Const(0));
-        push_bin(func, block, self.flag("cf"), OpCode::LtU, result.clone(), a.clone());
+        push_bin(
+            func,
+            block,
+            self.flag("zf"),
+            OpCode::Eq,
+            result.clone(),
+            Value::Const(0),
+        );
+        push_bin(
+            func,
+            block,
+            self.flag("sf"),
+            OpCode::LtS,
+            result.clone(),
+            Value::Const(0),
+        );
+        push_bin(
+            func,
+            block,
+            self.flag("cf"),
+            OpCode::LtU,
+            result.clone(),
+            a.clone(),
+        );
         let neg_a = func.alloc_var(Ty::Bool);
-        push_bin(func, block, neg_a.clone(), OpCode::LtS, a.clone(), Value::Const(0));
+        push_bin(
+            func,
+            block,
+            neg_a.clone(),
+            OpCode::LtS,
+            a.clone(),
+            Value::Const(0),
+        );
         let neg_b = func.alloc_var(Ty::Bool);
-        push_bin(func, block, neg_b.clone(), OpCode::LtS, b.clone(), Value::Const(0));
+        push_bin(
+            func,
+            block,
+            neg_b.clone(),
+            OpCode::LtS,
+            b.clone(),
+            Value::Const(0),
+        );
         let neg_r = func.alloc_var(Ty::Bool);
-        push_bin(func, block, neg_r.clone(), OpCode::LtS, result.clone(), Value::Const(0));
+        push_bin(
+            func,
+            block,
+            neg_r.clone(),
+            OpCode::LtS,
+            result.clone(),
+            Value::Const(0),
+        );
         let same_signs = func.alloc_var(Ty::Bool);
-        push_bin(func, block, same_signs.clone(), OpCode::Eq, neg_a.clone(), neg_b);
+        push_bin(
+            func,
+            block,
+            same_signs.clone(),
+            OpCode::Eq,
+            neg_a.clone(),
+            neg_b,
+        );
         let sign_flips = func.alloc_var(Ty::Bool);
         push_bin(func, block, sign_flips.clone(), OpCode::Ne, neg_r, neg_a);
-        push_bin(func, block, self.flag("of"), OpCode::And, same_signs, sign_flips);
+        push_bin(
+            func,
+            block,
+            self.flag("of"),
+            OpCode::And,
+            same_signs,
+            sign_flips,
+        );
         self.write_pf(func, block, result);
     }
 
@@ -572,13 +823,27 @@ impl X86Lifter {
     fn write_logic_flags(&self, func: &mut IrFunction, block: BlockId, result: &Value) {
         push_un(func, block, self.flag("cf"), OpCode::Copy, Value::Const(0));
         push_un(func, block, self.flag("of"), OpCode::Copy, Value::Const(0));
-        push_bin(func, block, self.flag("zf"), OpCode::Eq, result.clone(), Value::Const(0));
-        push_bin(func, block, self.flag("sf"), OpCode::LtS, result.clone(), Value::Const(0));
+        push_bin(
+            func,
+            block,
+            self.flag("zf"),
+            OpCode::Eq,
+            result.clone(),
+            Value::Const(0),
+        );
+        push_bin(
+            func,
+            block,
+            self.flag("sf"),
+            OpCode::LtS,
+            result.clone(),
+            Value::Const(0),
+        );
         self.write_pf(func, block, result);
     }
 
     /// INC/DEC flags: ZF/SF/OF/PF as usual but CF is deliberately left
-    /// untouched — the one way INC/DEC differ from ADD/SUB.
+    /// untouched вЂ” the one way INC/DEC differ from ADD/SUB.
     fn write_incdec_flags(
         &self,
         func: &mut IrFunction,
@@ -587,21 +852,63 @@ impl X86Lifter {
         result: &Value,
         is_inc: bool,
     ) {
-        push_bin(func, block, self.flag("zf"), OpCode::Eq, result.clone(), Value::Const(0));
-        push_bin(func, block, self.flag("sf"), OpCode::LtS, result.clone(), Value::Const(0));
+        push_bin(
+            func,
+            block,
+            self.flag("zf"),
+            OpCode::Eq,
+            result.clone(),
+            Value::Const(0),
+        );
+        push_bin(
+            func,
+            block,
+            self.flag("sf"),
+            OpCode::LtS,
+            result.clone(),
+            Value::Const(0),
+        );
         let neg_a = func.alloc_var(Ty::Bool);
-        push_bin(func, block, neg_a.clone(), OpCode::LtS, a.clone(), Value::Const(0));
+        push_bin(
+            func,
+            block,
+            neg_a.clone(),
+            OpCode::LtS,
+            a.clone(),
+            Value::Const(0),
+        );
         let neg_r = func.alloc_var(Ty::Bool);
-        push_bin(func, block, neg_r.clone(), OpCode::LtS, result.clone(), Value::Const(0));
+        push_bin(
+            func,
+            block,
+            neg_r.clone(),
+            OpCode::LtS,
+            result.clone(),
+            Value::Const(0),
+        );
         if is_inc {
             // OF: positive operand wraps to negative (a was MAX).
             let non_neg = func.alloc_var(Ty::Bool);
-            push_bin(func, block, non_neg.clone(), OpCode::Eq, neg_a, Value::Const(0));
+            push_bin(
+                func,
+                block,
+                non_neg.clone(),
+                OpCode::Eq,
+                neg_a,
+                Value::Const(0),
+            );
             push_bin(func, block, self.flag("of"), OpCode::And, non_neg, neg_r);
         } else {
             // OF: negative operand wraps to non-negative (a was MIN).
             let non_neg_r = func.alloc_var(Ty::Bool);
-            push_bin(func, block, non_neg_r.clone(), OpCode::Eq, neg_r, Value::Const(0));
+            push_bin(
+                func,
+                block,
+                non_neg_r.clone(),
+                OpCode::Eq,
+                neg_r,
+                Value::Const(0),
+            );
             push_bin(func, block, self.flag("of"), OpCode::And, neg_a, non_neg_r);
         }
         self.write_pf(func, block, result);
@@ -619,11 +926,14 @@ impl X86Lifter {
             sp.clone(),
             Value::Const((bits / 8) as i64),
         );
-        func.push_inst(block, IrInst::Store {
-            addr: tmp.clone(),
-            value: val,
-            size: bits / 8,
-        });
+        func.push_inst(
+            block,
+            IrInst::Store {
+                addr: tmp.clone(),
+                value: val,
+                size: bits / 8,
+            },
+        );
         push_un(func, block, sp, OpCode::Copy, tmp);
     }
 
@@ -631,11 +941,14 @@ impl X86Lifter {
         let pb = self.ptr_bits();
         let sp = reg_value(4, pb, false);
         let ld = func.alloc_var(int_ty(bits));
-        func.push_inst(block, IrInst::Load {
-            dst: ld.clone(),
-            addr: sp.clone(),
-            size: bits / 8,
-        });
+        func.push_inst(
+            block,
+            IrInst::Load {
+                dst: ld.clone(),
+                addr: sp.clone(),
+                size: bits / 8,
+            },
+        );
         let tmp = func.alloc_var(int_ty(pb));
         push_bin(
             func,
@@ -687,7 +1000,14 @@ impl X86Lifter {
                 let iv = reg_value(idx_field + ext(rex_x), pbits, false);
                 let prod = if scale > 1 {
                     let t = func.alloc_var(pty.clone());
-                    push_bin(func, block, t.clone(), OpCode::Mul, iv, Value::Const(scale as i64));
+                    push_bin(
+                        func,
+                        block,
+                        t.clone(),
+                        OpCode::Mul,
+                        iv,
+                        Value::Const(scale as i64),
+                    );
                     t
                 } else {
                     iv
@@ -753,13 +1073,27 @@ impl X86Lifter {
                 1 => {
                     let d = read_disp8(after, 0);
                     let t = func.alloc_var(pty.clone());
-                    push_bin(func, block, t.clone(), OpCode::Add, base_val, Value::Const(d));
+                    push_bin(
+                        func,
+                        block,
+                        t.clone(),
+                        OpCode::Add,
+                        base_val,
+                        Value::Const(d),
+                    );
                     (t, 2)
                 }
                 _ => {
                     let d = read_i32(after, 0);
                     let t = func.alloc_var(pty);
-                    push_bin(func, block, t.clone(), OpCode::Add, base_val, Value::Const(d));
+                    push_bin(
+                        func,
+                        block,
+                        t.clone(),
+                        OpCode::Add,
+                        base_val,
+                        Value::Const(d),
+                    );
                     (t, 5)
                 }
             }
@@ -812,9 +1146,21 @@ impl X86Lifter {
                 len: 1,
             })
         } else {
-            let (addr, len) =
-                self.address_of_rm(func, block, code, op_pos, insn_addr, rex_x, rex_b, trailing_imm)?;
-            Ok(RmLoc { reg: None, addr: Some(addr), len })
+            let (addr, len) = self.address_of_rm(
+                func,
+                block,
+                code,
+                op_pos,
+                insn_addr,
+                rex_x,
+                rex_b,
+                trailing_imm,
+            )?;
+            Ok(RmLoc {
+                reg: None,
+                addr: Some(addr),
+                len,
+            })
         }
     }
 
@@ -826,16 +1172,32 @@ impl X86Lifter {
             let rsp = self.reg64("rsp");
             let new_rsp = func.alloc_var(Ty::i64());
 
-            push_bin(func, block, new_rsp.clone(), OpCode::Sub, rsp.clone(), Value::int(8));
-            func.push_inst(block, IrInst::Store {
-                addr: new_rsp.clone(),
-                value: self.reg64("rbp"),
-                size: 8,
-            });
+            push_bin(
+                func,
+                block,
+                new_rsp.clone(),
+                OpCode::Sub,
+                rsp.clone(),
+                Value::int(8),
+            );
+            func.push_inst(
+                block,
+                IrInst::Store {
+                    addr: new_rsp.clone(),
+                    value: self.reg64("rbp"),
+                    size: 8,
+                },
+            );
             push_un(func, block, rsp, OpCode::Copy, new_rsp);
 
             if code[1] == 0x48 && code[2] == 0x89 && code[3] == 0xE5 {
-                push_un(func, block, self.reg64("rbp"), OpCode::Copy, self.reg64("rsp"));
+                push_un(
+                    func,
+                    block,
+                    self.reg64("rbp"),
+                    OpCode::Copy,
+                    self.reg64("rsp"),
+                );
                 return 4;
             }
 
@@ -854,28 +1216,50 @@ impl X86Lifter {
             let old_rbp = func.alloc_var(Ty::i64());
             let new_rsp = func.alloc_var(Ty::i64());
 
-            func.push_inst(block, IrInst::Load {
-                dst: old_rbp.clone(),
-                addr: rsp.clone(),
-                size: 8,
-            });
-            push_bin(func, block, new_rsp.clone(), OpCode::Add, rsp, Value::int(8));
+            func.push_inst(
+                block,
+                IrInst::Load {
+                    dst: old_rbp.clone(),
+                    addr: rsp.clone(),
+                    size: 8,
+                },
+            );
+            push_bin(
+                func,
+                block,
+                new_rsp.clone(),
+                OpCode::Add,
+                rsp,
+                Value::int(8),
+            );
             push_un(func, block, self.reg64("rsp"), OpCode::Copy, new_rsp);
             push_un(func, block, self.reg64("rbp"), OpCode::Copy, old_rbp);
-            func.push_inst(block, IrInst::Return {
-                value: Some(self.reg64("rax")),
-            });
+            func.push_inst(
+                block,
+                IrInst::Return {
+                    value: Some(self.reg64("rax")),
+                },
+            );
             return 1;
         }
 
         if code[0] == 0xC9 && code.len() >= 2 && code[1] == 0xC3 {
-            push_un(func, block, self.reg64("rsp"), OpCode::Copy, self.reg64("rbp"));
+            push_un(
+                func,
+                block,
+                self.reg64("rsp"),
+                OpCode::Copy,
+                self.reg64("rbp"),
+            );
             let old_rbp = func.alloc_var(Ty::i64());
-            func.push_inst(block, IrInst::Load {
-                dst: old_rbp.clone(),
-                addr: self.reg64("rsp"),
-                size: 8,
-            });
+            func.push_inst(
+                block,
+                IrInst::Load {
+                    dst: old_rbp.clone(),
+                    addr: self.reg64("rsp"),
+                    size: 8,
+                },
+            );
             push_un(func, block, self.reg64("rbp"), OpCode::Copy, old_rbp);
             let new_rsp = func.alloc_var(Ty::i64());
             push_bin(
@@ -887,13 +1271,295 @@ impl X86Lifter {
                 Value::int(8),
             );
             push_un(func, block, self.reg64("rsp"), OpCode::Copy, new_rsp);
-            func.push_inst(block, IrInst::Return {
-                value: Some(self.reg64("rax")),
-            });
+            func.push_inst(
+                block,
+                IrInst::Return {
+                    value: Some(self.reg64("rax")),
+                },
+            );
             return 2;
         }
 
         0
+    }
+
+    /// Recover jump-table switches from `FF /4` (jmp [table + reg*scale])
+    /// dispatches.
+    ///
+    /// Compiler shape:
+    /// ```text
+    ///     cmp  reg, N
+    ///     ja   default            ; or jae (Ne cf) form
+    ///     jmp  qword [table + reg*8]   ; table base = disp32 or lea-resolved
+    /// ```
+    /// For every block ending in `IndirectBranch` the pass:
+    /// 1. parses the load address into (table_va, index, scale),
+    /// 2. finds the unsigned bounds guard (ja / jae) within two predecessor
+    ///    hops and derives the entry count from it,
+    /// 3. reads the entries from the attached image and validates every
+    ///    target against the function's lifted extent,
+    /// 4. reuses existing blocks at exact target addresses or lifts the case
+    ///    body into fresh blocks,
+    /// 5. rewrites the terminator into `IrInst::Switch` (no default arm вЂ”
+    ///    the guard edge already covers out-of-range).
+    ///
+    /// Any doubt leaves the IndirectBranch untouched: soundness over
+    /// coverage.
+    fn recover_jump_tables(
+        &self,
+        func: &mut IrFunction,
+        code: &[u8],
+        base_address: u64,
+    ) -> usize {
+        let Some(image) = &self.image else {
+            return 0;
+        };
+
+        // Reusable blocks keyed by exact start address.
+        let mut starts: std::collections::HashMap<u64, BlockId> =
+            std::collections::HashMap::new();
+        for b in &func.blocks {
+            if b.insts.is_empty() {
+                continue;
+            }
+            if let Some(addr) = parse_block_addr(&b.label, base_address) {
+                starts.insert(addr, b.id);
+            }
+        }
+
+        let sites: Vec<BlockId> = func
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.terminator(), Some(IrInst::IndirectBranch { .. })))
+            .map(|b| b.id)
+            .collect();
+
+        let mut recovered = 0usize;
+        for bid in sites {
+            if self.try_recover_one(func, image, bid, code, base_address, &mut starts) {
+                recovered += 1;
+            }
+        }
+        recovered
+    }
+
+    /// Attempt to turn one `IndirectBranch` dispatch into a `Switch`.
+    #[allow(clippy::too_many_arguments)]
+    fn try_recover_one(
+        &self,
+        func: &mut IrFunction,
+        image: &ImageCtx,
+        bid: BlockId,
+        code: &[u8],
+        base_address: u64,
+        starts: &mut std::collections::HashMap<u64, BlockId>,
+    ) -> bool {
+        // 1. The dispatch block: IBRANCH fed by a Load.
+        let (load_addr, load_size) = {
+            let blk = match func.block(bid) {
+                Some(b) => b,
+                None => return false,
+            };
+            let target = match blk.terminator() {
+                Some(IrInst::IndirectBranch { target }) => target.clone(),
+                _ => return false,
+            };
+            let mut found: Option<(Value, u32)> = None;
+            for inst in &blk.insts {
+                if let IrInst::Load { dst, addr, size } = inst {
+                    if *dst == target {
+                        found = Some((addr.clone(), *size));
+                    }
+                }
+            }
+            match found {
+                Some(v) => v,
+                None => return false,
+            }
+        };
+
+        // 2. Address shape: table_va + index*scale.
+        let Some((table_va, index_val, scale)) =
+            parse_jt_addr(func, bid, &load_addr)
+        else {
+            eprintln!("JT-DBG: bid {} bail at step2", bid.0);
+            return false;
+        };
+        if !(scale == 4 || scale == 8) || load_size as u64 != scale {
+            return false;
+        }
+
+        // 3. Bounds guard (ja / jae) в†’ entry count.
+        let Some(count) = find_bounds_count(func, bid, &index_val, self.is_64bit) else {
+            return false;
+        };
+        if count < 2 || count > 1024 {
+            eprintln!("JT-DBG: bid {} bail at step3b count<2", bid.0);
+        }
+
+        // 4. Read + validate entries.
+        eprintln!("JT-DBG: bid {} step4 table_va={:#x} count={} scale={}", bid.0, table_va, count, scale);
+        let mut targets: Vec<u64> = Vec::with_capacity(count as usize);
+        for i in 0..count as u64 {
+            let Some(raw) = image.read_ptr(table_va.wrapping_add(i * scale), scale) else {
+                eprintln!("JT-DBG: bid {} bail at step4 read", bid.0);
+                return false;
+            };
+            let va = if self.is_64bit {
+                raw
+            } else {
+                base_address.wrapping_add(raw)
+            };
+            // Case targets must fall inside the function's code slice.
+            let hi = base_address + code.len() as u64;
+            if !(base_address..hi).contains(&va) {
+                eprintln!("JT-DBG: bid {} bail at step4 range va={:#x}", bid.0, va);
+            }
+            targets.push(va);
+        }
+        if targets.iter().all(|&t| t == targets[0]) {
+            return false; // degenerate single-target table
+        }
+
+        // 5. Case bodies: reuse existing blocks at exact targets, lift the
+        // rest. Roll back everything newly created on failure.
+        let func_hi = base_address + code.len() as u64;
+        let mut sorted = targets.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+
+        let mut by_va: std::collections::HashMap<u64, BlockId> =
+            std::collections::HashMap::new();
+        let mut created: Vec<BlockId> = Vec::new();
+        for (i, &va) in sorted.iter().enumerate() {
+            if let Some(&existing) = starts.get(&va) {
+                by_va.insert(va, existing);
+                continue;
+            }
+            let window_end = sorted.get(i + 1).copied().unwrap_or(func_hi);
+            match self.lift_case_body(
+                func, code, base_address, va, window_end, starts, &mut created,
+            ) {
+                Ok(b) => {
+                    by_va.insert(va, b);
+                }
+                Err(_) => {
+                    func.blocks.retain(|b| !created.contains(&b.id));
+                    for &cv in &created {
+                        starts.retain(|_, v| *v != cv);
+                    }
+                    return false;
+                }
+            }
+        }
+
+        // 6. Replace the terminator.
+        eprintln!("JT-DBG: bid {} step6 by_va={:?}", bid.0, by_va.iter().map(|(k, v)| (*k, v.0)).collect::<Vec<_>>());
+        let cases: Vec<(i64, BlockId)> = targets
+            .iter()
+            .enumerate()
+            .map(|(i, va)| (i as i64, by_va[va]))
+            .collect();
+        let blk = func.block_mut(bid).expect("site block exists");
+        blk.insts.pop(); // IndirectBranch
+        blk.insts.push(IrInst::Switch {
+            index: index_val,
+            cases,
+            default: None,
+        });
+        true
+    }
+
+    /// Lift a jump-table case body starting at `va` (code window
+    /// `[va, window_end)`), reusing already-lifted blocks and continuing
+    /// through internal control flow exactly like the main linear loop.
+    /// Returns the block holding the case's first instruction.
+    #[allow(clippy::too_many_arguments)]
+    fn lift_case_body(
+        &self,
+        func: &mut IrFunction,
+        code: &[u8],
+        base: u64,
+        va: u64,
+        window_end: u64,
+        starts: &mut std::collections::HashMap<u64, BlockId>,
+        created: &mut Vec<BlockId>,
+    ) -> Result<BlockId, LifterError> {
+        let start_off = match (va - base) as usize {
+            o if o < code.len() => o,
+            _ => return Err(trunc_err(va)),
+        };
+        let end_off = (((window_end - base) as usize).min(code.len())).max(start_off + 1);
+
+        let first = func.add_block(&format!("bb_{}", start_off));
+        created.push(first);
+        starts.insert(va, first);
+        let mut cur = first;
+        let mut off = start_off;
+        let mut block_start = va;
+        let mut budget = 4096usize;
+
+        while off < end_off {
+            if budget == 0 {
+                func.push_inst(cur, IrInst::Return { value: None });
+                break;
+            }
+            budget -= 1;
+
+            // Continuation hitting a known block start: link and stop.
+            if off != start_off {
+                if let Some(&existing) = starts.get(&(base + off as u64)) {
+                    func.push_inst(cur, IrInst::Branch { target: existing });
+                    if let Some(b) = func.block_mut(cur) {
+                        b.source_range =
+                            Some((block_start, (base + off as u64).max(block_start)));
+                    }
+                    return Ok(first);
+                }
+            }
+
+            let address = base + off as u64;
+            match self.lift_instruction(func, cur, &code[off..], address) {
+                Ok((consumed, _)) => {
+                    if consumed == 0 {
+                        func.push_inst(cur, IrInst::Return { value: None });
+                        break;
+                    }
+                    off += consumed;
+                    let terminated = func
+                        .block(cur)
+                        .and_then(|b| b.terminator())
+                        .is_some();
+                    if terminated {
+                        let end = base + off as u64;
+                        if let Some(b) = func.block_mut(cur) {
+                            b.source_range = Some((block_start, end));
+                        }
+                        if off >= end_off {
+                            break;
+                        }
+                        // Internal control flow: keep lifting linearly into
+                        // a fresh continuation block (mirrors the main loop).
+                        let nb = func.add_block(&format!("bb_{}", off));
+                        created.push(nb);
+                        starts.insert(base + off as u64, nb);
+                        cur = nb;
+                        block_start = end;
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        if let Some(b) = func.block_mut(cur) {
+            if b.source_range.is_none() {
+                b.source_range = Some((block_start, (base + off as u64).max(block_start)));
+            }
+        }
+        if func.block(cur).and_then(|b| b.terminator()).is_none() {
+            func.push_inst(cur, IrInst::Return { value: None });
+        }
+        Ok(first)
     }
 
     fn lift_instruction(
@@ -992,7 +1658,7 @@ impl X86Lifter {
                         Ok((pos + 2, true))
                     }
 
-                    // ── SSE data movement (legacy encoding) ──────────
+                    // в”Ђв”Ђ SSE data movement (legacy encoding) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
                     // 10/28/6F: xmm <- mem/reg   11/29/7F: mem/reg <- xmm
                     // Pure data movement regardless of the exact mnemonic
                     // (movups/movaps/movdqa/movdqu/movss/movsd).
@@ -1011,29 +1677,34 @@ impl X86Lifter {
                             }
                             Ok((p2 + 2, true))
                         } else {
-                            let (addr, len) = self.address_of_rm(
-                                func, block, code, p2, address, rex_x, rex_b, 0,
-                            )?;
+                            let (addr, len) = self
+                                .address_of_rm(func, block, code, p2, address, rex_x, rex_b, 0)?;
                             if store {
-                                func.push_inst(block, IrInst::Store {
-                                    addr,
-                                    value: vdst,
-                                    size: 16,
-                                });
+                                func.push_inst(
+                                    block,
+                                    IrInst::Store {
+                                        addr,
+                                        value: vdst,
+                                        size: 16,
+                                    },
+                                );
                             } else {
                                 let tmp = func.alloc_var(Ty::Unknown);
-                                func.push_inst(block, IrInst::Load {
-                                    dst: tmp.clone(),
-                                    addr,
-                                    size: 16,
-                                });
+                                func.push_inst(
+                                    block,
+                                    IrInst::Load {
+                                        dst: tmp.clone(),
+                                        addr,
+                                        size: 16,
+                                    },
+                                );
                                 push_un(func, block, vdst, OpCode::Copy, tmp);
                             }
                             Ok((p2 + 1 + len, true))
                         }
                     }
 
-                    // pxor/xorps — the canonical `xmm = 0` zeroing idiom when
+                    // pxor/xorps вЂ” the canonical `xmm = 0` zeroing idiom when
                     // both operands are the same register.
                     0x57 | 0xEF => {
                         let p2 = pos + 1;
@@ -1041,29 +1712,24 @@ impl X86Lifter {
                         let (_, rf, _) = decode_modrm(modrm);
                         let vdst = xmm_value(rf + ext(rex_r));
                         if modrm & 0xC0 == 0xC0 && (modrm & 7) + ext(rex_b) == rf + ext(rex_r) {
-                            push_bin(
-                                func,
-                                block,
-                                vdst.clone(),
-                                OpCode::Xor,
-                                vdst.clone(),
-                                vdst,
-                            );
+                            push_bin(func, block, vdst.clone(), OpCode::Xor, vdst.clone(), vdst);
                         } else if modrm & 0xC0 == 0xC0 {
                             let vsrc = xmm_value((modrm & 7) + ext(rex_b));
                             let tmp = func.alloc_var(Ty::Unknown);
                             push_bin(func, block, tmp.clone(), OpCode::Xor, vdst.clone(), vsrc);
                             push_un(func, block, vdst, OpCode::Copy, tmp);
                         } else {
-                            let (addr, len) = self.address_of_rm(
-                                func, block, code, p2, address, rex_x, rex_b, 0,
-                            )?;
+                            let (addr, len) = self
+                                .address_of_rm(func, block, code, p2, address, rex_x, rex_b, 0)?;
                             let tmp = func.alloc_var(Ty::Unknown);
-                            func.push_inst(block, IrInst::Load {
-                                dst: tmp.clone(),
-                                addr,
-                                size: 16,
-                            });
+                            func.push_inst(
+                                block,
+                                IrInst::Load {
+                                    dst: tmp.clone(),
+                                    addr,
+                                    size: 16,
+                                },
+                            );
                             let r = func.alloc_var(Ty::Unknown);
                             push_bin(func, block, r.clone(), OpCode::Xor, vdst.clone(), tmp);
                             push_un(func, block, vdst, OpCode::Copy, r);
@@ -1138,11 +1804,14 @@ impl X86Lifter {
                         let tt = func.add_block(&format!("loc_{:X}", target_addr));
                         let tf = func.add_block(&format!("fall_{:X}", address + insn_len as u64));
                         let cond = self.jcc_condition(func, block, op2 - 0x80);
-                        func.push_inst(block, IrInst::CBranch {
-                            cond,
-                            target_true: tt,
-                            target_false: tf,
-                        });
+                        func.push_inst(
+                            block,
+                            IrInst::CBranch {
+                                cond,
+                                target_true: tt,
+                                target_false: tf,
+                            },
+                        );
                         Ok((insn_len, true))
                     }
                     0x90..=0x9F => {
@@ -1155,11 +1824,14 @@ impl X86Lifter {
                             self.write_reg(func, block, &dst, OpCode::Copy, cond, 8);
                         } else {
                             let addr = loc.addr.clone().unwrap_or(Value::Const(0));
-                            func.push_inst(block, IrInst::Store {
-                                addr,
-                                value: cond,
-                                size: 1,
-                            });
+                            func.push_inst(
+                                block,
+                                IrInst::Store {
+                                    addr,
+                                    value: cond,
+                                    size: 1,
+                                },
+                            );
                         }
                         Ok((p2 + 1 + loc.len, true))
                     }
@@ -1217,8 +1889,9 @@ impl X86Lifter {
                 let to_reg = o & 2 != 0;
                 let modrm = *code.get(pos + 1).ok_or_else(|| trunc_err(address))?;
                 let (_, rf, _) = decode_modrm(modrm);
-                let loc =
-                    self.resolve_rm(func, block, code, pos, address, bits, has_rex, rex_x, rex_b, 0)?;
+                let loc = self.resolve_rm(
+                    func, block, code, pos, address, bits, has_rex, rex_x, rex_b, 0,
+                )?;
                 let rmv = loc.load(func, block, bits);
                 let regv = reg_value(rf + ext(rex_r), bits, has_rex);
                 let result = self.emit_alu(func, block, kind, rmv, regv.clone(), bits);
@@ -1232,14 +1905,8 @@ impl X86Lifter {
                 Ok((pos + 1 + loc.len, true))
             }
 
-            o @ (0x04 | 0x05
-            | 0x0C | 0x0D
-            | 0x14 | 0x15
-            | 0x1C | 0x1D
-            | 0x24 | 0x25
-            | 0x2C | 0x2D
-            | 0x34 | 0x35
-            | 0x3C | 0x3D) => {
+            o @ (0x04 | 0x05 | 0x0C | 0x0D | 0x14 | 0x15 | 0x1C | 0x1D | 0x24 | 0x25 | 0x2C
+            | 0x2D | 0x34 | 0x35 | 0x3C | 0x3D) => {
                 let kind = alu_kind(o);
                 let is_imm8 = o & 1 == 0;
                 let ib = if is_imm8 {
@@ -1262,15 +1929,20 @@ impl X86Lifter {
             o @ 0x80..=0x83 => {
                 let bits = if o == 0x80 || o == 0x82 { 8 } else { obits };
                 let ib = if o == 0x81 {
-                    if o16 { 2 } else { 4 }
+                    if o16 {
+                        2
+                    } else {
+                        4
+                    }
                 } else {
                     1
                 };
                 let modrm = *code.get(pos + 1).ok_or_else(|| trunc_err(address))?;
                 let (_, rf, _) = decode_modrm(modrm);
                 let kind = grp1_kind(rf);
-                let loc =
-                    self.resolve_rm(func, block, code, pos, address, bits, has_rex, rex_x, rex_b, ib)?;
+                let loc = self.resolve_rm(
+                    func, block, code, pos, address, bits, has_rex, rex_x, rex_b, ib,
+                )?;
                 let imm = imm_at(code, pos + 1 + loc.len, ib).ok_or_else(|| trunc_err(address))?;
                 let rmv = loc.load(func, block, bits);
                 let result = self.emit_alu(func, block, kind, rmv, Value::Const(imm), bits);
@@ -1298,8 +1970,9 @@ impl X86Lifter {
                 let modrm = *code.get(pos + 1).ok_or_else(|| trunc_err(address))?;
                 let (_, rf, _) = decode_modrm(modrm);
                 let dbits = if o16 { 16 } else { 64 };
-                let loc =
-                    self.resolve_rm(func, block, code, pos, address, 32, has_rex, rex_x, rex_b, 0)?;
+                let loc = self.resolve_rm(
+                    func, block, code, pos, address, 32, has_rex, rex_x, rex_b, 0,
+                )?;
                 let src = loc.load(func, block, 32);
                 let dst = reg_value(rf + ext(rex_r), dbits, has_rex);
                 self.write_reg(func, block, &dst, OpCode::Sext, src, dbits);
@@ -1326,14 +1999,19 @@ impl X86Lifter {
 
             o @ (0x69 | 0x6B) => {
                 let ib = if o == 0x69 {
-                    if o16 { 2 } else { 4 }
+                    if o16 {
+                        2
+                    } else {
+                        4
+                    }
                 } else {
                     1
                 };
                 let modrm = *code.get(pos + 1).ok_or_else(|| trunc_err(address))?;
                 let (_, rf, _) = decode_modrm(modrm);
-                let loc =
-                    self.resolve_rm(func, block, code, pos, address, obits, has_rex, rex_x, rex_b, ib)?;
+                let loc = self.resolve_rm(
+                    func, block, code, pos, address, obits, has_rex, rex_x, rex_b, ib,
+                )?;
                 let src = loc.load(func, block, obits);
                 let imm = imm_at(code, pos + 1 + loc.len, ib).ok_or_else(|| trunc_err(address))?;
                 let dst = reg_value(rf + ext(rex_r), obits, has_rex);
@@ -1347,8 +2025,9 @@ impl X86Lifter {
                 let bits = if o == 0x84 { 8 } else { obits };
                 let modrm = *code.get(pos + 1).ok_or_else(|| trunc_err(address))?;
                 let (_, rf, _) = decode_modrm(modrm);
-                let loc =
-                    self.resolve_rm(func, block, code, pos, address, bits, has_rex, rex_x, rex_b, 0)?;
+                let loc = self.resolve_rm(
+                    func, block, code, pos, address, bits, has_rex, rex_x, rex_b, 0,
+                )?;
                 let rmv = loc.load(func, block, bits);
                 let regv = reg_value(rf + ext(rex_r), bits, has_rex);
                 let r = func.alloc_var(int_ty(bits));
@@ -1379,8 +2058,9 @@ impl X86Lifter {
                 let bits = if o == 0x86 { 8 } else { obits };
                 let modrm = *code.get(pos + 1).ok_or_else(|| trunc_err(address))?;
                 let (_, rf, _) = decode_modrm(modrm);
-                let loc =
-                    self.resolve_rm(func, block, code, pos, address, bits, has_rex, rex_x, rex_b, 0)?;
+                let loc = self.resolve_rm(
+                    func, block, code, pos, address, bits, has_rex, rex_x, rex_b, 0,
+                )?;
                 let rmv = loc.load(func, block, bits);
                 let regv = reg_value(rf + ext(rex_r), bits, has_rex);
                 let tmp = func.alloc_var(int_ty(bits));
@@ -1395,8 +2075,9 @@ impl X86Lifter {
                 let to_reg = o == 0x8A || o == 0x8B;
                 let modrm = *code.get(pos + 1).ok_or_else(|| trunc_err(address))?;
                 let (_, rf, _) = decode_modrm(modrm);
-                let loc =
-                    self.resolve_rm(func, block, code, pos, address, bits, has_rex, rex_x, rex_b, 0)?;
+                let loc = self.resolve_rm(
+                    func, block, code, pos, address, bits, has_rex, rex_x, rex_b, 0,
+                )?;
                 if to_reg {
                     let src = loc.load(func, block, bits);
                     let dst = reg_value(rf + ext(rex_r), bits, has_rex);
@@ -1475,7 +2156,14 @@ impl X86Lifter {
                 let idx = (opcode - 0xB0) + u8::from(rex_b) * 8;
                 let imm = *code.get(pos + 1).ok_or_else(|| trunc_err(address))?;
                 let dst = reg_value(idx, 8, has_rex);
-                self.write_reg(func, block, &dst, OpCode::Copy, Value::Const(imm as i8 as i64), 8);
+                self.write_reg(
+                    func,
+                    block,
+                    &dst,
+                    OpCode::Copy,
+                    Value::Const(imm as i8 as i64),
+                    8,
+                );
                 Ok((pos + 2, true))
             }
 
@@ -1505,7 +2193,11 @@ impl X86Lifter {
             }
 
             o @ (0xC0 | 0xC1 | 0xD0 | 0xD1 | 0xD2 | 0xD3) => {
-                let bits = if o == 0xC0 || o == 0xD0 || o == 0xD2 { 8 } else { obits };
+                let bits = if o == 0xC0 || o == 0xD0 || o == 0xD2 {
+                    8
+                } else {
+                    obits
+                };
                 let modrm = *code.get(pos + 1).ok_or_else(|| trunc_err(address))?;
                 let (_, rf, _) = decode_modrm(modrm);
                 let shift_op = match rf {
@@ -1534,8 +2226,9 @@ impl X86Lifter {
                     _ => OpCode::Sar,
                 };
                 let timm = if o == 0xC0 || o == 0xC1 { 1 } else { 0 };
-                let loc =
-                    self.resolve_rm(func, block, code, pos, address, bits, has_rex, rex_x, rex_b, timm)?;
+                let loc = self.resolve_rm(
+                    func, block, code, pos, address, bits, has_rex, rex_x, rex_b, timm,
+                )?;
                 let count = match o {
                     0xD0 | 0xD1 => Value::Const(1),
                     0xD2 | 0xD3 => reg_value(1, 8, false),
@@ -1558,18 +2251,31 @@ impl X86Lifter {
                 let pb = self.ptr_bits();
                 let sp = reg_value(4, pb, false);
                 let tmp = func.alloc_var(int_ty(pb));
-                push_bin(func, block, tmp.clone(), OpCode::Add, sp.clone(), Value::Const(n));
+                push_bin(
+                    func,
+                    block,
+                    tmp.clone(),
+                    OpCode::Add,
+                    sp.clone(),
+                    Value::Const(n),
+                );
                 push_un(func, block, sp, OpCode::Copy, tmp);
-                func.push_inst(block, IrInst::Return {
-                    value: Some(reg_value(0, pb, false)),
-                });
+                func.push_inst(
+                    block,
+                    IrInst::Return {
+                        value: Some(reg_value(0, pb, false)),
+                    },
+                );
                 Ok((pos + 3, true))
             }
 
             0xC3 => {
-                func.push_inst(block, IrInst::Return {
-                    value: Some(reg_value(0, self.ptr_bits(), false)),
-                });
+                func.push_inst(
+                    block,
+                    IrInst::Return {
+                        value: Some(reg_value(0, self.ptr_bits(), false)),
+                    },
+                );
                 Ok((pos + 1, true))
             }
 
@@ -1582,8 +2288,9 @@ impl X86Lifter {
                 } else {
                     4
                 };
-                let loc =
-                    self.resolve_rm(func, block, code, pos, address, bits, has_rex, rex_x, rex_b, ib)?;
+                let loc = self.resolve_rm(
+                    func, block, code, pos, address, bits, has_rex, rex_x, rex_b, ib,
+                )?;
                 let imm = imm_at(code, pos + 1 + loc.len, ib).ok_or_else(|| trunc_err(address))?;
                 loc.store(self, func, block, Value::Const(imm), bits);
                 Ok((pos + 1 + loc.len + ib, true))
@@ -1595,11 +2302,14 @@ impl X86Lifter {
                 let bp = reg_value(5, pb, false);
                 push_un(func, block, sp.clone(), OpCode::Copy, bp.clone());
                 let ld = func.alloc_var(int_ty(pb));
-                func.push_inst(block, IrInst::Load {
-                    dst: ld.clone(),
-                    addr: sp.clone(),
-                    size: pb / 8,
-                });
+                func.push_inst(
+                    block,
+                    IrInst::Load {
+                        dst: ld.clone(),
+                        addr: sp.clone(),
+                        size: pb / 8,
+                    },
+                );
                 push_un(func, block, bp, OpCode::Copy, ld);
                 let tmp = func.alloc_var(int_ty(pb));
                 push_bin(
@@ -1620,14 +2330,17 @@ impl X86Lifter {
                 let insn_len = pos + 1 + rb;
                 let target_addr = (address as i64 + insn_len as i64 + rel) as u64;
                 // CALL pushes the return address; model it so subsequent
-                // [rsp±k] memory operands stay aligned.
+                // [rspВ±k] memory operands stay aligned.
                 let ret_addr = address.wrapping_add(insn_len as u64) as i64;
                 self.emit_push(func, block, Value::Const(ret_addr), sbits);
-                func.push_inst(block, IrInst::Call {
-                    dst: Some(reg_value(0, self.ptr_bits(), false)),
-                    target: Value::Symbol(format!("func_{:X}", target_addr)),
-                    args: Vec::new(),
-                });
+                func.push_inst(
+                    block,
+                    IrInst::Call {
+                        dst: Some(reg_value(0, self.ptr_bits(), false)),
+                        target: Value::Symbol(format!("func_{:X}", target_addr)),
+                        args: Vec::new(),
+                    },
+                );
                 Ok((insn_len, true))
             }
 
@@ -1660,14 +2373,35 @@ impl X86Lifter {
                 let counter = reg_value(1, sbits, false);
                 let cond = if opcode == 0xE3 {
                     let zero = func.alloc_var(Ty::Bool);
-                    push_bin(func, block, zero.clone(), OpCode::Eq, counter, Value::Const(0));
+                    push_bin(
+                        func,
+                        block,
+                        zero.clone(),
+                        OpCode::Eq,
+                        counter,
+                        Value::Const(0),
+                    );
                     zero
                 } else {
                     let dec = func.alloc_var(int_ty(sbits));
-                    push_bin(func, block, dec.clone(), OpCode::Sub, counter.clone(), Value::Const(1));
+                    push_bin(
+                        func,
+                        block,
+                        dec.clone(),
+                        OpCode::Sub,
+                        counter.clone(),
+                        Value::Const(1),
+                    );
                     push_un(func, block, counter, OpCode::Copy, dec.clone());
                     let nonzero = func.alloc_var(Ty::Bool);
-                    push_bin(func, block, nonzero.clone(), OpCode::Ne, dec, Value::Const(0));
+                    push_bin(
+                        func,
+                        block,
+                        nonzero.clone(),
+                        OpCode::Ne,
+                        dec,
+                        Value::Const(0),
+                    );
                     match opcode {
                         0xE0 => {
                             let zf_clear = self.flag_cmp(func, block, OpCode::Ne, "zf");
@@ -1680,11 +2414,14 @@ impl X86Lifter {
                         _ => nonzero,
                     }
                 };
-                func.push_inst(block, IrInst::CBranch {
-                    cond,
-                    target_true: tt,
-                    target_false: tf,
-                });
+                func.push_inst(
+                    block,
+                    IrInst::CBranch {
+                        cond,
+                        target_true: tt,
+                        target_false: tf,
+                    },
+                );
                 Ok((insn_len, true))
             }
 
@@ -1694,11 +2431,14 @@ impl X86Lifter {
                 let tt = func.add_block(&format!("loc_{:X}", target_addr));
                 let tf = func.add_block(&format!("fall_{:X}", address + 2));
                 let cond = self.jcc_condition(func, block, opcode - 0x70);
-                func.push_inst(block, IrInst::CBranch {
-                    cond,
-                    target_true: tt,
-                    target_false: tf,
-                });
+                func.push_inst(
+                    block,
+                    IrInst::CBranch {
+                        cond,
+                        target_true: tt,
+                        target_false: tf,
+                    },
+                );
                 Ok((pos + 2, true))
             }
 
@@ -1774,8 +2514,9 @@ impl X86Lifter {
 
             o @ (0xFE | 0xFF) => {
                 let bits = if o == 0xFE { 8 } else { obits };
-                let loc =
-                    self.resolve_rm(func, block, code, pos, address, bits, has_rex, rex_x, rex_b, 0)?;
+                let loc = self.resolve_rm(
+                    func, block, code, pos, address, bits, has_rex, rex_x, rex_b, 0,
+                )?;
                 let (_, rf, _) = decode_modrm(code[pos + 1]);
                 match (o, rf) {
                     (_, 0) | (_, 1) => {
@@ -1797,16 +2538,20 @@ impl X86Lifter {
                     }
                     (0xFF, 2) => {
                         let v = loc.load(func, block, bits);
-                        func.push_inst(block, IrInst::Call {
-                            dst: Some(reg_value(0, self.ptr_bits(), false)),
-                            target: v,
-                            args: Vec::new(),
-                        });
+                        func.push_inst(
+                            block,
+                            IrInst::Call {
+                                dst: Some(reg_value(0, self.ptr_bits(), false)),
+                                target: v,
+                                args: Vec::new(),
+                            },
+                        );
                         Ok((pos + 1 + loc.len, true))
                     }
                     (0xFF, 4) => {
                         let v = loc.load(func, block, bits);
                         func.push_inst(block, IrInst::IndirectBranch { target: v });
+                        eprintln!("JT-DBG: FF/4 at {:#x} pos={} loc.len={} consumed={}", address, pos, loc.len, pos + 1 + loc.len);
                         Ok((pos + 1 + loc.len, true))
                     }
                     (0xFF, 6) => {
@@ -1842,7 +2587,11 @@ impl X86Lifter {
 
 impl Lifter for X86Lifter {
     fn arch_name(&self) -> &str {
-        if self.is_64bit { "x86_64" } else { "x86" }
+        if self.is_64bit {
+            "x86_64"
+        } else {
+            "x86"
+        }
     }
 
     fn max_instructions(&self) -> usize {
@@ -1855,6 +2604,9 @@ impl Lifter for X86Lifter {
         base_address: u64,
         function_name: &str,
     ) -> Result<IrFunction, LifterError> {
+        // Clamp hostile base addresses (near u64::MAX) once: every
+        // `base + offset` / `address + small_const` below then stays in range.
+        let base_address = crate::lifter::clamp_base_address(base_address, code.len());
         let mut func = IrFunction::new(function_name, base_address);
         let mut current_block = func.entry_block;
         let mut offset = 0usize;
@@ -1881,23 +2633,36 @@ impl Lifter for X86Lifter {
                 }
             }
 
-            let (consumed, lifted) = match self.lift_instruction(&mut func, current_block, remaining, address) {
-                Ok(ok) => ok,
-                // Unsupported opcode: skip the whole instruction using the
-                // precise length from the LDE and keep going. Bailing out on
-                // the first SSE/AVX op would lose the entire function — real
-                // x64 code is full of them.
-                Err(LifterError::UnsupportedInstruction(msg)) => {
-                    let len = freakre_x86::decode_len(remaining, if self.is_64bit { freakre_x86::Mode::X64 } else { freakre_x86::Mode::X86 })
-                        .map_err(|e| LifterError::UnsupportedInstruction(format!("{} ({})", msg, e)))?;
-                    if len == 0 || len > remaining.len() {
-                        return Err(LifterError::UnsupportedInstruction(format!("{} (bad length {})", msg, len)));
+            let (consumed, lifted) =
+                match self.lift_instruction(&mut func, current_block, remaining, address) {
+                    Ok(ok) => ok,
+                    // Unsupported opcode: skip the whole instruction using the
+                    // precise length from the LDE and keep going. Bailing out on
+                    // the first SSE/AVX op would lose the entire function вЂ” real
+                    // x64 code is full of them.
+                    Err(LifterError::UnsupportedInstruction(msg)) => {
+                        let len = freakre_x86::decode_len(
+                            remaining,
+                            if self.is_64bit {
+                                freakre_x86::Mode::X64
+                            } else {
+                                freakre_x86::Mode::X86
+                            },
+                        )
+                        .map_err(|e| {
+                            LifterError::UnsupportedInstruction(format!("{} ({})", msg, e))
+                        })?;
+                        if len == 0 || len > remaining.len() {
+                            return Err(LifterError::UnsupportedInstruction(format!(
+                                "{} (bad length {})",
+                                msg, len
+                            )));
+                        }
+                        func.push_inst(current_block, IrInst::Nop);
+                        (len, false)
                     }
-                    func.push_inst(current_block, IrInst::Nop);
-                    (len, false)
-                }
-                Err(e) => return Err(e),
-            };
+                    Err(e) => return Err(e),
+                };
 
             if consumed == 0 {
                 break;
@@ -1933,13 +2698,31 @@ impl Lifter for X86Lifter {
         crate::ir::repair_block_graph(&mut func, parse_block_addr);
         func.build_cfg();
 
+        // Jump-table recovery needs the post-repair predecessor graph, so it
+        // runs here. Recovered dispatches re-run repair/build_cfg to link the
+        // newly lifted case bodies; prune drops the junk blocks the linear
+        // decoder produced past the replaced dispatch.
+        let mut recovered = 0usize;
+        if self.image.is_some() {
+            recovered = self.recover_jump_tables(&mut func, code, base_address);
+        }
+        if recovered > 0 {
+            crate::ir::repair_block_graph(&mut func, parse_block_addr);
+            func.build_cfg();
+        }
+        func.prune_unreachable();
+
         Ok(func)
     }
 }
 
 fn parse_block_addr(name: &str, base_address: u64) -> Option<u64> {
     if let Some(rest) = name.strip_prefix("bb_") {
-        return rest.parse::<usize>().ok().map(|o| base_address + o as u64);
+        // saturating: `o` comes from a (possibly hostile) label string.
+        return rest
+            .parse::<usize>()
+            .ok()
+            .map(|o| base_address.saturating_add(o as u64));
     }
     if let Some(rest) = name.strip_prefix("loc_") {
         return u64::from_str_radix(rest, 16).ok();
@@ -1952,6 +2735,273 @@ fn parse_block_addr(name: &str, base_address: u64) -> Option<u64> {
 
 fn lde_bad(off: usize) -> LifterError {
     LifterError::InvalidInstruction(off as u64, "undecodable instruction".into())
+}
+
+/// Decompose a jump-table load address expression into
+/// `(table_va, index_value, scale)`.
+///
+/// Accepted shapes (as emitted by the lifter for `jmp [table + reg*scale]`):
+/// - `Add(Const(table), Mul(index, Const(scale)))` вЂ” both defs in the
+///   dispatch block,
+/// - `Add(<lea-resolved base>, Mul(index, Const(scale)))` вЂ” the base
+///   register is resolved backwards through `Copy`/`Add` defs,
+/// - anything else в†’ `None` (the pass leaves the dispatch alone).
+fn parse_jt_addr(
+    func: &IrFunction,
+    site: BlockId,
+    load_addr: &Value,
+) -> Option<(u64, Value, u64)> {
+    let blk = func.block(site)?;
+    let def = last_def_in_block(blk, load_addr)?;
+    match def {
+        IrInst::Binary {
+            op: OpCode::Add,
+            lhs,
+            rhs,
+            ..
+        } => {
+            // (base, mul) in either operand order.
+            for (bx, mx) in [(lhs, rhs), (rhs, lhs)] {
+                if let Some((ix, s)) = jt_mul_def(blk, mx) {
+                    if let Some(base) = jt_const_of(func, site, bx) {
+                        return Some((base, ix, s));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Resolve `v` to its `Mul(index, Const(scale))` definition inside `blk`.
+fn jt_mul_def(blk: &IrBlock, v: &Value) -> Option<(Value, u64)> {
+    let def = last_def_in_block(blk, v)?;
+    match def {
+        IrInst::Binary {
+            op: OpCode::Mul,
+            lhs,
+            rhs,
+            ..
+        } => {
+            if let Value::Const(s) = rhs {
+                if *s > 0 && (*s as u64).is_power_of_two() {
+                    return Some((lhs.clone(), *s as u64));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Constant-fold a table-base operand: literal `Const`, or a chain of
+/// `Copy`/`Add(Const, Const)` definitions up to (and including) the dispatch
+/// block вЂ” the `lea reg, [rip+table]` shape.
+fn jt_const_of(func: &IrFunction, site: BlockId, v: &Value) -> Option<u64> {
+    match v {
+        Value::Const(c) => Some(*c as u64),
+        _ => {
+            let mut cur = v.clone();
+            for _ in 0..3 {
+                match find_def_upto(func, &cur, site) {
+                    Some(IrInst::Unary {
+                        op: OpCode::Copy,
+                        src,
+                        ..
+                    }) => cur = src.clone(),
+                    Some(IrInst::Binary {
+                        op: OpCode::Add,
+                        lhs: Value::Const(a),
+                        rhs: Value::Const(b),
+                        ..
+                    }) => return Some((*a as u64).wrapping_add(*b as u64)),
+                    _ => return None,
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Last definition of `v` scanning blocks in program order, stopping at
+/// (and including) `upto` вЂ” register re-definitions after the dispatch must
+/// not shadow the value the dispatch actually used.
+fn find_def_upto<'a>(func: &'a IrFunction, v: &Value, upto: BlockId) -> Option<&'a IrInst> {
+    let mut found = None;
+    for b in &func.blocks {
+        for i in &b.insts {
+            if writes_dst(i, v) {
+                found = Some(i);
+            }
+        }
+        if b.id == upto {
+            break;
+        }
+    }
+    found
+}
+
+/// Whether `inst` writes `v` as its destination.
+fn writes_dst(inst: &IrInst, v: &Value) -> bool {
+    match inst {
+        IrInst::Binary { dst, .. } | IrInst::Unary { dst, .. } | IrInst::Load { dst, .. } => {
+            dst == v
+        }
+        IrInst::Call { dst: Some(d), .. } => d == v,
+        _ => false,
+    }
+}
+
+/// Last definition of `v` within a single block.
+fn last_def_in_block<'a>(blk: &'a IrBlock, v: &Value) -> Option<&'a IrInst> {
+    blk.insts
+        .iter()
+        .rev()
+        .find(|i| writes_dst(i, v))
+}
+
+/// Derive the jump-table entry count from the bounds guard.
+///
+/// Canonical compiler shapes around a dispatch `jmp [tbl + idx*8]`:
+/// - `cmp idx, N` + `ja  default` в†’ valid indices `0..=N` в†’ count `N + 1`
+///   (lifter cond: `And(Ne(cf,1), Ne(zf,1))`),
+/// - `cmp idx, N` + `jae default` в†’ valid indices `0..=N-1` в†’ count `N`
+///   (lifter cond: `Ne(cf,1)`).
+///
+/// The cmp is lowered to `cf = LtU(idx, N)` on the same index value that
+/// feeds the address computation вЂ” matched directly or through subreg
+/// (`eax` vs `rax`) / `Sext`/`Copy` chains. Guards in other shapes
+/// (`jbe`, swapped operands, runtime bounds) leave the dispatch alone.
+fn find_bounds_count(
+    func: &IrFunction,
+    site: BlockId,
+    index: &Value,
+    is_64bit: bool,
+) -> Option<u64> {
+    let mut to_visit: Vec<BlockId> = func
+        .block(site)
+        .map(|b| b.predecessors.clone())
+        .unwrap_or_default();
+    let mut hops = 0;
+    while hops < 2 {
+        hops += 1;
+        let mut next: Vec<BlockId> = Vec::new();
+        for &pid in &to_visit {
+            let Some(b) = func.block(pid) else {
+                continue;
+            };
+            // Determine the guard's jcc form from the branch condition:
+            // And-shape в†’ `ja`, Ne(flag_cf, 1) в†’ `jae`. Anything else (jbe,
+            // jle, вЂ¦) does not bound a 0-based table from above.
+            let count = b.terminator().and_then(|term| match term {
+                IrInst::CBranch { cond, .. } => {
+                    let shape = find_def_upto(func, cond, pid).and_then(|def| match def {
+                        IrInst::Binary { op: OpCode::And, .. } => Some("ja"),
+                        IrInst::Binary {
+                            op: OpCode::Ne,
+                            dst: _,
+                            lhs: Value::Register { name, .. },
+                            rhs: Value::Const(1),
+                        } if name == "flag_cf" => Some("jae"),
+                        _ => None,
+                    });
+                    match shape {
+                        Some("ja") => Some(1u64),
+                        Some("jae") => Some(0),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            });
+            if let Some(extra) = count {
+                for inst in &b.insts {
+                    if let IrInst::Binary {
+                        op: OpCode::LtU,
+                        lhs,
+                        rhs,
+                        ..
+                    } = inst
+                    {
+                        if jt_index_matches(func, pid, lhs, index, is_64bit) {
+                            if let Value::Const(n) = rhs {
+                                if *n >= 0 && (*n as u64) < 4096 {
+                                    // ja: idx ≤ N → N+1 entries; jae: idx < N → N entries.
+                                    return Some(*n as u64 + extra);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            next.extend(b.predecessors.iter().copied());
+        }
+        to_visit = next;
+    }
+    None
+}
+
+/// Whether `a` refers to the same runtime value as the table index:
+/// identical operands, the same register at different widths (`eax` vs
+/// `rax`), or linked through a `Sext`/`Copy` definition (`movsxd`/`cdqe`
+/// between the cmp and the address computation).
+fn jt_index_matches(
+    func: &IrFunction,
+    site: BlockId,
+    a: &Value,
+    index: &Value,
+    is_64bit: bool,
+) -> bool {
+    if a == index {
+        return true;
+    }
+    if let (
+        Value::Register { name: an, ty: at },
+        Value::Register { name: rn, ty: rt },
+    ) = (a, index)
+    {
+        // Same register at different widths.
+        if an == rn {
+            return true;
+        }
+        let bits = |t: &Ty| match t {
+            Ty::Int(b) => *b,
+            _ => if is_64bit { 64 } else { 32 },
+        };
+        // eax's parent is rax (and vice versa via the subreg table).
+        if let Some(info) = subreg_write(an, bits(at), is_64bit) {
+            if reg_value(info.parent_idx, bits(rt), false) == *index {
+                return true;
+            }
+        }
+        if let Some(info) = subreg_write(rn, bits(rt), is_64bit) {
+            if reg_value(info.parent_idx, bits(at), false) == *a {
+                return true;
+            }
+        }
+    }
+    // index defined (before the dispatch) as Sext/Copy of a, or the reverse.
+    if let Some(IrInst::Unary {
+        op: OpCode::Sext | OpCode::Copy,
+        src,
+        ..
+    }) = find_def_upto(func, index, site)
+    {
+        if src == a {
+            return true;
+        }
+    }
+    if let Some(IrInst::Unary {
+        op: OpCode::Sext | OpCode::Copy,
+        src,
+        ..
+    }) = find_def_upto(func, a, site)
+    {
+        if src == index {
+            return true;
+        }
+    }
+    false
 }
 
 fn lde_length(code: &[u8], is_64bit: bool) -> Result<usize, LifterError> {
@@ -2022,7 +3072,9 @@ fn lde_length(code: &[u8], is_64bit: bool) -> Result<usize, LifterError> {
             0x1E => match code.get(pos) {
                 Some(0xFA) | Some(0xFB) => pos + 1,
                 _ => {
-                    return Err(LifterError::UnsupportedInstruction("unsupported 0F 1E form".to_string()))
+                    return Err(LifterError::UnsupportedInstruction(
+                        "unsupported 0F 1E form".to_string(),
+                    ))
                 }
             },
             0x1F | 0x40..=0x4F | 0x90..=0x9F | 0xAF | 0xB6..=0xB7 | 0xBE..=0xBF => {
@@ -2043,7 +3095,6 @@ fn lde_length(code: &[u8], is_64bit: bool) -> Result<usize, LifterError> {
         return Ok(total);
     }
 
-
     let total = match opcode {
         0x00..=0x03
         | 0x08..=0x0B
@@ -2056,9 +3107,7 @@ fn lde_length(code: &[u8], is_64bit: bool) -> Result<usize, LifterError> {
 
         0x04 | 0x0C | 0x14 | 0x1C | 0x24 | 0x2C | 0x34 | 0x3C => pos + 1,
 
-        0x05 | 0x0D | 0x15 | 0x1D | 0x25 | 0x2D | 0x35 | 0x3D => {
-            pos + if o16 { 2 } else { 4 }
-        }
+        0x05 | 0x0D | 0x15 | 0x1D | 0x25 | 0x2D | 0x35 | 0x3D => pos + if o16 { 2 } else { 4 },
 
         0x06 | 0x07 | 0x0E | 0x16 | 0x17 | 0x1E | 0x1F | 0x27 | 0x2F | 0x37 | 0x3F => {
             return Err(LifterError::UnsupportedInstruction(format!(
@@ -2132,7 +3181,15 @@ fn lde_length(code: &[u8], is_64bit: bool) -> Result<usize, LifterError> {
 
         0x9B..=0x9F => pos,
 
-        0xA0..=0xA3 => pos + if o16 { 2 } else if rex_w && is_64bit { 8 } else { 4 },
+        0xA0..=0xA3 => {
+            pos + if o16 {
+                2
+            } else if rex_w && is_64bit {
+                8
+            } else {
+                4
+            }
+        }
 
         0xA4..=0xA7 | 0xAA..=0xAF => pos,
 
@@ -2142,7 +3199,15 @@ fn lde_length(code: &[u8], is_64bit: bool) -> Result<usize, LifterError> {
 
         0xB0..=0xB7 => pos + 1,
 
-        0xB8..=0xBF => pos + if rex_w && is_64bit { 8 } else if o16 { 2 } else { 4 },
+        0xB8..=0xBF => {
+            pos + if rex_w && is_64bit {
+                8
+            } else if o16 {
+                2
+            } else {
+                4
+            }
+        }
 
         0xC0 | 0xC1 => {
             let l = modrm_span(code, pos)?;
@@ -2248,6 +3313,123 @@ mod tests {
         s.contains(&format!("op: {}", op))
     }
 
+    /// Build an ImageCtx over one flat section [0, 0x10000) with base
+    /// 0x14000000, placing `code` at 0x14001000 and `table` at 0x14002000.
+    fn jt_image(code: &[u8], table: &[u8]) -> ImageCtx {
+        let mut bytes = vec![0u8; 0x10000];
+        bytes[0x1000..0x1000 + code.len()].copy_from_slice(code);
+        bytes[0x2000..0x2000 + table.len()].copy_from_slice(table);
+        ImageCtx::new(vec![(0, 0x10000)], 0x14000000, bytes)
+    }
+
+    /// Canonical guarded x64 jump table:
+    /// ```text
+    /// 0x1000  cmp  eax, 1          (N = max valid index)
+    /// 0x1003  ja   default         (And-shaped cond в†’ ja в†’ count = N+1)
+    /// 0x1005  jmp  qword [tbl + rax*8]   (REX.W: 48 FF 24 C5 <disp32>)
+    /// 0x100D  case0: mov eax,1 ; ret
+    /// 0x1013  case1: mov eax,2 ; ret
+    /// 0x1019  default: mov eax,0 ; ret
+    /// ```
+    /// Table entries are absolute 64-bit VAs (u64 LE) at 0x14002000.
+    fn jt_code(jmp_next: u64, entries: &[u64]) -> (Vec<u8>, Vec<u8>, u64) {
+        // 48 FF 24 C5 <disp32>: REX.W + modrm=0x24 (m=0, /4, SIB), SIB=0xC5
+        // (scale 8, index rax, no base) + absolute disp32. The lifter
+        // resolves the no-base SIB form through rip_next, so the emitted
+        // address constant is jmp_next + disp вЂ” hence disp = tbl - jmp_next.
+        let table_va: u64 = 0x14002000;
+        let disp = (table_va as i64).wrapping_sub(jmp_next as i64);
+        let mut code = vec![
+            0x83, 0xF8, 0x01, // cmp eax, 1
+            0x77, 0x14, // ja default (0x1005 + 0x14 = 0x1019)
+            0x48, 0xFF, 0x24, 0xC5,
+        ];
+        code.extend_from_slice(&disp.to_le_bytes());
+        // case0 @0x100D, case1 @0x1013, default @0x1019
+        code.extend_from_slice(&[0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3]);
+        code.extend_from_slice(&[0xB8, 0x02, 0x00, 0x00, 0x00, 0xC3]);
+        code.extend_from_slice(&[0xB8, 0x00, 0x00, 0x00, 0x00, 0xC3]);
+        let mut table = Vec::with_capacity(entries.len() * 8);
+        for e in entries {
+            table.extend_from_slice(&e.to_le_bytes());
+        }
+        (code, table, table_va)
+    }
+
+    fn jt_switch_block(func: &IrFunction) -> (BlockId, Vec<(i64, BlockId)>) {
+        for b in &func.blocks {
+            if let Some(IrInst::Switch { index: _, cases, default: _ }) = b.terminator() {
+                return (b.id, cases.clone());
+            }
+        }
+        panic!("no Switch terminator found in\n{}", dump(func));
+    }
+
+    #[test]
+    fn test_jump_table_recovered_reusing_lifted_bodies() {
+        let jmp_next = 0x1400100Du64;
+        let (code, table, _) = jt_code(jmp_next, &[0x1400100D, 0x14001013]);
+        let lifter = X86Lifter::new(true).with_image(jt_image(&code, &table));
+        let func = lifter
+            .lift_function(&code, 0x14001000, "jt")
+            .expect("lift");
+
+        // The dispatch became a Switch with exactly the two table cases.
+        eprintln!("JT-DBG: full func:\n{}", dump(&func));
+        let (dispatch, cases) = jt_switch_block(&func);
+        assert_eq!(cases.len(), 2, "case count\n{}", dump(&func));
+        assert_eq!(cases[0].0, 0, "case values in order\n{}", dump(&func));
+        assert_eq!(cases[1].0, 1, "case values in order\n{}", dump(&func));
+
+        // No indirect dispatch survives.
+        for b in &func.blocks {
+            assert!(
+                !matches!(b.terminator(), Some(IrInst::IndirectBranch { .. })),
+                "IBranch left behind in bb {}\n{}",
+                b.id.0,
+                dump(&func)
+            );
+        }
+
+        // Case blocks hold the real bodies: the first case target must be
+        // the block holding `mov eax,1` (Const(1)), the second `mov eax,2`.
+        let body = |id: BlockId| -> String {
+            let mut f = IrFunction::new("body", 0);
+            f.blocks = vec![func.blocks[id.0 as usize].clone()];
+            dump(&f)
+        };
+        assert!(
+            body(cases[0].1).contains("Const(1)"),
+            "case 0 body:\n{}",
+            body(cases[0].1)
+        );
+        assert!(
+            body(cases[1].1).contains("Const(2)"),
+            "case 1 body:\n{}",
+            body(cases[1].1)
+        );
+        // The default target is the `mov eax,0` block.
+        assert!(dispatch.0 != u32::MAX, "dispatch block must exist");
+        let _ = dispatch;
+    }
+
+    #[test]
+    fn test_jump_table_recovery_falls_back_without_image() {
+        let jmp_next = 0x1400100Cu64;
+        let (code, table, _) = jt_code(jmp_next, &[0x1400100C, 0x14001012]);
+        // No image attached: FF /4 must stay an IndirectBranch.
+        let lifter = X86Lifter::new(true);
+        let func = lifter.lift_function(&code, 0x14001000, "jt").unwrap();
+        assert!(func
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator(), Some(IrInst::IndirectBranch { .. }))));
+        assert!(func.blocks.iter().all(
+            |b| !matches!(b.terminator(), Some(IrInst::Switch { .. }))
+        ));
+        let _ = table;
+    }
+
     #[test]
     fn test_lift_ret() {
         let lifter = X86Lifter::new(true);
@@ -2259,13 +3441,7 @@ mod tests {
     #[test]
     fn test_lift_prologue_epilogue() {
         let lifter = X86Lifter::new(true);
-        let code = [
-            0x55,
-            0x48, 0x89, 0xE5,
-            0x90,
-            0xC9,
-            0xC3,
-        ];
+        let code = [0x55, 0x48, 0x89, 0xE5, 0x90, 0xC9, 0xC3];
         let func = lifter.lift_function(&code, 0x401000, "main").unwrap();
         assert!(func.total_instructions() > 3);
     }
@@ -2297,7 +3473,10 @@ mod tests {
     fn test_lde_length() {
         assert_eq!(lde_length(&[0xC3], true).ok(), Some(1));
         assert_eq!(lde_length(&[0x90], true).ok(), Some(1));
-        assert_eq!(lde_length(&[0xE8, 0x00, 0x01, 0x00, 0x00], true).ok(), Some(5));
+        assert_eq!(
+            lde_length(&[0xE8, 0x00, 0x01, 0x00, 0x00], true).ok(),
+            Some(5)
+        );
         assert_eq!(lde_length(&[0xEB, 0x10], true).ok(), Some(2));
         assert_eq!(lde_length(&[0x48, 0x83, 0xEC, 0x28], true).ok(), Some(4));
         assert_eq!(
@@ -2431,7 +3610,7 @@ mod tests {
         assert!(has_op(&d, "Sext"), "mask must come from Sext(cond):\n{}", d);
         assert!(
             !d.contains("Neg"),
-            "Neg(Sext(cond)) keeps only the low bit — mask must be Sext(cond) directly:\n{}",
+            "Neg(Sext(cond)) keeps only the low bit вЂ” mask must be Sext(cond) directly:\n{}",
             d
         );
     }
@@ -2445,7 +3624,11 @@ mod tests {
         let d = dump(&func);
         assert!(has_op(&d, "Sub"), "expected Sub in:\n{}", d);
         assert!(has_reg(&d, "rsp"));
-        assert!(d.contains("Const(40)"), "sign-extended imm8 expected:\n{}", d);
+        assert!(
+            d.contains("Const(40)"),
+            "sign-extended imm8 expected:\n{}",
+            d
+        );
     }
 
     #[test]
@@ -2526,7 +3709,9 @@ mod tests {
             );
         }
         // JCXZ compares the counter against zero.
-        let jcxz = lifter.lift_function(&[0xE3, 0x02, 0xC3], 0x1000, "jcxz").unwrap();
+        let jcxz = lifter
+            .lift_function(&[0xE3, 0x02, 0xC3], 0x1000, "jcxz")
+            .unwrap();
         let d = dump(&jcxz);
         assert!(has_op(&d, "Eq"), "JCXZ must test counter == 0:\n{}", d);
     }
@@ -2536,7 +3721,10 @@ mod tests {
         let lifter = X86Lifter::new(true);
         let code = [0xCD, 0x80, 0xC3];
         let func = lifter.lift_function(&code, 0x1000, "t").unwrap();
-        assert!(dump(&func).contains("Nop"), "INT imm8 must leave an explicit marker");
+        assert!(
+            dump(&func).contains("Nop"),
+            "INT imm8 must leave an explicit marker"
+        );
     }
 
     #[test]
@@ -2604,10 +3792,13 @@ mod tests {
     #[test]
     fn test_vex_c5_skipped_gracefully() {
         let lifter = X86Lifter::new(true);
-        // vzeroupper — unsupported but correctly sized by the LDE
+        // vzeroupper вЂ” unsupported but correctly sized by the LDE
         let code = [0xC5, 0xF8, 0x77, 0xC3];
         let f = lifter.lift_function(&code, 0x1000, "t").unwrap();
-        assert!(dump(&f).contains("Nop"), "VEX op must be skipped with a Nop");
+        assert!(
+            dump(&f).contains("Nop"),
+            "VEX op must be skipped with a Nop"
+        );
     }
 
     #[test]
@@ -2745,7 +3936,7 @@ mod tests {
         }
     }
 
-    // ─── Sub-register aliasing ──────────────────────────────────────────
+    // в”Ђв”Ђв”Ђ Sub-register aliasing в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
     #[test]
     fn test_al_write_updates_wide_parent() {
@@ -2760,7 +3951,11 @@ mod tests {
             "parent register must receive the RMW merge:\n{}",
             d
         );
-        assert!(has_op(&d, "Or"), "merge must OR the field into the parent:\n{}", d);
+        assert!(
+            has_op(&d, "Or"),
+            "merge must OR the field into the parent:\n{}",
+            d
+        );
     }
 
     #[test]
@@ -2771,7 +3966,11 @@ mod tests {
         let func = lifter.lift_function(&code, 0x1000, "t").unwrap();
         let d = dump(&func);
         assert!(d.contains("Const(-65536)"), "keep-mask expected:\n{}", d);
-        assert!(d.contains("Const(4660)"), "field value 0x1234 expected:\n{}", d);
+        assert!(
+            d.contains("Const(4660)"),
+            "field value 0x1234 expected:\n{}",
+            d
+        );
         assert!(has_reg(&d, "rax"), "merge target must be rax:\n{}", d);
     }
 
@@ -2782,7 +3981,11 @@ mod tests {
         let code = [0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3];
         let func = lifter.lift_function(&code, 0x1000, "t").unwrap();
         let d = dump(&func);
-        assert!(has_op(&d, "Zext"), "eax write must zero-extend into rax:\n{}", d);
+        assert!(
+            has_op(&d, "Zext"),
+            "eax write must zero-extend into rax:\n{}",
+            d
+        );
         assert!(has_reg(&d, "rax"), "widened value must land in rax:\n{}", d);
         assert!(has_reg(&d, "eax"));
     }
@@ -2794,11 +3997,15 @@ mod tests {
         let code = [0xB7, 0x20, 0xC3];
         let func = lifter.lift_function(&code, 0x1000, "t").unwrap();
         let d = dump(&func);
-        assert!(d.contains("Const(8192)"), "field shifted by 8 expected:\n{}", d);
+        assert!(
+            d.contains("Const(8192)"),
+            "field shifted by 8 expected:\n{}",
+            d
+        );
         assert!(has_reg(&d, "rbx"), "bh merge target must be rbx:\n{}", d);
     }
 
-    // ─── ALU flag modeling ──────────────────────────────────────────────
+    // в”Ђв”Ђв”Ђ ALU flag modeling в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
     #[test]
     fn test_add_writes_all_flags() {
@@ -2815,8 +4022,11 @@ mod tests {
     #[test]
     fn test_logical_ops_clear_cf_of() {
         // AND/OR/XOR define ZF/SF/PF from the result and clear CF/OF.
-        let cases: [[u8; 4]; 3] =
-            [[0x48, 0x83, 0xE0, 0x05], [0x48, 0x83, 0xC8, 0x05], [0x48, 0x83, 0xF0, 0x05]];
+        let cases: [[u8; 4]; 3] = [
+            [0x48, 0x83, 0xE0, 0x05],
+            [0x48, 0x83, 0xC8, 0x05],
+            [0x48, 0x83, 0xF0, 0x05],
+        ];
         for c in &cases {
             let lifter = X86Lifter::new(true);
             let mut code = c.to_vec();
@@ -2845,20 +4055,32 @@ mod tests {
         // INC/DEC update ZF/SF/OF/PF but never touch CF.
         let lifter = X86Lifter::new(true);
 
-        let inc = lifter.lift_function(&[0xFE, 0xC0, 0xC3], 0x1000, "inc").unwrap();
+        let inc = lifter
+            .lift_function(&[0xFE, 0xC0, 0xC3], 0x1000, "inc")
+            .unwrap();
         let d = dump(&inc);
         assert!(d.contains("flag_zf"), "INC must define ZF:\n{}", d);
         assert!(d.contains("flag_of"), "INC must define OF:\n{}", d);
-        assert!(!d.contains("flag_cf"), "INC must preserve CF (no def):\n{}", d);
+        assert!(
+            !d.contains("flag_cf"),
+            "INC must preserve CF (no def):\n{}",
+            d
+        );
 
-        let dec = lifter.lift_function(&[0xFE, 0xC8, 0xC3], 0x1000, "dec").unwrap();
+        let dec = lifter
+            .lift_function(&[0xFE, 0xC8, 0xC3], 0x1000, "dec")
+            .unwrap();
         let d = dump(&dec);
         assert!(d.contains("flag_zf"), "DEC must define ZF:\n{}", d);
         assert!(d.contains("flag_of"), "DEC must define OF:\n{}", d);
-        assert!(!d.contains("flag_cf"), "DEC must preserve CF (no def):\n{}", d);
+        assert!(
+            !d.contains("flag_cf"),
+            "DEC must preserve CF (no def):\n{}",
+            d
+        );
     }
 
-    // ─── CALL / RET stack semantics ─────────────────────────────────────
+    // в”Ђв”Ђв”Ђ CALL / RET stack semantics в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
     #[test]
     fn test_call_pushes_return_address() {

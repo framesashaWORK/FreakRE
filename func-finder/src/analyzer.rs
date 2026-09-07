@@ -1,11 +1,11 @@
 //! Main function analyzer combining all discovery methods
 
-use crate::{
-    Architecture, CodeRegion, DiscoveredFunction, FinderConfig, FinderError,
-    FinderResult, FinderStats, FunctionSource, Result,
-};
 use crate::patterns::*;
 use crate::recursive::*;
+use crate::{
+    Architecture, CodeRegion, DiscoveredFunction, FinderConfig, FinderError, FinderResult,
+    FinderStats, FunctionSource, Result,
+};
 use func_sigs::{scan_signatures, SigScanConfig};
 use std::collections::HashMap;
 
@@ -63,7 +63,9 @@ impl FunctionAnalyzer {
         if self.config.scan_prologues {
             let prologue_funcs = self.scan_prologues(&code_regions)?;
             for func in prologue_funcs {
-                if let std::collections::hash_map::Entry::Vacant(e) = all_functions.entry(func.address) {
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    all_functions.entry(func.address)
+                {
                     e.insert(func);
                     stats.prologue_count += 1;
                 }
@@ -87,7 +89,9 @@ impl FunctionAnalyzer {
 
             let recursive_funcs = analyzer.analyze(&code_regions)?;
             for func in recursive_funcs {
-                if let std::collections::hash_map::Entry::Vacant(e) = all_functions.entry(func.address) {
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    all_functions.entry(func.address)
+                {
                     e.insert(func);
                     stats.recursive_count += 1;
                 }
@@ -138,11 +142,7 @@ impl FunctionAnalyzer {
                         let address = region.address + offset as u64;
 
                         // Try to find the end of the function by looking for epilogues
-                        let func_end = self.find_function_end(
-                            &region.data,
-                            offset,
-                            &epilogues,
-                        );
+                        let func_end = self.find_function_end(&region.data, offset, &epilogues);
 
                         let size = if let Some(end_offset) = func_end {
                             end_offset - offset
@@ -204,8 +204,7 @@ impl FunctionAnalyzer {
                     .max_by_key(|f| f.address);
 
                 if let Some(func) = candidate {
-                    let known_end =
-                        func.address + func.size.max(m.signature.min_func_len) as u64;
+                    let known_end = func.address + func.size.max(m.signature.min_func_len) as u64;
                     if addr >= known_end {
                         continue;
                     }
@@ -369,16 +368,18 @@ mod tests {
     fn test_find_simple_function() {
         // push rbp; mov rbp, rsp; xor eax, eax; pop rbp; ret
         let code = vec![
-            0x55, 0x48, 0x89, 0xE5,  // prologue
-            0x31, 0xC0,               // xor eax, eax
-            0x5D,                     // pop rbp
-            0xC3,                     // ret
-            0xCC, 0xCC, 0xCC, 0xCC,  // padding
+            0x55, 0x48, 0x89, 0xE5, // prologue
+            0x31, 0xC0, // xor eax, eax
+            0x5D, // pop rbp
+            0xC3, // ret
+            0xCC, 0xCC, 0xCC, 0xCC, // padding
         ];
 
         let region = make_code_region(0x401000, code);
         let analyzer = FunctionAnalyzer::new(Architecture::X86_64);
-        let result = analyzer.analyze(vec![region], vec![0x401000], None).unwrap();
+        let result = analyzer
+            .analyze(vec![region], vec![0x401000], None)
+            .unwrap();
 
         assert!(result.function_count() >= 1);
     }
@@ -428,17 +429,20 @@ mod tests {
     #[test]
     fn test_signature_phase_runs() {
         let code = vec![
-            0x55, 0x48, 0x89, 0xE5,
-            0x31, 0xC0,
-            0x5D, 0xC3,
-            0xCC, 0xCC, 0xCC, 0xCC,
+            0x55, 0x48, 0x89, 0xE5, 0x31, 0xC0, 0x5D, 0xC3, 0xCC, 0xCC, 0xCC, 0xCC,
         ];
 
-        let config = FinderConfig { signature_matching: true, min_function_size: 4, ..Default::default() };
+        let config = FinderConfig {
+            signature_matching: true,
+            min_function_size: 4,
+            ..Default::default()
+        };
 
         let region = make_code_region(0x401000, code);
         let analyzer = FunctionAnalyzer::with_config(Architecture::X86_64, config);
-        let result = analyzer.analyze(vec![region], vec![0x401000], None).unwrap();
+        let result = analyzer
+            .analyze(vec![region], vec![0x401000], None)
+            .unwrap();
 
         assert!(result.function_count() >= 1);
     }
@@ -462,17 +466,17 @@ mod tests {
         // Prologue + movzx/setcc/cmov/jcc-near + epilogue: before the LDE fix
         // the first 0F opcode truncated the recursive sweep almost immediately.
         let mut code = vec![
-            0x55,                         // push rbp
-            0x48, 0x89, 0xE5,             // mov rbp, rsp
-            0x31, 0xC9,                   // xor ecx, ecx
-            0x0F, 0xB6, 0xC1,             // movzx eax, cl
-            0x0F, 0x95, 0xC2,             // setne dl
-            0x85, 0xD2,                   // test edx, edx
-            0x74, 0x02,                   // jz +2
-            0x90,                         // nop
-            0x0F, 0x44, 0xCA,             // cmove ecx, edx
-            0x5D,                         // pop rbp
-            0xC3,                         // ret
+            0x55, // push rbp
+            0x48, 0x89, 0xE5, // mov rbp, rsp
+            0x31, 0xC9, // xor ecx, ecx
+            0x0F, 0xB6, 0xC1, // movzx eax, cl
+            0x0F, 0x95, 0xC2, // setne dl
+            0x85, 0xD2, // test edx, edx
+            0x74, 0x02, // jz +2
+            0x90, // nop
+            0x0F, 0x44, 0xCA, // cmove ecx, edx
+            0x5D, // pop rbp
+            0xC3, // ret
         ];
         code.extend_from_slice(&[0xCC; 8]); // padding must stay outside
 

@@ -22,20 +22,25 @@ pub struct SimplifyStats {
     pub labels_inlined: usize,
     pub unused_labels_removed: usize,
     pub unreachable_dropped: usize,
+    pub continue_trimmed: usize,
+    pub void_returns_trimmed: usize,
 }
 
 impl SimplifyStats {
     pub fn tally(&self) -> String {
         format!(
             "conditions_merged_and={} conditions_merged_or={} ternaries_collapsed={} \
-             gotos_removed={} labels_inlined={} unused_labels_removed={} unreachable_dropped={}",
+             gotos_removed={} labels_inlined={} unused_labels_removed={} unreachable_dropped={} \
+             continue_trimmed={} void_returns_trimmed={}",
             self.conditions_merged_and,
             self.conditions_merged_or,
             self.ternaries_collapsed,
             self.gotos_removed,
             self.labels_inlined,
             self.unused_labels_removed,
-            self.unreachable_dropped
+            self.unreachable_dropped,
+            self.continue_trimmed,
+            self.void_returns_trimmed
         )
     }
 }
@@ -79,6 +84,14 @@ pub fn simplify_function_with_stats(func: &mut AstFunction) -> SimplifyStats {
     // gotos, inline single-predecessor labels)
     cleanup_gotos(&mut func.body, &mut stats);
 
+    // Pass 5c: Trailing-control cleanup — drop a redundant trailing
+    // `continue` at the end of loop bodies (the loop back-edge does it) and a
+    // trailing `return;` at the end of a void function.
+    trim_trailing_continue(&mut func.body, &mut stats, false);
+    if matches!(func.return_type, freakre_ir::Ty::Void) {
+        trim_trailing_void_return(&mut func.body, &mut stats);
+    }
+
     // Pass 6: Final cleanup — copy propagation may turn `rsp = v12` copies
     // into plain `rsp = rsp - 8` adjustments, and pattern transforms may
     // surface further dead flag assignments.
@@ -102,7 +115,11 @@ fn is_stack_noise(target: &Expr, value: &Expr) -> bool {
     match target {
         Expr::Var(name) if is_stack_reg(name) => match value {
             Expr::Var(n) if n == "rbp" => true,
-            Expr::Binary { op: bin_op @ (BinOp::Add | BinOp::Sub), lhs, rhs } => {
+            Expr::Binary {
+                op: bin_op @ (BinOp::Add | BinOp::Sub),
+                lhs,
+                rhs,
+            } => {
                 let sp_base = |e: &Expr| matches!(e, Expr::Var(n) if is_stack_reg(n));
                 (sp_base(lhs) && matches!(rhs.as_ref(), Expr::IntLit(_)))
                     || (*bin_op == BinOp::Add
@@ -119,31 +136,55 @@ fn is_stack_noise(target: &Expr, value: &Expr) -> bool {
 }
 
 fn strip_stack_noise(stmts: &mut Vec<Stmt>) {
-    stmts.retain(|stmt| !matches!(
-        stmt,
-        Stmt::Assign { target, value } if is_stack_noise(target, value)
-    ));
+    stmts.retain(|stmt| {
+        !matches!(
+            stmt,
+            Stmt::Assign { target, value } if is_stack_noise(target, value)
+        )
+    });
 
     for stmt in stmts.iter_mut() {
         match stmt {
-            Stmt::If { then_body, else_body, .. } => {
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 strip_stack_noise(then_body);
-                if let Some(eb) = else_body { strip_stack_noise(eb); }
+                if let Some(eb) = else_body {
+                    strip_stack_noise(eb);
+                }
             }
             Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
                 strip_stack_noise(body);
             }
-            Stmt::For { init, update, body, .. } => {
-                if let Some(i) = init { strip_single(i.as_mut()); }
-                if let Some(u) = update { strip_single(u.as_mut()); }
+            Stmt::For {
+                init, update, body, ..
+            } => {
+                if let Some(i) = init {
+                    strip_single(i.as_mut());
+                }
+                if let Some(u) = update {
+                    strip_single(u.as_mut());
+                }
                 strip_stack_noise(body);
             }
             Stmt::Switch { cases, default, .. } => {
-                for c in cases.iter_mut() { strip_stack_noise(&mut c.body); }
-                if let Some(d) = default { strip_stack_noise(d); }
+                for c in cases.iter_mut() {
+                    strip_stack_noise(&mut c.body);
+                }
+                if let Some(d) = default {
+                    strip_stack_noise(d);
+                }
             }
-            Stmt::Block(inner) => { strip_stack_noise(inner); }
-            Stmt::TryCatch { try_body, catch_body, .. } => {
+            Stmt::Block(inner) => {
+                strip_stack_noise(inner);
+            }
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 strip_stack_noise(try_body);
                 strip_stack_noise(catch_body);
             }
@@ -169,28 +210,48 @@ fn strip_dead_flag_assignments(stmts: &mut Vec<Stmt>) {
 }
 
 fn strip_dead_flag_assignments_inner(stmts: &mut Vec<Stmt>, used_vars: &HashSet<String>) {
-    stmts.retain(|stmt| !matches!(
-        stmt,
-        Stmt::Assign { target: Expr::Var(name), .. }
-            if name.starts_with("flag_") && !used_vars.contains(name)
-    ));
+    stmts.retain(|stmt| {
+        !matches!(
+            stmt,
+            Stmt::Assign { target: Expr::Var(name), .. }
+                if name.starts_with("flag_") && !used_vars.contains(name)
+        )
+    });
 
     for stmt in stmts.iter_mut() {
         match stmt {
-            Stmt::If { then_body, else_body, .. } => {
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 strip_dead_flag_assignments_inner(then_body, used_vars);
-                if let Some(eb) = else_body { strip_dead_flag_assignments_inner(eb, used_vars); }
+                if let Some(eb) = else_body {
+                    strip_dead_flag_assignments_inner(eb, used_vars);
+                }
             }
             Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
                 strip_dead_flag_assignments_inner(body, used_vars);
             }
-            Stmt::For { body, .. } => { strip_dead_flag_assignments_inner(body, used_vars); }
-            Stmt::Switch { cases, default, .. } => {
-                for c in cases.iter_mut() { strip_dead_flag_assignments_inner(&mut c.body, used_vars); }
-                if let Some(d) = default { strip_dead_flag_assignments_inner(d, used_vars); }
+            Stmt::For { body, .. } => {
+                strip_dead_flag_assignments_inner(body, used_vars);
             }
-            Stmt::Block(inner) => { strip_dead_flag_assignments_inner(inner, used_vars); }
-            Stmt::TryCatch { try_body, catch_body, .. } => {
+            Stmt::Switch { cases, default, .. } => {
+                for c in cases.iter_mut() {
+                    strip_dead_flag_assignments_inner(&mut c.body, used_vars);
+                }
+                if let Some(d) = default {
+                    strip_dead_flag_assignments_inner(d, used_vars);
+                }
+            }
+            Stmt::Block(inner) => {
+                strip_dead_flag_assignments_inner(inner, used_vars);
+            }
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 strip_dead_flag_assignments_inner(try_body, used_vars);
                 strip_dead_flag_assignments_inner(catch_body, used_vars);
             }
@@ -222,13 +283,19 @@ fn simplify_expr(expr: &Expr) -> Expr {
                     BinOp::LogOr => Expr::BoolLit(*a || *b),
                     BinOp::Eq => Expr::BoolLit(a == b),
                     BinOp::Ne => Expr::BoolLit(a != b),
-                    _ => Expr::Binary { op: *op, lhs: Box::new(l), rhs: Box::new(r) },
+                    _ => Expr::Binary {
+                        op: *op,
+                        lhs: Box::new(l),
+                        rhs: Box::new(r),
+                    },
                 };
             }
 
             // Identity: x + 0, x - 0, x | 0, x ^ 0, x << 0, x >> 0
-            if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Or | BinOp::Xor | BinOp::Shl | BinOp::Shr)
-                && is_zero(&r)
+            if matches!(
+                op,
+                BinOp::Add | BinOp::Sub | BinOp::Or | BinOp::Xor | BinOp::Shl | BinOp::Shr
+            ) && is_zero(&r)
             {
                 return l;
             }
@@ -278,7 +345,11 @@ fn simplify_expr(expr: &Expr) -> Expr {
             // Shift+mask: (x >> n) & ((1 << m) - 1) вЂ” bitfield extract
             // Left as-is for now (requires type info)
 
-            Expr::Binary { op: *op, lhs: Box::new(l), rhs: Box::new(r) }
+            Expr::Binary {
+                op: *op,
+                lhs: Box::new(l),
+                rhs: Box::new(r),
+            }
         }
 
         // в”Ђв”Ђ Unary operations в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
@@ -302,13 +373,21 @@ fn simplify_expr(expr: &Expr) -> Expr {
 
             // Double negation: ~~x в†’ x
             if *op == UnOp::Not {
-                if let Expr::Unary { op: UnOp::Not, operand: inner2 } = &inner {
+                if let Expr::Unary {
+                    op: UnOp::Not,
+                    operand: inner2,
+                } = &inner
+                {
                     return (**inner2).clone();
                 }
             }
             // Double logical not: !!x в†’ x (semantically for bools)
             if *op == UnOp::LogNot {
-                if let Expr::Unary { op: UnOp::LogNot, operand: inner2 } = &inner {
+                if let Expr::Unary {
+                    op: UnOp::LogNot,
+                    operand: inner2,
+                } = &inner
+                {
                     return (**inner2).clone();
                 }
             }
@@ -331,12 +410,19 @@ fn simplify_expr(expr: &Expr) -> Expr {
                         _ => None,
                     };
                     if let Some(neg) = negated {
-                        return Expr::Binary { op: neg, lhs: lhs.clone(), rhs: rhs.clone() };
+                        return Expr::Binary {
+                            op: neg,
+                            lhs: lhs.clone(),
+                            rhs: rhs.clone(),
+                        };
                     }
                 }
             }
 
-            Expr::Unary { op: *op, operand: Box::new(inner) }
+            Expr::Unary {
+                op: *op,
+                operand: Box::new(inner),
+            }
         }
 
         // в”Ђв”Ђ Cast simplification в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
@@ -344,11 +430,18 @@ fn simplify_expr(expr: &Expr) -> Expr {
             let inner = simplify_expr(expr);
             // Redundant cast: (T)(T)x в†’ (T)x вЂ” would need type equality check
             // For now just recurse
-            Expr::Cast { ty: ty.clone(), expr: Box::new(inner) }
+            Expr::Cast {
+                ty: ty.clone(),
+                expr: Box::new(inner),
+            }
         }
 
         // в”Ђв”Ђ Ternary simplification в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-        Expr::Ternary { cond, then_expr, else_expr } => {
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             let c = simplify_expr(cond);
             let t = simplify_expr(then_expr);
             let e = simplify_expr(else_expr);
@@ -368,7 +461,10 @@ fn simplify_expr(expr: &Expr) -> Expr {
         // в”Ђв”Ђ Recursive descent for compound expressions в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         Expr::Call { func, args } => {
             let new_args: Vec<Expr> = args.iter().map(simplify_expr).collect();
-            Expr::Call { func: func.clone(), args: new_args }
+            Expr::Call {
+                func: func.clone(),
+                args: new_args,
+            }
         }
         Expr::Index { base, index } => Expr::Index {
             base: Box::new(simplify_expr(base)),
@@ -427,9 +523,11 @@ fn is_pure(expr: &Expr) -> bool {
         Expr::Cast { expr, .. } | Expr::AddrOf(expr) | Expr::Sizeof(expr) => is_pure(expr),
         Expr::Index { base, index } => is_pure(base) && is_pure(index),
         Expr::Member { base, .. } => is_pure(base),
-        Expr::Ternary { cond, then_expr, else_expr } => {
-            is_pure(cond) && is_pure(then_expr) && is_pure(else_expr)
-        }
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => is_pure(cond) && is_pure(then_expr) && is_pure(else_expr),
         _ => true,
     }
 }
@@ -448,7 +546,11 @@ fn simplify_stmt(stmt: &mut Stmt) {
             *target = simplify_expr(target);
             *value = simplify_expr(value);
         }
-        Stmt::If { cond, then_body, else_body } => {
+        Stmt::If {
+            cond,
+            then_body,
+            else_body,
+        } => {
             *cond = simplify_expr(cond);
             simplify_stmts(then_body);
             if let Some(eb) = else_body {
@@ -459,32 +561,63 @@ fn simplify_stmt(stmt: &mut Stmt) {
             *cond = simplify_expr(cond);
             simplify_stmts(body);
         }
-        Stmt::For { init, cond, update, body } => {
-            if let Some(i) = init { simplify_stmt(i); }
-            if let Some(c) = cond { *c = simplify_expr(c); }
-            if let Some(u) = update { simplify_stmt(u); }
+        Stmt::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(i) = init {
+                simplify_stmt(i);
+            }
+            if let Some(c) = cond {
+                *c = simplify_expr(c);
+            }
+            if let Some(u) = update {
+                simplify_stmt(u);
+            }
             simplify_stmts(body);
         }
         Stmt::DoWhile { body, cond } => {
             simplify_stmts(body);
             *cond = simplify_expr(cond);
         }
-        Stmt::Switch { expr, cases, default } => {
+        Stmt::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             *expr = simplify_expr(expr);
             for case in cases.iter_mut() {
                 case.value = simplify_expr(&case.value);
                 simplify_stmts(&mut case.body);
             }
-            if let Some(d) = default { simplify_stmts(d); }
+            if let Some(d) = default {
+                simplify_stmts(d);
+            }
         }
-        Stmt::Return { value: Some(v) } => { *v = simplify_expr(v); }
+        Stmt::Return { value: Some(v) } => {
+            *v = simplify_expr(v);
+        }
         Stmt::Call { args, .. } => {
-            for a in args.iter_mut() { *a = simplify_expr(a); }
+            for a in args.iter_mut() {
+                *a = simplify_expr(a);
+            }
         }
-        Stmt::Expr(e) => { *e = simplify_expr(e); }
-        Stmt::Block(inner) => { simplify_stmts(inner); }
-        Stmt::Decl { init: Some(e), .. } => { *e = simplify_expr(e); }
-        Stmt::TryCatch { try_body, catch_body, .. } => {
+        Stmt::Expr(e) => {
+            *e = simplify_expr(e);
+        }
+        Stmt::Block(inner) => {
+            simplify_stmts(inner);
+        }
+        Stmt::Decl { init: Some(e), .. } => {
+            *e = simplify_expr(e);
+        }
+        Stmt::TryCatch {
+            try_body,
+            catch_body,
+            ..
+        } => {
             simplify_stmts(try_body);
             simplify_stmts(catch_body);
         }
@@ -524,19 +657,19 @@ fn eliminate_dead_assignments(stmts: &mut Vec<Stmt>) {
 fn expr_may_side_effect(expr: &Expr) -> bool {
     match expr {
         Expr::Call { .. } => true,
-        Expr::Binary { lhs, rhs, .. } => {
-            expr_may_side_effect(lhs) || expr_may_side_effect(rhs)
-        }
+        Expr::Binary { lhs, rhs, .. } => expr_may_side_effect(lhs) || expr_may_side_effect(rhs),
         Expr::Unary { operand, .. }
         | Expr::Deref(operand)
         | Expr::AddrOf(operand)
         | Expr::Sizeof(operand) => expr_may_side_effect(operand),
-        Expr::Index { base, index } => {
-            expr_may_side_effect(base) || expr_may_side_effect(index)
-        }
+        Expr::Index { base, index } => expr_may_side_effect(base) || expr_may_side_effect(index),
         Expr::Member { base, .. } => expr_may_side_effect(base),
         Expr::Cast { expr, .. } => expr_may_side_effect(expr),
-        Expr::Ternary { cond, then_expr, else_expr } => {
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             expr_may_side_effect(cond)
                 || expr_may_side_effect(then_expr)
                 || expr_may_side_effect(else_expr)
@@ -555,14 +688,16 @@ fn expr_references_var(expr: &Expr, name: &str) -> bool {
 fn remove_dead_stmts(stmts: &mut Vec<Stmt>, used_vars: &HashSet<String>) {
     stmts.retain(|stmt| {
         match stmt {
-            Stmt::Assign { target: Expr::Var(name), value } => {
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
                 // Keep if target variable is used somewhere, or if evaluating
                 // the RHS has side effects (calls must not be deleted).
                 used_vars.contains(name) || expr_may_side_effect(value)
             }
             Stmt::Decl { name, init, .. } => {
-                used_vars.contains(name)
-                    || init.as_ref().is_some_and(expr_may_side_effect)
+                used_vars.contains(name) || init.as_ref().is_some_and(expr_may_side_effect)
             }
             _ => true,
         }
@@ -571,20 +706,38 @@ fn remove_dead_stmts(stmts: &mut Vec<Stmt>, used_vars: &HashSet<String>) {
     // Recurse into nested blocks
     for stmt in stmts.iter_mut() {
         match stmt {
-            Stmt::If { then_body, else_body, .. } => {
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 remove_dead_stmts(then_body, used_vars);
-                if let Some(eb) = else_body { remove_dead_stmts(eb, used_vars); }
+                if let Some(eb) = else_body {
+                    remove_dead_stmts(eb, used_vars);
+                }
             }
             Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
                 remove_dead_stmts(body, used_vars);
             }
-            Stmt::For { body, .. } => { remove_dead_stmts(body, used_vars); }
-            Stmt::Switch { cases, default, .. } => {
-                for c in cases.iter_mut() { remove_dead_stmts(&mut c.body, used_vars); }
-                if let Some(d) = default { remove_dead_stmts(d, used_vars); }
+            Stmt::For { body, .. } => {
+                remove_dead_stmts(body, used_vars);
             }
-            Stmt::Block(inner) => { remove_dead_stmts(inner, used_vars); }
-            Stmt::TryCatch { try_body, catch_body, .. } => {
+            Stmt::Switch { cases, default, .. } => {
+                for c in cases.iter_mut() {
+                    remove_dead_stmts(&mut c.body, used_vars);
+                }
+                if let Some(d) = default {
+                    remove_dead_stmts(d, used_vars);
+                }
+            }
+            Stmt::Block(inner) => {
+                remove_dead_stmts(inner, used_vars);
+            }
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 remove_dead_stmts(try_body, used_vars);
                 remove_dead_stmts(catch_body, used_vars);
             }
@@ -607,32 +760,73 @@ fn collect_used_vars_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
             }
             collect_used_vars_expr(value, out);
         }
-        Stmt::If { cond, then_body, else_body } => {
+        Stmt::If {
+            cond,
+            then_body,
+            else_body,
+        } => {
             collect_used_vars_expr(cond, out);
             collect_used_vars_stmts(then_body, out);
-            if let Some(eb) = else_body { collect_used_vars_stmts(eb, out); }
+            if let Some(eb) = else_body {
+                collect_used_vars_stmts(eb, out);
+            }
         }
         Stmt::While { cond, body } | Stmt::DoWhile { body, cond } => {
             collect_used_vars_expr(cond, out);
             collect_used_vars_stmts(body, out);
         }
-        Stmt::For { init, cond, update, body } => {
-            if let Some(i) = init { collect_used_vars_stmt(i, out); }
-            if let Some(c) = cond { collect_used_vars_expr(c, out); }
-            if let Some(u) = update { collect_used_vars_stmt(u, out); }
+        Stmt::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(i) = init {
+                collect_used_vars_stmt(i, out);
+            }
+            if let Some(c) = cond {
+                collect_used_vars_expr(c, out);
+            }
+            if let Some(u) = update {
+                collect_used_vars_stmt(u, out);
+            }
             collect_used_vars_stmts(body, out);
         }
-        Stmt::Switch { expr, cases, default } => {
+        Stmt::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             collect_used_vars_expr(expr, out);
-            for c in cases { collect_used_vars_stmts(&c.body, out); }
-            if let Some(d) = default { collect_used_vars_stmts(d, out); }
+            for c in cases {
+                collect_used_vars_stmts(&c.body, out);
+            }
+            if let Some(d) = default {
+                collect_used_vars_stmts(d, out);
+            }
         }
-        Stmt::Return { value: Some(v) } => { collect_used_vars_expr(v, out); }
-        Stmt::Call { args, .. } => { for a in args { collect_used_vars_expr(a, out); } }
-        Stmt::Expr(e) => { collect_used_vars_expr(e, out); }
-        Stmt::Block(inner) => { collect_used_vars_stmts(inner, out); }
-        Stmt::Decl { init: Some(e), .. } => { collect_used_vars_expr(e, out); }
-        Stmt::TryCatch { try_body, catch_body, .. } => {
+        Stmt::Return { value: Some(v) } => {
+            collect_used_vars_expr(v, out);
+        }
+        Stmt::Call { args, .. } => {
+            for a in args {
+                collect_used_vars_expr(a, out);
+            }
+        }
+        Stmt::Expr(e) => {
+            collect_used_vars_expr(e, out);
+        }
+        Stmt::Block(inner) => {
+            collect_used_vars_stmts(inner, out);
+        }
+        Stmt::Decl { init: Some(e), .. } => {
+            collect_used_vars_expr(e, out);
+        }
+        Stmt::TryCatch {
+            try_body,
+            catch_body,
+            ..
+        } => {
             collect_used_vars_stmts(try_body, out);
             collect_used_vars_stmts(catch_body, out);
         }
@@ -642,21 +836,39 @@ fn collect_used_vars_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
 
 fn collect_used_vars_expr(expr: &Expr, out: &mut HashSet<String>) {
     match expr {
-        Expr::Var(name) => { out.insert(name.clone()); }
+        Expr::Var(name) => {
+            out.insert(name.clone());
+        }
         Expr::Binary { lhs, rhs, .. } => {
             collect_used_vars_expr(lhs, out);
             collect_used_vars_expr(rhs, out);
         }
-        Expr::Unary { operand, .. } => { collect_used_vars_expr(operand, out); }
-        Expr::Call { args, .. } => { for a in args { collect_used_vars_expr(a, out); } }
+        Expr::Unary { operand, .. } => {
+            collect_used_vars_expr(operand, out);
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_used_vars_expr(a, out);
+            }
+        }
         Expr::Index { base, index } => {
             collect_used_vars_expr(base, out);
             collect_used_vars_expr(index, out);
         }
-        Expr::Member { base, .. } => { collect_used_vars_expr(base, out); }
-        Expr::Deref(e) | Expr::AddrOf(e) | Expr::Sizeof(e) => { collect_used_vars_expr(e, out); }
-        Expr::Cast { expr: e, .. } => { collect_used_vars_expr(e, out); }
-        Expr::Ternary { cond, then_expr, else_expr } => {
+        Expr::Member { base, .. } => {
+            collect_used_vars_expr(base, out);
+        }
+        Expr::Deref(e) | Expr::AddrOf(e) | Expr::Sizeof(e) => {
+            collect_used_vars_expr(e, out);
+        }
+        Expr::Cast { expr: e, .. } => {
+            collect_used_vars_expr(e, out);
+        }
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             collect_used_vars_expr(cond, out);
             collect_used_vars_expr(then_expr, out);
             collect_used_vars_expr(else_expr, out);
@@ -709,7 +921,11 @@ fn substitute_within_list(
         apply_pending_to_own_exprs(stmt, &pending);
 
         // 2. Register new candidate definitions found at this level.
-        if let Stmt::Assign { target: Expr::Var(name), value } = stmt {
+        if let Stmt::Assign {
+            target: Expr::Var(name),
+            value,
+        } = stmt
+        {
             if is_inline_candidate(value)
                 && !pending.contains_key(name)
                 && def_counts.get(name).copied().unwrap_or(0) == 1
@@ -725,7 +941,11 @@ fn substitute_within_list(
         //    (`v1 = v1 + 1`) are culled here too — later uses observe the NEW
         //    value, not the expression.
         let redefined = match stmt {
-            Stmt::Assign { target: Expr::Var(name), .. } | Stmt::Decl { name, .. } => Some(name),
+            Stmt::Assign {
+                target: Expr::Var(name),
+                ..
+            }
+            | Stmt::Decl { name, .. } => Some(name),
             _ => None,
         };
         if let Some(def_name) = redefined {
@@ -736,29 +956,64 @@ fn substitute_within_list(
     // 3. Recurse into nested lists, carrying only literal constants down.
     let literals: HashMap<String, Expr> = pending
         .into_iter()
-        .filter(|(_, v)| matches!(v, Expr::IntLit(_) | Expr::BoolLit(_) | Expr::FloatLit(_) | Expr::StringLit(_)))
+        .filter(|(_, v)| {
+            matches!(
+                v,
+                Expr::IntLit(_) | Expr::BoolLit(_) | Expr::FloatLit(_) | Expr::StringLit(_)
+            )
+        })
         .collect();
 
     for stmt in stmts.iter_mut() {
         match stmt {
-            Stmt::If { then_body, else_body, .. } => {
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 substitute_within_list(then_body, def_counts, use_counts, &literals);
-                if let Some(eb) = else_body { substitute_within_list(eb, def_counts, use_counts, &literals); }
+                if let Some(eb) = else_body {
+                    substitute_within_list(eb, def_counts, use_counts, &literals);
+                }
             }
             Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
                 substitute_within_list(body, def_counts, use_counts, &literals);
             }
-            Stmt::For { init, update, body, .. } => {
-                if let Some(i) = init { substitute_within_list(std::slice::from_mut(i.as_mut()), def_counts, use_counts, &literals); }
-                if let Some(u) = update { substitute_within_list(std::slice::from_mut(u.as_mut()), def_counts, use_counts, &literals); }
+            Stmt::For {
+                init, update, body, ..
+            } => {
+                if let Some(i) = init {
+                    substitute_within_list(
+                        std::slice::from_mut(i.as_mut()),
+                        def_counts,
+                        use_counts,
+                        &literals,
+                    );
+                }
+                if let Some(u) = update {
+                    substitute_within_list(
+                        std::slice::from_mut(u.as_mut()),
+                        def_counts,
+                        use_counts,
+                        &literals,
+                    );
+                }
                 substitute_within_list(body, def_counts, use_counts, &literals);
             }
             Stmt::Block(inner) => substitute_within_list(inner, def_counts, use_counts, &literals),
             Stmt::Switch { cases, default, .. } => {
-                for c in cases.iter_mut() { substitute_within_list(&mut c.body, def_counts, use_counts, &literals); }
-                if let Some(d) = default { substitute_within_list(d, def_counts, use_counts, &literals); }
+                for c in cases.iter_mut() {
+                    substitute_within_list(&mut c.body, def_counts, use_counts, &literals);
+                }
+                if let Some(d) = default {
+                    substitute_within_list(d, def_counts, use_counts, &literals);
+                }
             }
-            Stmt::TryCatch { try_body, catch_body, .. } => {
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 substitute_within_list(try_body, def_counts, use_counts, &literals);
                 substitute_within_list(catch_body, def_counts, use_counts, &literals);
             }
@@ -777,19 +1032,25 @@ fn apply_pending_to_own_exprs(stmt: &mut Stmt, pending: &HashMap<String, Expr>) 
         }
         Stmt::Return { value: Some(v) } => substitute_vars_expr(v, pending),
         Stmt::Call { args, .. } => {
-            for a in args.iter_mut() { substitute_vars_expr(a, pending); }
+            for a in args.iter_mut() {
+                substitute_vars_expr(a, pending);
+            }
         }
         Stmt::Expr(e) => substitute_vars_expr(e, pending),
         Stmt::Decl { init: Some(e), .. } => substitute_vars_expr(e, pending),
         Stmt::If { cond, .. } => substitute_vars_expr(cond, pending),
-        Stmt::While { cond, .. } | Stmt::DoWhile { cond, .. } => substitute_vars_expr(cond, pending),
+        Stmt::While { cond, .. } | Stmt::DoWhile { cond, .. } => {
+            substitute_vars_expr(cond, pending)
+        }
         Stmt::For { cond: Some(c), .. } => {
             substitute_vars_expr(c, pending);
         }
         Stmt::For { cond: None, .. } => {}
         Stmt::Switch { expr, cases, .. } => {
             substitute_vars_expr(expr, pending);
-            for c in cases.iter_mut() { substitute_vars_expr(&mut c.value, pending); }
+            for c in cases.iter_mut() {
+                substitute_vars_expr(&mut c.value, pending);
+            }
         }
         _ => {}
     }
@@ -809,24 +1070,44 @@ fn count_var_defs_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
     }
     match stmt {
         Stmt::Assign { target, .. } => bump_target(target, counts),
-        Stmt::If { then_body, else_body, .. } => {
+        Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
             count_var_defs_stmts(then_body, counts);
-            if let Some(eb) = else_body { count_var_defs_stmts(eb, counts); }
+            if let Some(eb) = else_body {
+                count_var_defs_stmts(eb, counts);
+            }
         }
         Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
             count_var_defs_stmts(body, counts);
         }
-        Stmt::For { init, update, body, .. } => {
-            if let Some(i) = init { count_var_defs_stmt(i, counts); }
-            if let Some(u) = update { count_var_defs_stmt(u, counts); }
+        Stmt::For {
+            init, update, body, ..
+        } => {
+            if let Some(i) = init {
+                count_var_defs_stmt(i, counts);
+            }
+            if let Some(u) = update {
+                count_var_defs_stmt(u, counts);
+            }
             count_var_defs_stmts(body, counts);
         }
         Stmt::Block(inner) => count_var_defs_stmts(inner, counts),
         Stmt::Switch { cases, default, .. } => {
-            for c in cases { count_var_defs_stmts(&c.body, counts); }
-            if let Some(d) = default { count_var_defs_stmts(d, counts); }
+            for c in cases {
+                count_var_defs_stmts(&c.body, counts);
+            }
+            if let Some(d) = default {
+                count_var_defs_stmts(d, counts);
+            }
         }
-        Stmt::TryCatch { try_body, catch_body, .. } => {
+        Stmt::TryCatch {
+            try_body,
+            catch_body,
+            ..
+        } => {
             count_var_defs_stmts(try_body, counts);
             count_var_defs_stmts(catch_body, counts);
         }
@@ -848,32 +1129,73 @@ fn count_var_uses_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
             }
             count_var_uses_expr(value, counts);
         }
-        Stmt::If { cond, then_body, else_body } => {
+        Stmt::If {
+            cond,
+            then_body,
+            else_body,
+        } => {
             count_var_uses_expr(cond, counts);
             count_var_uses_stmts(then_body, counts);
-            if let Some(eb) = else_body { count_var_uses_stmts(eb, counts); }
+            if let Some(eb) = else_body {
+                count_var_uses_stmts(eb, counts);
+            }
         }
         Stmt::While { cond, body } | Stmt::DoWhile { body, cond } => {
             count_var_uses_expr(cond, counts);
             count_var_uses_stmts(body, counts);
         }
-        Stmt::For { init, cond, update, body } => {
-            if let Some(i) = init { count_var_uses_stmt(i, counts); }
-            if let Some(c) = cond { count_var_uses_expr(c, counts); }
-            if let Some(u) = update { count_var_uses_stmt(u, counts); }
+        Stmt::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(i) = init {
+                count_var_uses_stmt(i, counts);
+            }
+            if let Some(c) = cond {
+                count_var_uses_expr(c, counts);
+            }
+            if let Some(u) = update {
+                count_var_uses_stmt(u, counts);
+            }
             count_var_uses_stmts(body, counts);
         }
-        Stmt::Switch { expr, cases, default } => {
+        Stmt::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             count_var_uses_expr(expr, counts);
-            for c in cases { count_var_uses_stmts(&c.body, counts); }
-            if let Some(d) = default { count_var_uses_stmts(d, counts); }
+            for c in cases {
+                count_var_uses_stmts(&c.body, counts);
+            }
+            if let Some(d) = default {
+                count_var_uses_stmts(d, counts);
+            }
         }
-        Stmt::Return { value: Some(v) } => { count_var_uses_expr(v, counts); }
-        Stmt::Call { args, .. } => { for a in args { count_var_uses_expr(a, counts); } }
-        Stmt::Expr(e) => { count_var_uses_expr(e, counts); }
-        Stmt::Block(inner) => { count_var_uses_stmts(inner, counts); }
-        Stmt::Decl { init: Some(e), .. } => { count_var_uses_expr(e, counts); }
-        Stmt::TryCatch { try_body, catch_body, .. } => {
+        Stmt::Return { value: Some(v) } => {
+            count_var_uses_expr(v, counts);
+        }
+        Stmt::Call { args, .. } => {
+            for a in args {
+                count_var_uses_expr(a, counts);
+            }
+        }
+        Stmt::Expr(e) => {
+            count_var_uses_expr(e, counts);
+        }
+        Stmt::Block(inner) => {
+            count_var_uses_stmts(inner, counts);
+        }
+        Stmt::Decl { init: Some(e), .. } => {
+            count_var_uses_expr(e, counts);
+        }
+        Stmt::TryCatch {
+            try_body,
+            catch_body,
+            ..
+        } => {
             count_var_uses_stmts(try_body, counts);
             count_var_uses_stmts(catch_body, counts);
         }
@@ -883,21 +1205,39 @@ fn count_var_uses_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
 
 fn count_var_uses_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
     match expr {
-        Expr::Var(name) => { *counts.entry(name.clone()).or_insert(0) += 1; }
+        Expr::Var(name) => {
+            *counts.entry(name.clone()).or_insert(0) += 1;
+        }
         Expr::Binary { lhs, rhs, .. } => {
             count_var_uses_expr(lhs, counts);
             count_var_uses_expr(rhs, counts);
         }
-        Expr::Unary { operand, .. } => { count_var_uses_expr(operand, counts); }
-        Expr::Call { args, .. } => { for a in args { count_var_uses_expr(a, counts); } }
+        Expr::Unary { operand, .. } => {
+            count_var_uses_expr(operand, counts);
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                count_var_uses_expr(a, counts);
+            }
+        }
         Expr::Index { base, index } => {
             count_var_uses_expr(base, counts);
             count_var_uses_expr(index, counts);
         }
-        Expr::Member { base, .. } => { count_var_uses_expr(base, counts); }
-        Expr::Deref(e) | Expr::AddrOf(e) | Expr::Sizeof(e) => { count_var_uses_expr(e, counts); }
-        Expr::Cast { expr: e, .. } => { count_var_uses_expr(e, counts); }
-        Expr::Ternary { cond, then_expr, else_expr } => {
+        Expr::Member { base, .. } => {
+            count_var_uses_expr(base, counts);
+        }
+        Expr::Deref(e) | Expr::AddrOf(e) | Expr::Sizeof(e) => {
+            count_var_uses_expr(e, counts);
+        }
+        Expr::Cast { expr: e, .. } => {
+            count_var_uses_expr(e, counts);
+        }
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             count_var_uses_expr(cond, counts);
             count_var_uses_expr(then_expr, counts);
             count_var_uses_expr(else_expr, counts);
@@ -908,9 +1248,9 @@ fn count_var_uses_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
 
 /// Check if an expression is simple enough to inline.
 fn is_simple_expr(expr: &Expr) -> bool {
-    matches!(expr,
-        Expr::IntLit(_) | Expr::BoolLit(_) | Expr::StringLit(_) |
-        Expr::Var(_) | Expr::FloatLit(_)
+    matches!(
+        expr,
+        Expr::IntLit(_) | Expr::BoolLit(_) | Expr::StringLit(_) | Expr::Var(_) | Expr::FloatLit(_)
     )
 }
 
@@ -948,16 +1288,32 @@ fn substitute_vars_expr(expr: &mut Expr, defs: &HashMap<String, Expr>) {
             substitute_vars_expr(lhs, defs);
             substitute_vars_expr(rhs, defs);
         }
-        Expr::Unary { operand, .. } => { substitute_vars_expr(operand, defs); }
-        Expr::Call { args, .. } => { for a in args.iter_mut() { substitute_vars_expr(a, defs); } }
+        Expr::Unary { operand, .. } => {
+            substitute_vars_expr(operand, defs);
+        }
+        Expr::Call { args, .. } => {
+            for a in args.iter_mut() {
+                substitute_vars_expr(a, defs);
+            }
+        }
         Expr::Index { base, index } => {
             substitute_vars_expr(base, defs);
             substitute_vars_expr(index, defs);
         }
-        Expr::Member { base, .. } => { substitute_vars_expr(base, defs); }
-        Expr::Deref(e) | Expr::AddrOf(e) | Expr::Sizeof(e) => { substitute_vars_expr(e, defs); }
-        Expr::Cast { expr: e, .. } => { substitute_vars_expr(e, defs); }
-        Expr::Ternary { cond, then_expr, else_expr } => {
+        Expr::Member { base, .. } => {
+            substitute_vars_expr(base, defs);
+        }
+        Expr::Deref(e) | Expr::AddrOf(e) | Expr::Sizeof(e) => {
+            substitute_vars_expr(e, defs);
+        }
+        Expr::Cast { expr: e, .. } => {
+            substitute_vars_expr(e, defs);
+        }
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             substitute_vars_expr(cond, defs);
             substitute_vars_expr(then_expr, defs);
             substitute_vars_expr(else_expr, defs);
@@ -980,10 +1336,16 @@ fn merge_conditions(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
 
 fn merge_conditions_stmt(stmt: &mut Stmt, stats: &mut SimplifyStats) {
     match stmt {
-        Stmt::If { cond, then_body, else_body } => {
+        Stmt::If {
+            cond,
+            then_body,
+            else_body,
+        } => {
             // Recurse first
             merge_conditions_stmts(then_body, stats);
-            if let Some(eb) = else_body { merge_conditions_stmts(eb, stats); }
+            if let Some(eb) = else_body {
+                merge_conditions_stmts(eb, stats);
+            }
 
             // Merge: if outer has no else, and then_body is a single if with no else
             if else_body.is_none() && then_body.len() == 1 {
@@ -1007,13 +1369,25 @@ fn merge_conditions_stmt(stmt: &mut Stmt, stats: &mut SimplifyStats) {
         Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
             merge_conditions_stmts(body, stats);
         }
-        Stmt::For { body, .. } => { merge_conditions_stmts(body, stats); }
-        Stmt::Block(inner) => { merge_conditions_stmts(inner, stats); }
-        Stmt::Switch { cases, default, .. } => {
-            for c in cases.iter_mut() { merge_conditions_stmts(&mut c.body, stats); }
-            if let Some(d) = default { merge_conditions_stmts(d, stats); }
+        Stmt::For { body, .. } => {
+            merge_conditions_stmts(body, stats);
         }
-        Stmt::TryCatch { try_body, catch_body, .. } => {
+        Stmt::Block(inner) => {
+            merge_conditions_stmts(inner, stats);
+        }
+        Stmt::Switch { cases, default, .. } => {
+            for c in cases.iter_mut() {
+                merge_conditions_stmts(&mut c.body, stats);
+            }
+            if let Some(d) = default {
+                merge_conditions_stmts(d, stats);
+            }
+        }
+        Stmt::TryCatch {
+            try_body,
+            catch_body,
+            ..
+        } => {
             merge_conditions_stmts(try_body, stats);
             merge_conditions_stmts(catch_body, stats);
         }
@@ -1032,20 +1406,38 @@ fn merge_conditions_stmts(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
 fn collapse_ternaries(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
     for stmt in stmts.iter_mut() {
         match stmt {
-            Stmt::If { then_body, else_body, .. } => {
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 collapse_ternaries(then_body, stats);
-                if let Some(eb) = else_body { collapse_ternaries(eb, stats); }
+                if let Some(eb) = else_body {
+                    collapse_ternaries(eb, stats);
+                }
             }
             Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
                 collapse_ternaries(body, stats);
             }
-            Stmt::For { body, .. } => { collapse_ternaries(body, stats); }
-            Stmt::Block(inner) => { collapse_ternaries(inner, stats); }
-            Stmt::Switch { cases, default, .. } => {
-                for c in cases.iter_mut() { collapse_ternaries(&mut c.body, stats); }
-                if let Some(d) = default { collapse_ternaries(d, stats); }
+            Stmt::For { body, .. } => {
+                collapse_ternaries(body, stats);
             }
-            Stmt::TryCatch { try_body, catch_body, .. } => {
+            Stmt::Block(inner) => {
+                collapse_ternaries(inner, stats);
+            }
+            Stmt::Switch { cases, default, .. } => {
+                for c in cases.iter_mut() {
+                    collapse_ternaries(&mut c.body, stats);
+                }
+                if let Some(d) = default {
+                    collapse_ternaries(d, stats);
+                }
+            }
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 collapse_ternaries(try_body, stats);
                 collapse_ternaries(catch_body, stats);
             }
@@ -1055,17 +1447,38 @@ fn collapse_ternaries(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
 
     let mut i = 0;
     while i < stmts.len() {
-        let transformed = if let Stmt::If { cond, then_body, else_body } = &stmts[i] {
+        let transformed = if let Stmt::If {
+            cond,
+            then_body,
+            else_body,
+        } = &stmts[i]
+        {
             if then_body.len() == 1 && else_body.as_ref().is_some_and(|e| e.len() == 1) {
-                if let (Stmt::Assign { target: t1, value: v1 }, Stmt::Assign { target: t2, value: v2 }) =
-                    (&then_body[0], &else_body.as_ref().unwrap()[0])
+                if let (
+                    Stmt::Assign {
+                        target: t1,
+                        value: v1,
+                    },
+                    Stmt::Assign {
+                        target: t2,
+                        value: v2,
+                    },
+                ) = (&then_body[0], &else_body.as_ref().unwrap()[0])
                 {
                     if t1 == t2 {
                         Some((cond.clone(), t1.clone(), v1.clone(), v2.clone()))
-                    } else { None }
-                } else { None }
-            } else { None }
-        } else { None };
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         if let Some((cond, target, v1, v2)) = transformed {
             stmts[i] = Stmt::Assign {
@@ -1093,15 +1506,19 @@ fn collect_goto_targets(stmts: &[Stmt], out: &mut HashSet<String>) {
             Stmt::Goto { label } => {
                 out.insert(label.clone());
             }
-            Stmt::If { then_body, else_body, .. } => {
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 collect_goto_targets(then_body, out);
                 if let Some(eb) = else_body {
                     collect_goto_targets(eb, out);
                 }
             }
-            Stmt::While { body, .. }
-            | Stmt::DoWhile { body, .. }
-            | Stmt::For { body, .. } => collect_goto_targets(body, out),
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } | Stmt::For { body, .. } => {
+                collect_goto_targets(body, out)
+            }
             Stmt::Block(inner) => collect_goto_targets(inner, out),
             Stmt::Switch { cases, default, .. } => {
                 for c in cases {
@@ -1111,7 +1528,11 @@ fn collect_goto_targets(stmts: &[Stmt], out: &mut HashSet<String>) {
                     collect_goto_targets(d, out);
                 }
             }
-            Stmt::TryCatch { try_body, catch_body, .. } => {
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 collect_goto_targets(try_body, out);
                 collect_goto_targets(catch_body, out);
             }
@@ -1133,25 +1554,37 @@ fn cleanup_gotos(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
     cleanup_gotos_with(stmts, stats, &targets);
 }
 
-fn cleanup_gotos_with(
-    stmts: &mut Vec<Stmt>,
-    stats: &mut SimplifyStats,
-    targets: &HashSet<String>,
-) {
+fn cleanup_gotos_with(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats, targets: &HashSet<String>) {
     for stmt in stmts.iter_mut() {
         match stmt {
-            Stmt::If { then_body, else_body, .. } => {
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 cleanup_gotos_with(then_body, stats, targets);
-                if let Some(eb) = else_body { cleanup_gotos_with(eb, stats, targets); }
+                if let Some(eb) = else_body {
+                    cleanup_gotos_with(eb, stats, targets);
+                }
             }
-            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => cleanup_gotos_with(body, stats, targets),
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+                cleanup_gotos_with(body, stats, targets)
+            }
             Stmt::For { body, .. } => cleanup_gotos_with(body, stats, targets),
             Stmt::Block(inner) => cleanup_gotos_with(inner, stats, targets),
             Stmt::Switch { cases, default, .. } => {
-                for c in cases.iter_mut() { cleanup_gotos_with(&mut c.body, stats, targets); }
-                if let Some(d) = default { cleanup_gotos_with(d, stats, targets); }
+                for c in cases.iter_mut() {
+                    cleanup_gotos_with(&mut c.body, stats, targets);
+                }
+                if let Some(d) = default {
+                    cleanup_gotos_with(d, stats, targets);
+                }
             }
-            Stmt::TryCatch { try_body, catch_body, .. } => {
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 cleanup_gotos_with(try_body, stats, targets);
                 cleanup_gotos_with(catch_body, stats, targets);
             }
@@ -1162,7 +1595,10 @@ fn cleanup_gotos_with(
     // Drop unreachable tail after a terminating statement.
     let mut drop_from: Option<usize> = None;
     for (idx, s) in stmts.iter().enumerate() {
-        if matches!(s, Stmt::Goto { .. } | Stmt::Return { .. } | Stmt::Break | Stmt::Continue) {
+        if matches!(
+            s,
+            Stmt::Goto { .. } | Stmt::Return { .. } | Stmt::Break | Stmt::Continue
+        ) {
             drop_from = Some(idx + 1);
             break;
         }
@@ -1206,6 +1642,61 @@ fn cleanup_gotos_with(
     let before = stmts.len();
     stmts.retain(|s| !matches!(s, Stmt::Label { name } if !targets.contains(name)));
     stats.unused_labels_removed += before - stmts.len();
+}
+
+// ─── Trailing control-flow cleanup ──────────────────────────────────────
+//
+// A `continue` as the very last statement of a loop body is redundant (the
+// back edge jumps to the header anyway), and a trailing `return;` in a void
+// function is pure noise. Both are trimmed recursively.
+
+fn trim_trailing_continue(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats, in_loop: bool) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+                trim_trailing_continue(body, stats, true)
+            }
+            Stmt::For { body, .. } => trim_trailing_continue(body, stats, true),
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                // A `continue` inside an `if` at the end of the loop body is
+                // NOT redundant (the other arm falls through differently).
+                trim_trailing_continue(then_body, stats, in_loop);
+                if let Some(eb) = else_body {
+                    trim_trailing_continue(eb, stats, in_loop);
+                }
+            }
+            Stmt::Block(inner) => trim_trailing_continue(inner, stats, in_loop),
+            Stmt::Switch { cases, default, .. } => {
+                for c in cases.iter_mut() {
+                    trim_trailing_continue(&mut c.body, stats, in_loop);
+                }
+                if let Some(d) = default {
+                    trim_trailing_continue(d, stats, in_loop);
+                }
+            }
+            _ => {}
+        }
+    }
+    if in_loop {
+        while matches!(stmts.last(), Some(Stmt::Continue)) {
+            stmts.pop();
+            stats.continue_trimmed += 1;
+        }
+    }
+}
+
+/// Trim a trailing bare `return;` from the function body only. Nested lists
+/// are left alone: a `return;` at the end of an `if` arm is an early exit,
+/// not noise.
+fn trim_trailing_void_return(stmts: &mut Vec<Stmt>, stats: &mut SimplifyStats) {
+    if matches!(stmts.last(), Some(Stmt::Return { value: None })) {
+        stmts.pop();
+        stats.void_returns_trimmed += 1;
+    }
 }
 
 // ─── Memory Update Fusion ───────────────────────────────────────────────
@@ -1311,15 +1802,17 @@ fn subst_stmt(stmt: &Stmt, map: &HashMap<String, Expr>) -> Stmt {
 pub fn fuse_memory_updates(stmts: &mut Vec<Stmt>) {
     for stmt in stmts.iter_mut() {
         match stmt {
-            Stmt::If { then_body, else_body, .. } => {
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 fuse_memory_updates(then_body);
                 if let Some(eb) = else_body {
                     fuse_memory_updates(eb);
                 }
             }
-            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
-                fuse_memory_updates(body)
-            }
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => fuse_memory_updates(body),
             Stmt::For { body, .. } => {
                 fuse_memory_updates(body);
             }
@@ -1332,7 +1825,11 @@ pub fn fuse_memory_updates(stmts: &mut Vec<Stmt>) {
                 }
             }
             Stmt::Block(inner) => fuse_memory_updates(inner),
-            Stmt::TryCatch { try_body, catch_body, .. } => {
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 fuse_memory_updates(try_body);
                 fuse_memory_updates(catch_body);
             }
@@ -1367,11 +1864,13 @@ fn fuse_memory_updates_level(stmts: &mut Vec<Stmt>) {
                     {
                         if *b != a {
                             if let Expr::Binary { op, lhs, rhs } = value {
-                                if is_fusable_op(*op) && **lhs == Expr::Var(a.clone())
-                                    && def_counts.get(b).copied().unwrap_or(0) == 1 {
-                                        j_op = Some((j, b.clone(), *op, (**rhs).clone()));
-                                        break;
-                                    }
+                                if is_fusable_op(*op)
+                                    && **lhs == Expr::Var(a.clone())
+                                    && def_counts.get(b).copied().unwrap_or(0) == 1
+                                {
+                                    j_op = Some((j, b.clone(), *op, (**rhs).clone()));
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1470,6 +1969,75 @@ fn fuse_memory_updates_level(stmts: &mut Vec<Stmt>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_trim_trailing_continue_and_void_return() {
+        // while body ending in `continue` → trimmed; void fn trailing `return;` → trimmed
+        let mut func = AstFunction {
+            name: "t".into(),
+            entry_address: 0,
+            params: vec![],
+            locals: vec![],
+            body: vec![Stmt::While {
+                cond: Expr::Binary {
+                    op: BinOp::Lt,
+                    lhs: Box::new(Expr::Var("i".into())),
+                    rhs: Box::new(Expr::IntLit(10)),
+                },
+                body: vec![
+                    Stmt::Expr(Expr::Call {
+                        func: "f".into(),
+                        args: vec![],
+                    }),
+                    Stmt::Continue,
+                ],
+            }],
+            return_type: freakre_ir::Ty::Void,
+        };
+        let stats = simplify_function_with_stats(&mut func);
+        assert_eq!(stats.continue_trimmed, 1, "{}", stats.tally());
+        assert_eq!(stats.void_returns_trimmed, 0);
+        assert_eq!(func.body.len(), 1);
+
+        // Top-level trailing `return;` in a void function
+        let mut func2 = AstFunction {
+            name: "t2".into(),
+            entry_address: 0,
+            params: vec![],
+            locals: vec![],
+            body: vec![
+                Stmt::Expr(Expr::Call {
+                    func: "g".into(),
+                    args: vec![],
+                }),
+                Stmt::Return { value: None },
+            ],
+            return_type: freakre_ir::Ty::Void,
+        };
+        let stats2 = simplify_function_with_stats(&mut func2);
+        assert_eq!(stats2.void_returns_trimmed, 1, "{}", stats2.tally());
+        assert_eq!(func2.body.len(), 1);
+
+        // Non-void return of value must be kept
+        let mut func3 = AstFunction {
+            name: "t3".into(),
+            entry_address: 0,
+            params: vec![],
+            locals: vec![],
+            body: vec![
+                Stmt::Expr(Expr::Call {
+                    func: "g".into(),
+                    args: vec![],
+                }),
+                Stmt::Return {
+                    value: Some(Expr::IntLit(1)),
+                },
+            ],
+            return_type: freakre_ir::Ty::i64(),
+        };
+        let _ = simplify_function_with_stats(&mut func3);
+        assert_eq!(func3.body.len(), 2);
+    }
 
     #[test]
     fn test_const_fold_add() {
@@ -1586,7 +2154,15 @@ mod tests {
 
         simplify_function(&mut func);
 
-        assert_eq!(func.body.len(), 2, "dead v0 definition must be removed: {:?}", func.body);
+        // The v0 def is consumed by the Deref store (copy-propagated into
+        // it), and the trailing bare `return;` is trimmed by pass 5c
+        // (void function) — only the store itself remains.
+        assert_eq!(
+            func.body.len(),
+            1,
+            "dead v0 definition must be removed: {:?}",
+            func.body
+        );
         match &func.body[0] {
             Stmt::Assign { target, value } => {
                 assert_eq!(value, &Expr::Var("rbp".into()));
@@ -1614,7 +2190,9 @@ mod tests {
             target: Expr::Deref(Box::new(Expr::Var("v0".into()))),
             value: Expr::Var("rbp".into()),
         });
-        func.body.push(Stmt::Return { value: Some(Expr::Var("v0".into())) });
+        func.body.push(Stmt::Return {
+            value: Some(Expr::Var("v0".into())),
+        });
 
         simplify_function(&mut func);
 
@@ -1629,7 +2207,10 @@ mod tests {
             other => panic!("expected Assign at index 1, got {:?}", other),
         }
         match &func.body[0] {
-            Stmt::Assign { target: Expr::Var(name), value } => {
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
                 assert_eq!(name, "v0");
                 assert_eq!(value, &rsp_minus_8(), "definition of v0 must survive");
             }
@@ -1655,7 +2236,10 @@ mod tests {
         let mut func = AstFunction::new("f");
         func.body.push(Stmt::Assign {
             target: Expr::Var("rax".into()),
-            value: Expr::Call { func: "sub_140001675".into(), args: vec![] },
+            value: Expr::Call {
+                func: "sub_140001675".into(),
+                args: vec![],
+            },
         });
         for _ in 0..3 {
             func.body.push(sp_add(8));
@@ -1668,7 +2252,9 @@ mod tests {
             target: Expr::Var("rsp".into()),
             value: Expr::Var("rbp".into()),
         });
-        func.body.push(Stmt::Return { value: Some(Expr::Var("rax".into())) });
+        func.body.push(Stmt::Return {
+            value: Some(Expr::Var("rax".into())),
+        });
 
         simplify_function(&mut func);
 
@@ -1709,9 +2295,17 @@ mod tests {
 
         simplify_function(&mut func);
 
-        assert_eq!(func.body.len(), 3, "only `rsp = rsp + 8` is removed");
+        // `rsp = rsp + 8` removed by stack-noise cleanup, trailing bare
+        // `return;` trimmed by pass 5c (void function) → two statements.
+        assert_eq!(func.body.len(), 2, "only `rsp = rsp + 8` is removed");
         assert!(
-            matches!(&func.body[0], Stmt::Assign { target: Expr::Deref(_), .. }),
+            matches!(
+                &func.body[0],
+                Stmt::Assign {
+                    target: Expr::Deref(_),
+                    ..
+                }
+            ),
             "the store through rsp must stay: {:?}",
             func.body[0]
         );
@@ -1794,7 +2388,9 @@ mod tests {
         });
         // Keep the nested assignment observable so generic DCE cannot eat it —
         // only the noise pass may remove things here.
-        func.body.push(Stmt::Return { value: Some(Expr::Var("rax".into())) });
+        func.body.push(Stmt::Return {
+            value: Some(Expr::Var("rax".into())),
+        });
         simplify_function(&mut func);
         match &func.body[0] {
             Stmt::While { body, .. } => {
@@ -1836,7 +2432,10 @@ mod lognot_pipeline_probe {
         let folded = f.body.iter().any(|stmt| {
             matches!(
                 stmt,
-                Stmt::If { cond: Expr::Binary { op: BinOp::Eq, .. }, .. }
+                Stmt::If {
+                    cond: Expr::Binary { op: BinOp::Eq, .. },
+                    ..
+                }
             )
         });
         assert!(folded, "cond should be Binary Eq after pipeline");
@@ -1876,10 +2475,7 @@ mod lognot_pipeline_probe {
         assert_eq!(body.len(), 2);
         match &body[1] {
             Stmt::Assign { target, value } => {
-                assert_eq!(
-                    target,
-                    &Expr::Deref(Box::new(Expr::Var("rbx".to_string())))
-                );
+                assert_eq!(target, &Expr::Deref(Box::new(Expr::Var("rbx".to_string()))));
                 assert_eq!(
                     value,
                     &Expr::Binary {

@@ -26,6 +26,19 @@ coff-parser = { path = "../coff-parser" }
 flat-binary = { path = "../flat-binary" }
 project-db = { path = "../project-db" }
 freakre-ir = { path = "../freakre-ir" }
+decompiler = { path = "../decompiler" }
+
+[[bin]]
+name = "smoke_pe_parser"
+path = "smoke_pe_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "smoke_decompiler_ir"
+path = "smoke_decompiler_ir.rs"
+test = false
+doc = false
 
 [[bin]]
 name = "fuzz_pe_parser"
@@ -108,5 +121,11 @@ doc = false
 [[bin]]
 name = "fuzz_ir_lifter"
 path = "fuzz_targets/fuzz_ir_lifter.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_decompiler_ir"
+path = "fuzz_targets/fuzz_decompiler_ir.rs"
 test = false
 doc = false

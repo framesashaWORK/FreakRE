@@ -17,7 +17,7 @@ use std::fmt;
 
 pub use ac::{AhoCorasick, EmptyPatternError};
 pub use prefilter::{plan_for, AltPrefix, PrefilterPlan};
-pub use regex::{Pattern, PatternError, compile};
+pub use regex::{compile, Pattern, PatternError};
 
 /// A match result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,11 +55,16 @@ pub struct AcMatch {
 impl AcSearcher {
     pub fn new(patterns: &[Vec<u8>]) -> Result<Self, EmptyPatternError> {
         let refs: Vec<&[u8]> = patterns.iter().map(|p| p.as_slice()).collect();
-        Ok(Self { inner: AhoCorasick::build(&refs)? })
+        Ok(Self {
+            inner: AhoCorasick::build(&refs)?,
+        })
     }
 
     /// Find all overlapping matches as a lazy iterator (O(1) memory).
-    pub fn find_overlapping<'a>(&'a self, haystack: &'a [u8]) -> impl Iterator<Item = AcMatch> + 'a {
+    pub fn find_overlapping<'a>(
+        &'a self,
+        haystack: &'a [u8],
+    ) -> impl Iterator<Item = AcMatch> + 'a {
         self.inner.iter_overlapping(haystack).map(|m| AcMatch {
             pattern_index: m.pattern_id,
             start: m.start,
@@ -125,7 +130,9 @@ fn build_prefilter(plan: &PrefilterPlan) -> Option<RegexPrefilter> {
     let refs: Vec<&[u8]> = uniq.iter().map(|v| v.as_slice()).collect();
     // Literals are guaranteed non-empty by the planner, so build cannot fail;
     // degrade to brute force if it ever did.
-    AhoCorasick::build(&refs).ok().map(|ac| RegexPrefilter { ac, owners })
+    AhoCorasick::build(&refs)
+        .ok()
+        .map(|ac| RegexPrefilter { ac, owners })
 }
 
 impl SafeRegex {
@@ -133,7 +140,11 @@ impl SafeRegex {
         let pattern = compile(pattern_str).map_err(|e| e.to_string())?;
         let plan = plan_for(pattern_str);
         let prefilter = build_prefilter(&plan);
-        Ok(Self { pattern, plan, prefilter })
+        Ok(Self {
+            pattern,
+            plan,
+            prefilter,
+        })
     }
 
     /// Static mandatory-literal analysis of this pattern's source.
@@ -232,7 +243,10 @@ fn prefiltered_matches_brute_force() {
         (r"a\*b", b"za*bz a b".to_vec()),
         ("\\nX", b"ok\nXno\nX".to_vec()),
         ("(cat|dog)s?", b"cats dogs cow".to_vec()),
-        ("MARKER.*END", b"junk MARKER mid END tail MARKER x END".to_vec()),
+        (
+            "MARKER.*END",
+            b"junk MARKER mid END tail MARKER x END".to_vec(),
+        ),
         ("miss_me", b"nothing here at all".to_vec()),
     ];
     for (src, data) in cases {
@@ -366,8 +380,15 @@ impl<'a> Iterator for BruteForceRegexMatches<'a> {
         let abs_start = self.pos + m.start;
         let abs_end = self.pos + m.end;
         // Advance past this match to avoid infinite loop on zero-width matches
-        self.pos = if abs_end > abs_start { abs_end } else { abs_start + 1 };
-        Some(RegexMatch { start: abs_start, end: abs_end })
+        self.pos = if abs_end > abs_start {
+            abs_end
+        } else {
+            abs_start + 1
+        };
+        Some(RegexMatch {
+            start: abs_start,
+            end: abs_end,
+        })
     }
 }
 

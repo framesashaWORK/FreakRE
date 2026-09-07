@@ -65,7 +65,10 @@ pub struct PrefilterPlan {
 
 impl PrefilterPlan {
     fn fallback() -> Self {
-        Self { alts: Vec::new(), usable: false }
+        Self {
+            alts: Vec::new(),
+            usable: false,
+        }
     }
 }
 
@@ -120,7 +123,9 @@ fn branch_prefixes(alt: &[u8]) -> Vec<(Vec<u8>, usize)> {
         let rest = &alt[close + 1..];
         // A quantifier on the group (`(a|b)+x`) or a non-nullable
         // remainder (`(cat|dog)x`) voids the guarantee: fall back.
-        if rest.first().is_some_and(|&c| matches!(c, b'*' | b'+' | b'?' | b'{'))
+        if rest
+            .first()
+            .is_some_and(|&c| matches!(c, b'*' | b'+' | b'?' | b'{'))
             || !rest_nullable(rest)
         {
             return Vec::new();
@@ -351,17 +356,15 @@ fn leading_literal(alt: &[u8]) -> Option<(Vec<u8>, usize)> {
             // offset 1). Any other leading class ends the run (conservative
             // fallback). An unterminated class is malformed (the engine
             // rejects it); treat as run end.
-            b'[' => {
-                match skip_closed_class(alt, p) {
-                    Some((end, true)) => {
-                        lead += 1;
-                        p = end;
-                        after_skip = true;
-                        continue;
-                    }
-                    _ => return Some((lit, lead)),
+            b'[' => match skip_closed_class(alt, p) {
+                Some((end, true)) => {
+                    lead += 1;
+                    p = end;
+                    after_skip = true;
+                    continue;
                 }
-            }
+                _ => return Some((lit, lead)),
+            },
             // Wildcard or group: stop, keeping what we have.
             b'.' | b'(' => return Some((lit, lead)),
             // Everything else (including `*+?{` in atom-start position,
@@ -388,7 +391,10 @@ fn inline_flag_body(b: &[u8]) -> Option<(usize, &[u8])> {
     if close == 0 {
         return None;
     }
-    if !body[..close].iter().all(|&c| c.is_ascii_alphabetic() || c == b'-') {
+    if !body[..close]
+        .iter()
+        .all(|&c| c.is_ascii_alphabetic() || c == b'-')
+    {
         return None;
     }
     Some((2 + close + 1, &body[..close]))

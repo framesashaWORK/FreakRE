@@ -65,12 +65,16 @@ impl Scanner {
         let mut intern_table: Vec<(String, String)> = Vec::new();
         let mut intern_lookup: HashMap<(String, String), u32> = HashMap::new();
         for rule in &rules {
-            for id in rule.text_patterns.keys()
+            for id in rule
+                .text_patterns
+                .keys()
                 .chain(rule.hex_patterns.keys())
                 .chain(rule.regex_patterns.keys())
             {
                 let key = (rule.name.clone(), id.clone());
-                if let std::collections::hash_map::Entry::Vacant(e) = intern_lookup.entry(key.clone()) {
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    intern_lookup.entry(key.clone())
+                {
                     let idx = intern_table.len() as u32;
                     intern_table.push(key);
                     e.insert(idx);
@@ -118,11 +122,17 @@ impl Scanner {
                     break;
                 }
                 let (ref rule_name, ref string_id) = self.ac_index_map[mat.pattern_index];
-                if let Some(&idx) = self.intern_lookup.get(&(rule_name.clone(), string_id.clone())) {
+                if let Some(&idx) = self
+                    .intern_lookup
+                    .get(&(rule_name.clone(), string_id.clone()))
+                {
                     if fullword_ids.contains(&idx) && !fullword_ok(data, mat.start, mat.len) {
                         continue;
                     }
-                    raw_matches_interned.entry(idx).or_default().push((mat.start, mat.len));
+                    raw_matches_interned
+                        .entry(idx)
+                        .or_default()
+                        .push((mat.start, mat.len));
                     collected += 1;
                 }
             }
@@ -138,11 +148,17 @@ impl Scanner {
                     break;
                 }
                 let (ref rule_name, ref string_id) = self.ac_lc_index_map[mat.pattern_index];
-                if let Some(&idx) = self.intern_lookup.get(&(rule_name.clone(), string_id.clone())) {
+                if let Some(&idx) = self
+                    .intern_lookup
+                    .get(&(rule_name.clone(), string_id.clone()))
+                {
                     if fullword_ids.contains(&idx) && !fullword_ok(data, mat.start, mat.len) {
                         continue;
                     }
-                    raw_matches_interned.entry(idx).or_default().push((mat.start, mat.len));
+                    raw_matches_interned
+                        .entry(idx)
+                        .or_default()
+                        .push((mat.start, mat.len));
                     collected += 1;
                 }
             }
@@ -160,11 +176,18 @@ impl Scanner {
                 // (mirrors the regex path's budget+1 detection below).
                 let found = scan_hex_pattern(data, hp, budget.saturating_add(1));
                 let overflow = found.len() > budget;
-                let kept = if overflow { &found[..budget] } else { &found[..] };
+                let kept = if overflow {
+                    &found[..budget]
+                } else {
+                    &found[..]
+                };
                 collected += kept.len();
                 if !kept.is_empty() {
                     if let Some(&idx) = self.intern_lookup.get(&(rule.name.clone(), id.clone())) {
-                        raw_matches_interned.entry(idx).or_default().extend(kept.iter().copied());
+                        raw_matches_interned
+                            .entry(idx)
+                            .or_default()
+                            .extend(kept.iter().copied());
                     }
                 }
                 if overflow {
@@ -190,7 +213,10 @@ impl Scanner {
                         break;
                     }
                     if let Some(&idx) = self.intern_lookup.get(&(rule.name.clone(), id.clone())) {
-                        raw_matches_interned.entry(idx).or_default().push((mat.start, mat.end - mat.start));
+                        raw_matches_interned
+                            .entry(idx)
+                            .or_default()
+                            .push((mat.start, mat.end - mat.start));
                     }
                 }
             }
@@ -232,8 +258,16 @@ impl Scanner {
                 .chain(rule.regex_patterns.keys())
                 .cloned()
                 .collect();
-            
-            if evaluate_condition(&rule.condition, &raw_matches, data.len(), data, entrypoint, &rule_string_ids, &rule.name) {
+
+            if evaluate_condition(
+                &rule.condition,
+                &raw_matches,
+                data.len(),
+                data,
+                entrypoint,
+                &rule_string_ids,
+                &rule.name,
+            ) {
                 matched_rules.push(rule.name.clone());
             }
         }
@@ -472,14 +506,52 @@ fn evaluate_condition(
     match cond {
         Condition::Bool(b) => *b,
         Condition::And(a, b) => {
-            evaluate_condition(a, matches, filesize, data, entrypoint, rule_string_ids, current_rule_name)
-                && evaluate_condition(b, matches, filesize, data, entrypoint, rule_string_ids, current_rule_name)
+            evaluate_condition(
+                a,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                rule_string_ids,
+                current_rule_name,
+            ) && evaluate_condition(
+                b,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                rule_string_ids,
+                current_rule_name,
+            )
         }
         Condition::Or(a, b) => {
-            evaluate_condition(a, matches, filesize, data, entrypoint, rule_string_ids, current_rule_name)
-                || evaluate_condition(b, matches, filesize, data, entrypoint, rule_string_ids, current_rule_name)
+            evaluate_condition(
+                a,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                rule_string_ids,
+                current_rule_name,
+            ) || evaluate_condition(
+                b,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                rule_string_ids,
+                current_rule_name,
+            )
         }
-        Condition::Not(c) => !evaluate_condition(c, matches, filesize, data, entrypoint, rule_string_ids, current_rule_name),
+        Condition::Not(c) => !evaluate_condition(
+            c,
+            matches,
+            filesize,
+            data,
+            entrypoint,
+            rule_string_ids,
+            current_rule_name,
+        ),
 
         Condition::StringMatch(id) => matches
             .iter()
@@ -499,9 +571,9 @@ fn evaluate_condition(
             let matched_count = rule_string_ids
                 .iter()
                 .filter(|sid| {
-                    matches
-                        .iter()
-                        .any(|((rn, s), locs)| rn == current_rule_name && s == *sid && !locs.is_empty())
+                    matches.iter().any(|((rn, s), locs)| {
+                        rn == current_rule_name && s == *sid && !locs.is_empty()
+                    })
                 })
                 .count();
             check_of_kind(kind, matched_count, total)
@@ -512,44 +584,76 @@ fn evaluate_condition(
             let matched_count = ids
                 .iter()
                 .filter(|id| {
-                    matches
-                        .iter()
-                        .any(|((rn, sid), locs)| rn == current_rule_name && sid == *id && !locs.is_empty())
+                    matches.iter().any(|((rn, sid), locs)| {
+                        rn == current_rule_name && sid == *id && !locs.is_empty()
+                    })
                 })
                 .count();
             check_of_kind(kind, matched_count, total)
         }
 
-        Condition::At(id, expected_offset) => matches
-            .iter()
-            .any(|((rn, sid), locs)| rn == current_rule_name && sid == id && locs.iter().any(|(off, _)| off == expected_offset)),
+        Condition::At(id, expected_offset) => matches.iter().any(|((rn, sid), locs)| {
+            rn == current_rule_name
+                && sid == id
+                && locs.iter().any(|(off, _)| off == expected_offset)
+        }),
 
         Condition::AtExpr(id, offset_expr) => {
-            let expected = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
-            matches
-                .iter()
-                .any(|((rn, sid), locs)| rn == current_rule_name && sid == id && locs.iter().any(|(off, _)| *off == expected))
+            let expected = eval_int_expr(
+                offset_expr,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                current_rule_name,
+            );
+            matches.iter().any(|((rn, sid), locs)| {
+                rn == current_rule_name && sid == id && locs.iter().any(|(off, _)| *off == expected)
+            })
         }
 
         Condition::In(id, start, end) => matches.iter().any(|((rn, sid), locs)| {
-            rn == current_rule_name && sid == id && locs.iter().any(|(off, _)| *off >= *start && *off <= *end)
+            rn == current_rule_name
+                && sid == id
+                && locs.iter().any(|(off, _)| *off >= *start && *off <= *end)
         }),
 
         Condition::InExpr(id, start_expr, end_expr) => {
-            let start = eval_int_expr(start_expr, matches, filesize, data, entrypoint, current_rule_name);
-            let end = eval_int_expr(end_expr, matches, filesize, data, entrypoint, current_rule_name);
+            let start = eval_int_expr(
+                start_expr,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                current_rule_name,
+            );
+            let end = eval_int_expr(
+                end_expr,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                current_rule_name,
+            );
             matches.iter().any(|((rn, sid), locs)| {
-                rn == current_rule_name && sid == id && locs.iter().any(|(off, _)| *off >= start && *off <= end)
+                rn == current_rule_name
+                    && sid == id
+                    && locs.iter().any(|(off, _)| *off >= start && *off <= end)
             })
         }
 
         Condition::Contains(id, substr) => {
             let sub = substr.as_bytes();
-            if sub.is_empty() { return true; }
+            if sub.is_empty() {
+                return true;
+            }
             matches.iter().any(|((rn, sid), locs)| {
-                rn == current_rule_name && sid == id && locs.iter().any(|(off, len)| {
-                    *off + *len <= data.len() && data[*off..*off + *len].windows(sub.len()).any(|w| w == sub)
-                })
+                rn == current_rule_name
+                    && sid == id
+                    && locs.iter().any(|(off, len)| {
+                        *off + *len <= data.len()
+                            && data[*off..*off + *len].windows(sub.len()).any(|w| w == sub)
+                    })
             })
         }
 
@@ -562,9 +666,11 @@ fn evaluate_condition(
         Condition::Eq(id, value) => {
             let val_bytes = value.as_bytes();
             matches.iter().any(|((rn, sid), locs)| {
-                rn == current_rule_name && sid == id && locs.iter().any(|(off, len)| {
-                    *off + *len <= data.len() && &data[*off..*off + *len] == val_bytes
-                })
+                rn == current_rule_name
+                    && sid == id
+                    && locs.iter().any(|(off, len)| {
+                        *off + *len <= data.len() && &data[*off..*off + *len] == val_bytes
+                    })
             })
         }
 
@@ -594,13 +700,9 @@ fn evaluate_condition(
             }
         }
 
-        Condition::PeImports(dll_name) => {
-            eval_pe_imports(data, dll_name)
-        }
+        Condition::PeImports(dll_name) => eval_pe_imports(data, dll_name),
 
-        Condition::PeSections(sec_name) => {
-            eval_pe_section_exists(data, sec_name)
-        }
+        Condition::PeSections(sec_name) => eval_pe_section_exists(data, sec_name),
     }
 }
 
@@ -627,20 +729,43 @@ fn eval_int_expr(
         }
         IntExpr::Entrypoint | IntExpr::Offset => entrypoint,
         IntExpr::Uint8(offset_expr) => {
-            let off = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
+            let off = eval_int_expr(
+                offset_expr,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                current_rule_name,
+            );
             data.get(off).map(|&b| b as usize).unwrap_or(0)
         }
         IntExpr::Uint16(offset_expr) => {
-            let off = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
-            if off + 2 <= data.len() {
+            let off = eval_int_expr(
+                offset_expr,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                current_rule_name,
+            );
+            // NB: `off` is rule-controlled (wrapping arithmetic), so plain
+            // `off + 2` could overflow/wrap past the guard — use checked_add.
+            if off.checked_add(2).is_some_and(|end| end <= data.len()) {
                 u16::from_le_bytes([data[off], data[off + 1]]) as usize
             } else {
                 0
             }
         }
         IntExpr::Uint32(offset_expr) => {
-            let off = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
-            if off + 4 <= data.len() {
+            let off = eval_int_expr(
+                offset_expr,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                current_rule_name,
+            );
+            if off.checked_add(4).is_some_and(|end| end <= data.len()) {
                 u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
                     as usize
             } else {
@@ -648,21 +773,45 @@ fn eval_int_expr(
             }
         }
         IntExpr::Int8(offset_expr) => {
-            let off = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
-            data.get(off).map(|&b| b as i8 as isize as usize).unwrap_or(0)
+            let off = eval_int_expr(
+                offset_expr,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                current_rule_name,
+            );
+            data.get(off)
+                .map(|&b| b as i8 as isize as usize)
+                .unwrap_or(0)
         }
         IntExpr::Int16(offset_expr) => {
-            let off = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
-            if off + 2 <= data.len() {
+            let off = eval_int_expr(
+                offset_expr,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                current_rule_name,
+            );
+            if off.checked_add(2).is_some_and(|end| end <= data.len()) {
                 i16::from_le_bytes([data[off], data[off + 1]]) as isize as usize
             } else {
                 0
             }
         }
         IntExpr::Int32(offset_expr) => {
-            let off = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
-            if off + 4 <= data.len() {
-                i32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]) as isize as usize
+            let off = eval_int_expr(
+                offset_expr,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                current_rule_name,
+            );
+            if off.checked_add(4).is_some_and(|end| end <= data.len()) {
+                i32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+                    as isize as usize
             } else {
                 0
             }
@@ -677,10 +826,31 @@ fn eval_int_expr(
                 .unwrap_or(0)
         }
         IntExpr::MathHash(offset_expr, len_expr) => {
-            let off = eval_int_expr(offset_expr, matches, filesize, data, entrypoint, current_rule_name);
-            let len = eval_int_expr(len_expr, matches, filesize, data, entrypoint, current_rule_name);
-            let end = (off + len).min(data.len());
-            if off >= end { return 0; }
+            let off = eval_int_expr(
+                offset_expr,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                current_rule_name,
+            );
+            let len = eval_int_expr(
+                len_expr,
+                matches,
+                filesize,
+                data,
+                entrypoint,
+                current_rule_name,
+            );
+            // `off`/`len` are rule-controlled: on overflow clamp to EOF so
+            // the `off >= end` guard below returns 0 instead of panicking.
+            let end = off
+                .checked_add(len)
+                .map(|e| e.min(data.len()))
+                .unwrap_or(data.len());
+            if off >= end {
+                return 0;
+            }
             // Simple FNV-1a hash
             let mut hash: u32 = 0x811c9dc5;
             for &b in &data[off..end] {
@@ -711,90 +881,156 @@ fn eval_int_expr(
             // panicking on hostile rules.
             la.checked_div(rb).unwrap_or(0)
         }
-        IntExpr::Paren(inner) => {
-            eval_int_expr(inner, matches, filesize, data, entrypoint, current_rule_name)
-        }
-        IntExpr::PeNumberOfSections => {
-            eval_pe_number_of_sections(data)
-        }
+        IntExpr::Paren(inner) => eval_int_expr(
+            inner,
+            matches,
+            filesize,
+            data,
+            entrypoint,
+            current_rule_name,
+        ),
+        IntExpr::PeNumberOfSections => eval_pe_number_of_sections(data),
     }
 }
 
 // ─── PE module helpers ─────────────────────────────────────
 
 fn eval_pe_number_of_sections(data: &[u8]) -> usize {
-    if data.len() < 64 || !data.starts_with(b"MZ") { return 0; }
+    if data.len() < 64 || !data.starts_with(b"MZ") {
+        return 0;
+    }
     let pe_off = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
-    if pe_off + 8 > data.len() || &data[pe_off..pe_off + 4] != b"PE\0\0" { return 0; }
+    if pe_off + 8 > data.len() || &data[pe_off..pe_off + 4] != b"PE\0\0" {
+        return 0;
+    }
     // NumberOfSections is at COFF+2 = pe_off+4+2 = pe_off+6
     u16::from_le_bytes([data[pe_off + 6], data[pe_off + 7]]) as usize
 }
 
 fn eval_pe_imports(data: &[u8], dll_name: &str) -> bool {
-    if data.len() < 64 || !data.starts_with(b"MZ") { return false; }
+    if data.len() < 64 || !data.starts_with(b"MZ") {
+        return false;
+    }
     let pe_off = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
-    if pe_off + 24 > data.len() || &data[pe_off..pe_off + 4] != b"PE\0\0" { return false; }
+    if pe_off + 24 > data.len() || &data[pe_off..pe_off + 4] != b"PE\0\0" {
+        return false;
+    }
     let opt_off = pe_off + 24;
-    if opt_off + 2 > data.len() { return false; }
+    if opt_off + 2 > data.len() {
+        return false;
+    }
     let magic = u16::from_le_bytes([data[opt_off], data[opt_off + 1]]);
     // Data directory: PE32 starts at opt+96, PE32+ at opt+112; import is index 1 (+8)
-    let import_rva_off = if magic == 0x20b { opt_off + 112 + 8 } else { opt_off + 96 + 8 };
-    if import_rva_off + 8 > data.len() { return false; }
+    let import_rva_off = if magic == 0x20b {
+        opt_off + 112 + 8
+    } else {
+        opt_off + 96 + 8
+    };
+    if import_rva_off + 8 > data.len() {
+        return false;
+    }
     let import_rva = u32::from_le_bytes([
-        data[import_rva_off], data[import_rva_off + 1],
-        data[import_rva_off + 2], data[import_rva_off + 3],
+        data[import_rva_off],
+        data[import_rva_off + 1],
+        data[import_rva_off + 2],
+        data[import_rva_off + 3],
     ]);
-    if import_rva == 0 { return false; }
+    if import_rva == 0 {
+        return false;
+    }
     // Find section containing import RVA
     let num_sections_off = pe_off + 6;
-    if num_sections_off + 2 > data.len() { return false; }
-    let num_sections = u16::from_le_bytes([data[num_sections_off], data[num_sections_off + 1]]).min(96);
+    if num_sections_off + 2 > data.len() {
+        return false;
+    }
+    let num_sections =
+        u16::from_le_bytes([data[num_sections_off], data[num_sections_off + 1]]).min(96);
     // SizeOfOptionalHeader at COFF+16 = pe_off+4+16 = pe_off+20
     let size_opt_off = pe_off + 20;
-    if size_opt_off + 2 > data.len() { return false; }
+    if size_opt_off + 2 > data.len() {
+        return false;
+    }
     let size_opt = u16::from_le_bytes([data[size_opt_off], data[size_opt_off + 1]]) as usize;
     let sec_table = opt_off + size_opt;
     let dll_lower = dll_name.to_lowercase();
     for i in 0..num_sections {
         let sec_off = sec_table + i as usize * 40;
-        if sec_off + 40 > data.len() { break; }
+        if sec_off + 40 > data.len() {
+            break;
+        }
         let virt_addr = u32::from_le_bytes([
-            data[sec_off + 12], data[sec_off + 13], data[sec_off + 14], data[sec_off + 15],
+            data[sec_off + 12],
+            data[sec_off + 13],
+            data[sec_off + 14],
+            data[sec_off + 15],
         ]);
         let raw_size = u32::from_le_bytes([
-            data[sec_off + 16], data[sec_off + 17], data[sec_off + 18], data[sec_off + 19],
+            data[sec_off + 16],
+            data[sec_off + 17],
+            data[sec_off + 18],
+            data[sec_off + 19],
         ]);
         let raw_ptr = u32::from_le_bytes([
-            data[sec_off + 20], data[sec_off + 21], data[sec_off + 22], data[sec_off + 23],
+            data[sec_off + 20],
+            data[sec_off + 21],
+            data[sec_off + 22],
+            data[sec_off + 23],
         ]);
-        if import_rva >= virt_addr && import_rva < virt_addr + raw_size {
-            let file_off = raw_ptr as usize + (import_rva - virt_addr) as usize;
+        // NB: `virt_addr + raw_size` can overflow u32 on hostile input —
+        // compare via subtraction instead. `file_off` is checked so a
+        // crafted raw_ptr can never slice out of bounds.
+        if import_rva >= virt_addr && import_rva - virt_addr < raw_size {
+            let delta = (import_rva - virt_addr) as usize;
+            let Some(file_off) = (raw_ptr as usize).checked_add(delta) else {
+                return false;
+            };
+            let end = file_off
+                .checked_add(raw_size as usize)
+                .map(|e| e.min(data.len()))
+                .unwrap_or(data.len());
+            if file_off > end {
+                return false;
+            }
+            if dll_lower.is_empty() {
+                // Mirror Condition::Contains: empty substring matches.
+                return true;
+            }
             // Scan import table for DLL name
-            let end = (file_off + raw_size as usize).min(data.len());
             let chunk = &data[file_off..end];
-            return chunk.windows(dll_lower.len()).any(|w| {
-                w.eq_ignore_ascii_case(dll_lower.as_bytes())
-            });
+            return chunk
+                .windows(dll_lower.len())
+                .any(|w| w.eq_ignore_ascii_case(dll_lower.as_bytes()));
         }
     }
     false
 }
 
 fn eval_pe_section_exists(data: &[u8], sec_name: &str) -> bool {
-    if data.len() < 64 || !data.starts_with(b"MZ") { return false; }
+    if data.len() < 64 || !data.starts_with(b"MZ") {
+        return false;
+    }
     let pe_off = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
-    if pe_off + 24 > data.len() || &data[pe_off..pe_off + 4] != b"PE\0\0" { return false; }
+    if pe_off + 24 > data.len() || &data[pe_off..pe_off + 4] != b"PE\0\0" {
+        return false;
+    }
     let opt_off = pe_off + 24;
     let num_sections_off = pe_off + 6;
-    if num_sections_off + 2 > data.len() { return false; }
-    let num_sections = u16::from_le_bytes([data[num_sections_off], data[num_sections_off + 1]]).min(96);
+    if num_sections_off + 2 > data.len() {
+        return false;
+    }
+    let num_sections =
+        u16::from_le_bytes([data[num_sections_off], data[num_sections_off + 1]]).min(96);
     let size_opt_off = pe_off + 20;
-    if size_opt_off + 2 > data.len() { return false; }
+    if size_opt_off + 2 > data.len() {
+        return false;
+    }
     let size_opt = u16::from_le_bytes([data[size_opt_off], data[size_opt_off + 1]]) as usize;
     let sec_table = opt_off + size_opt;
     for i in 0..num_sections {
         let sec_off = sec_table + i as usize * 40;
-        if sec_off + 40 > data.len() { break; }
+        if sec_off + 40 > data.len() {
+            break;
+        }
         let name_bytes = &data[sec_off..sec_off + 8];
         let name_str = std::str::from_utf8(name_bytes)
             .unwrap_or("")
@@ -878,7 +1114,11 @@ mod tests {
         let result = scanner.scan(&data);
         assert!(result.matched_rules.contains(&"xe".to_string()));
         assert_eq!(
-            result.matches.iter().find(|m| m.string_id == "$s").map(|m| m.offset),
+            result
+                .matches
+                .iter()
+                .find(|m| m.string_id == "$s")
+                .map(|m| m.offset),
             Some(1)
         );
     }
@@ -955,7 +1195,10 @@ mod tests {
             }
             "#,
         );
-        assert!(scanner.scan(b"the cat sat").matched_rules.contains(&"fw_test".to_string()));
+        assert!(scanner
+            .scan(b"the cat sat")
+            .matched_rules
+            .contains(&"fw_test".to_string()));
         assert!(scanner.scan(b"concatenate").matched_rules.is_empty());
         assert!(scanner.scan(b"scattered").matched_rules.is_empty());
     }
@@ -1092,15 +1335,15 @@ mod tests {
         let ep_off = 0xA8;
         data[ep_off] = 0x00;
         data[ep_off + 1] = 0x10; // RVA = 0x1000
-        // Section header starts at 0x80 + 24 + 96 = 0xF8
+                                 // Section header starts at 0x80 + 24 + 96 = 0xF8
         let sec_off = 0xF8;
         // VirtualAddress at sec_off + 12
         data[sec_off + 12] = 0x00;
         data[sec_off + 13] = 0x10; // VA = 0x1000
-        // SizeOfRawData at sec_off + 16
+                                   // SizeOfRawData at sec_off + 16
         data[sec_off + 16] = 0x00;
         data[sec_off + 17] = 0x02; // 0x200
-        // PointerToRawData at sec_off + 20
+                                   // PointerToRawData at sec_off + 20
         data[sec_off + 20] = 0x00;
         data[sec_off + 21] = 0x02; // 0x200
 
@@ -1183,9 +1426,18 @@ mod tests {
             }
             "#,
         );
-        assert!(scanner.scan(b"\x4D\x90").matched_rules.contains(&"alt_test".to_string()));
-        assert!(scanner.scan(b"\x5A\xCC").matched_rules.contains(&"alt_test".to_string()));
-        assert!(scanner.scan(b"\x4D\xCC").matched_rules.contains(&"alt_test".to_string()));
+        assert!(scanner
+            .scan(b"\x4D\x90")
+            .matched_rules
+            .contains(&"alt_test".to_string()));
+        assert!(scanner
+            .scan(b"\x5A\xCC")
+            .matched_rules
+            .contains(&"alt_test".to_string()));
+        assert!(scanner
+            .scan(b"\x4D\xCC")
+            .matched_rules
+            .contains(&"alt_test".to_string()));
         assert!(scanner.scan(b"\x4D\x91").matched_rules.is_empty());
     }
 
@@ -1202,12 +1454,18 @@ mod tests {
             "#,
         );
         // Exactly 0 bytes skip
-        assert!(scanner.scan(b"\x4D\x5A\x45\x46").matched_rules.contains(&"jump_test".to_string()));
+        assert!(scanner
+            .scan(b"\x4D\x5A\x45\x46")
+            .matched_rules
+            .contains(&"jump_test".to_string()));
         // 5 bytes skip
         let mut data = vec![0x4D, 0x5A];
         data.extend_from_slice(&[0x00; 5]);
         data.extend_from_slice(&[0x45, 0x46]);
-        assert!(scanner.scan(&data).matched_rules.contains(&"jump_test".to_string()));
+        assert!(scanner
+            .scan(&data)
+            .matched_rules
+            .contains(&"jump_test".to_string()));
         // 11 bytes skip — too many
         let mut data2 = vec![0x4D, 0x5A];
         data2.extend_from_slice(&[0x00; 11]);
@@ -1227,8 +1485,14 @@ mod tests {
             }
             "#,
         );
-        assert!(scanner.scan(b"\x4D\x5A").matched_rules.contains(&"alt_wc".to_string()));
-        assert!(scanner.scan(b"\xFF\x5A").matched_rules.contains(&"alt_wc".to_string()));
+        assert!(scanner
+            .scan(b"\x4D\x5A")
+            .matched_rules
+            .contains(&"alt_wc".to_string()));
+        assert!(scanner
+            .scan(b"\xFF\x5A")
+            .matched_rules
+            .contains(&"alt_wc".to_string()));
     }
 
     #[test]
@@ -1244,13 +1508,22 @@ mod tests {
             "#,
         );
         // Original (key=0)
-        assert!(scanner.scan(b"secret").matched_rules.contains(&"xor_test".to_string()));
+        assert!(scanner
+            .scan(b"secret")
+            .matched_rules
+            .contains(&"xor_test".to_string()));
         // XORed with key=0x42
         let xored: Vec<u8> = b"secret".iter().map(|b| b ^ 0x42).collect();
-        assert!(scanner.scan(&xored).matched_rules.contains(&"xor_test".to_string()));
+        assert!(scanner
+            .scan(&xored)
+            .matched_rules
+            .contains(&"xor_test".to_string()));
         // XORed with key=0xFF
         let xored_ff: Vec<u8> = b"secret".iter().map(|b| b ^ 0xFF).collect();
-        assert!(scanner.scan(&xored_ff).matched_rules.contains(&"xor_test".to_string()));
+        assert!(scanner
+            .scan(&xored_ff)
+            .matched_rules
+            .contains(&"xor_test".to_string()));
     }
 
     #[test]
@@ -1265,7 +1538,10 @@ mod tests {
             }
             "#,
         );
-        assert!(scanner.scan(b"the hello world data").matched_rules.contains(&"contains_test".to_string()));
+        assert!(scanner
+            .scan(b"the hello world data")
+            .matched_rules
+            .contains(&"contains_test".to_string()));
         assert!(scanner.scan(b"no match here").matched_rules.is_empty());
     }
 
@@ -1273,11 +1549,16 @@ mod tests {
     fn test_pe_number_of_sections() {
         // Build a minimal PE with 3 sections
         let mut data = vec![0u8; 1024];
-        data[0] = b'M'; data[1] = b'Z';
+        data[0] = b'M';
+        data[1] = b'Z';
         data[60] = 0x80;
-        data[0x80] = b'P'; data[0x81] = b'E'; data[0x82] = 0; data[0x83] = 0;
+        data[0x80] = b'P';
+        data[0x81] = b'E';
+        data[0x82] = 0;
+        data[0x83] = 0;
         // Number of sections at COFF+2 = 0x84+2 = 0x86
-        data[0x86] = 3; data[0x87] = 0;
+        data[0x86] = 3;
+        data[0x87] = 0;
 
         let scanner = make_scanner(
             r#"
@@ -1287,30 +1568,43 @@ mod tests {
             }
             "#,
         );
-        assert!(scanner.scan(&data).matched_rules.contains(&"pe_sections".to_string()));
+        assert!(scanner
+            .scan(&data)
+            .matched_rules
+            .contains(&"pe_sections".to_string()));
     }
 
     #[test]
     fn test_pe_imports() {
         let mut data = vec![0u8; 2048];
-        data[0] = b'M'; data[1] = b'Z';
+        data[0] = b'M';
+        data[1] = b'Z';
         data[60] = 0x80;
-        data[0x80] = b'P'; data[0x81] = b'E'; data[0x82] = 0; data[0x83] = 0;
+        data[0x80] = b'P';
+        data[0x81] = b'E';
+        data[0x82] = 0;
+        data[0x83] = 0;
         // PE32 magic
-        data[0x80 + 24] = 0x0b; data[0x80 + 25] = 0x01;
+        data[0x80 + 24] = 0x0b;
+        data[0x80 + 25] = 0x01;
         // 1 section
         data[0x86] = 1;
         // SizeOfOptionalHeader at COFF+16 = 0x84+16 = 0x94
         // Set to 96 + 16*8 = 224 (standard PE32 with 16 data dirs)
-        data[0x94] = 224; data[0x95] = 0;
+        data[0x94] = 224;
+        data[0x95] = 0;
         // Import dir RVA at PE32 opt+96+8 = 0x98+104 = 0x100
-        data[0x100] = 0x00; data[0x101] = 0x10; // RVA = 0x1000
-        // Section table starts at opt + SizeOfOptionalHeader = 0x98 + 224 = 0x178
+        data[0x100] = 0x00;
+        data[0x101] = 0x10; // RVA = 0x1000
+                            // Section table starts at opt + SizeOfOptionalHeader = 0x98 + 224 = 0x178
         let sec = 0x178;
-        data[sec + 12] = 0x00; data[sec + 13] = 0x10; // VA = 0x1000
-        data[sec + 16] = 0x00; data[sec + 17] = 0x02; // raw_size = 0x200
-        data[sec + 20] = 0x00; data[sec + 21] = 0x02; // raw_ptr = 0x200
-        // Write "kernel32.dll" in the import section at file offset 0x200
+        data[sec + 12] = 0x00;
+        data[sec + 13] = 0x10; // VA = 0x1000
+        data[sec + 16] = 0x00;
+        data[sec + 17] = 0x02; // raw_size = 0x200
+        data[sec + 20] = 0x00;
+        data[sec + 21] = 0x02; // raw_ptr = 0x200
+                               // Write "kernel32.dll" in the import section at file offset 0x200
         data[0x200..0x200 + 13].copy_from_slice(b"kernel32.dll\0");
 
         let scanner = make_scanner(
@@ -1321,18 +1615,26 @@ mod tests {
             }
             "#,
         );
-        assert!(scanner.scan(&data).matched_rules.contains(&"pe_imports_test".to_string()));
+        assert!(scanner
+            .scan(&data)
+            .matched_rules
+            .contains(&"pe_imports_test".to_string()));
     }
 
     #[test]
     fn test_pe_sections_exists() {
         let mut data = vec![0u8; 1024];
-        data[0] = b'M'; data[1] = b'Z';
+        data[0] = b'M';
+        data[1] = b'Z';
         data[60] = 0x80;
-        data[0x80] = b'P'; data[0x81] = b'E'; data[0x82] = 0; data[0x83] = 0;
+        data[0x80] = b'P';
+        data[0x81] = b'E';
+        data[0x82] = 0;
+        data[0x83] = 0;
         data[0x86] = 1; // 1 section
-        // SizeOfOptionalHeader at COFF+16 = 0x94
-        data[0x94] = 224; data[0x95] = 0;
+                        // SizeOfOptionalHeader at COFF+16 = 0x94
+        data[0x94] = 224;
+        data[0x95] = 0;
         // Section table at opt + 224 = 0x98 + 224 = 0x178
         let sec = 0x178;
         data[sec..sec + 8].copy_from_slice(b".text\0\0\0");
@@ -1345,7 +1647,10 @@ mod tests {
             }
             "#,
         );
-        assert!(scanner.scan(&data).matched_rules.contains(&"sec_exists".to_string()));
+        assert!(scanner
+            .scan(&data)
+            .matched_rules
+            .contains(&"sec_exists".to_string()));
     }
 
     #[test]
@@ -1359,7 +1664,10 @@ mod tests {
             "#,
         );
         // -1 as i16 LE = 0xFF 0xFF
-        assert!(scanner.scan(&[0xFF, 0xFF]).matched_rules.contains(&"int16_test".to_string()));
+        assert!(scanner
+            .scan(&[0xFF, 0xFF])
+            .matched_rules
+            .contains(&"int16_test".to_string()));
         // 1 as i16 LE = 0x01 0x00
         assert!(scanner.scan(&[0x01, 0x00]).matched_rules.is_empty());
     }
@@ -1376,7 +1684,10 @@ mod tests {
         );
         // -100 as i32 LE
         let val = (-100i32).to_le_bytes();
-        assert!(scanner.scan(&val).matched_rules.contains(&"int32_test".to_string()));
+        assert!(scanner
+            .scan(&val)
+            .matched_rules
+            .contains(&"int32_test".to_string()));
     }
 
     #[test]
@@ -1392,7 +1703,10 @@ mod tests {
             "#,
         );
         // offset == entrypoint == 0 for non-PE, so MZ at 0 matches
-        assert!(scanner.scan(b"\x4D\x5A\x90\x00").matched_rules.contains(&"offset_test".to_string()));
+        assert!(scanner
+            .scan(b"\x4D\x5A\x90\x00")
+            .matched_rules
+            .contains(&"offset_test".to_string()));
     }
 
     #[test]
@@ -1405,7 +1719,10 @@ mod tests {
             }
             "#,
         );
-        assert!(scanner.scan(b"ABCD").matched_rules.contains(&"hash_test".to_string()));
+        assert!(scanner
+            .scan(b"ABCD")
+            .matched_rules
+            .contains(&"hash_test".to_string()));
     }
 
     #[test]
@@ -1422,7 +1739,10 @@ mod tests {
         );
         let mut data = vec![0u8; 20];
         data[5..10].copy_from_slice(b"hello");
-        assert!(scanner.scan(&data).matched_rules.contains(&"at_mod_test".to_string()));
+        assert!(scanner
+            .scan(&data)
+            .matched_rules
+            .contains(&"at_mod_test".to_string()));
     }
 
     #[test]
@@ -1439,7 +1759,10 @@ mod tests {
         );
         let mut data = vec![0u8; 20];
         data[5..10].copy_from_slice(b"hello");
-        assert!(scanner.scan(&data).matched_rules.contains(&"in_mod_test".to_string()));
+        assert!(scanner
+            .scan(&data)
+            .matched_rules
+            .contains(&"in_mod_test".to_string()));
     }
 
     #[test]
@@ -1453,7 +1776,10 @@ mod tests {
             "#,
         );
         // 4 + 4 = 8, so need 8-byte data
-        assert!(scanner.scan(b"ABCDABCD").matched_rules.contains(&"arith_test".to_string()));
+        assert!(scanner
+            .scan(b"ABCDABCD")
+            .matched_rules
+            .contains(&"arith_test".to_string()));
         assert!(scanner.scan(b"ABCDEF").matched_rules.is_empty());
     }
 
@@ -1468,6 +1794,101 @@ mod tests {
             "#,
         );
         // offset == 0 for non-PE
-        assert!(scanner.scan(b"test").matched_rules.contains(&"offset_int".to_string()));
+        assert!(scanner
+            .scan(b"test")
+            .matched_rules
+            .contains(&"offset_int".to_string()));
+    }
+
+    #[test]
+    fn test_hostile_uint_offset_no_panic() {
+        // Rule-controlled offsets use wrapping arithmetic, so `off` can be
+        // usize::MAX. The old `off + N <= len` guard wrapped past the check
+        // and panicked on indexing in release builds.
+        let scanner = make_scanner(
+            r#"
+            rule hostile_off {
+                condition:
+                    uint16(18446744073709551615) == 0 and
+                    uint32(18446744073709551615) == 0 and
+                    int16(18446744073709551615) == 0 and
+                    int32(18446744073709551615) == 0
+            }
+            "#,
+        );
+        // All out-of-range reads yield 0 instead of panicking.
+        assert!(scanner
+            .scan(b"ABCD")
+            .matched_rules
+            .contains(&"hostile_off".to_string()));
+    }
+
+    #[test]
+    fn test_hostile_math_hash_no_panic() {
+        let scanner = make_scanner(
+            r#"
+            rule hostile_hash {
+                condition:
+                    math.hash(18446744073709551615, 8) == 0
+            }
+            "#,
+        );
+        assert!(scanner
+            .scan(b"ABCD")
+            .matched_rules
+            .contains(&"hostile_hash".to_string()));
+    }
+
+    #[test]
+    fn test_hostile_pe_imports_no_panic() {
+        // Section maps import RVA into file offset 0xFFFFFF00, far beyond EOF.
+        // Must return false, not panic on slicing.
+        let mut data = vec![0u8; 2048];
+        data[0] = b'M';
+        data[1] = b'Z';
+        data[60] = 0x80;
+        data[0x80] = b'P';
+        data[0x81] = b'E';
+        data[0x82] = 0;
+        data[0x83] = 0;
+        data[0x80 + 24] = 0x0b;
+        data[0x80 + 25] = 0x01;
+        data[0x86] = 1; // 1 section
+        data[0x94] = 224;
+        data[0x95] = 0;
+        data[0x100] = 0x00;
+        data[0x101] = 0x10; // import RVA = 0x1000
+        let sec = 0x178;
+        data[sec + 12] = 0x00;
+        data[sec + 13] = 0x10; // VA = 0x1000
+        data[sec + 16] = 0x00;
+        data[sec + 17] = 0x02; // raw_size = 0x200
+        data[sec + 20] = 0x00;
+        data[sec + 21] = 0x00;
+        data[sec + 22] = 0xFF;
+        data[sec + 23] = 0xFF; // raw_ptr = 0xFFFF0000
+        let scanner = make_scanner(
+            r#"
+            rule hostile_imports {
+                condition:
+                    pe.imports("kernel32.dll")
+            }
+            "#,
+        );
+        assert!(scanner.scan(&data).matched_rules.is_empty());
+    }
+
+    #[test]
+    fn test_pe_imports_empty_dll_no_panic() {
+        // Empty DLL name used to panic in `windows(0)`; mirrors Contains.
+        let scanner = make_scanner(
+            r#"
+            rule empty_imports {
+                condition:
+                    pe.imports("")
+            }
+            "#,
+        );
+        let _ = scanner.scan(b"MZ fake");
     }
 }

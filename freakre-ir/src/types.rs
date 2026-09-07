@@ -38,11 +38,13 @@ impl Ty {
             Ty::Bool => Some(1),
             Ty::UInt(n) | Ty::Int(n) | Ty::Float(n) => Some(*n),
             Ty::Ptr(_) => Some(64), // Default 64-bit; use size_bits_with_arch for accuracy
-            Ty::Array(n, inner) => inner.size_bits().map(|s| s * n),
+            // checked: hostile `Array(u32::MAX, …)` / giant structs must yield
+            // None, not a debug overflow panic.
+            Ty::Array(n, inner) => inner.size_bits()?.checked_mul(*n),
             Ty::Struct(fields) => {
                 let mut total = 0u32;
                 for (_, ty) in fields {
-                    total += ty.size_bits()?;
+                    total = total.checked_add(ty.size_bits()?)?;
                 }
                 Some(total)
             }
@@ -95,17 +97,39 @@ impl Ty {
     }
 
     /// Common type widths for machine code analysis.
-    pub fn i8() -> Self { Ty::Int(8) }
-    pub fn i16() -> Self { Ty::Int(16) }
-    pub fn i32() -> Self { Ty::Int(32) }
-    pub fn i64() -> Self { Ty::Int(64) }
-    pub fn u8() -> Self { Ty::UInt(8) }
-    pub fn u16() -> Self { Ty::UInt(16) }
-    pub fn u32() -> Self { Ty::UInt(32) }
-    pub fn u64() -> Self { Ty::UInt(64) }
-    pub fn f32() -> Self { Ty::Float(32) }
-    pub fn f64() -> Self { Ty::Float(64) }
-    pub fn ptr() -> Self { Ty::Ptr(Box::new(Ty::UInt(8))) }
+    pub fn i8() -> Self {
+        Ty::Int(8)
+    }
+    pub fn i16() -> Self {
+        Ty::Int(16)
+    }
+    pub fn i32() -> Self {
+        Ty::Int(32)
+    }
+    pub fn i64() -> Self {
+        Ty::Int(64)
+    }
+    pub fn u8() -> Self {
+        Ty::UInt(8)
+    }
+    pub fn u16() -> Self {
+        Ty::UInt(16)
+    }
+    pub fn u32() -> Self {
+        Ty::UInt(32)
+    }
+    pub fn u64() -> Self {
+        Ty::UInt(64)
+    }
+    pub fn f32() -> Self {
+        Ty::Float(32)
+    }
+    pub fn f64() -> Self {
+        Ty::Float(64)
+    }
+    pub fn ptr() -> Self {
+        Ty::Ptr(Box::new(Ty::UInt(8)))
+    }
 
     /// Widen / narrow this integer type to a new bit width.
     pub fn resize(&self, new_bits: u32) -> Self {
@@ -129,7 +153,9 @@ impl std::fmt::Display for Ty {
             Ty::Struct(fields) => {
                 write!(f, "{{")?;
                 for (i, (name, ty)) in fields.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}: {}", name, ty)?;
                 }
                 write!(f, "}}")
@@ -194,11 +220,26 @@ mod tests {
     #[test]
     fn test_size_bits_arch_aware() {
         use crate::arch::Arch;
-        assert_eq!(Ty::Ptr(Box::new(Ty::u8())).size_bits_with_arch(Arch::X86), Some(32));
-        assert_eq!(Ty::Ptr(Box::new(Ty::u8())).size_bits_with_arch(Arch::X86_64), Some(64));
-        assert_eq!(Ty::Ptr(Box::new(Ty::u8())).size_bits_with_arch(Arch::Avr), Some(16));
-        assert_eq!(Ty::Ptr(Box::new(Ty::u8())).size_bytes_with_arch(Arch::X86), Some(4));
-        assert_eq!(Ty::Ptr(Box::new(Ty::u8())).size_bytes_with_arch(Arch::X86_64), Some(8));
+        assert_eq!(
+            Ty::Ptr(Box::new(Ty::u8())).size_bits_with_arch(Arch::X86),
+            Some(32)
+        );
+        assert_eq!(
+            Ty::Ptr(Box::new(Ty::u8())).size_bits_with_arch(Arch::X86_64),
+            Some(64)
+        );
+        assert_eq!(
+            Ty::Ptr(Box::new(Ty::u8())).size_bits_with_arch(Arch::Avr),
+            Some(16)
+        );
+        assert_eq!(
+            Ty::Ptr(Box::new(Ty::u8())).size_bytes_with_arch(Arch::X86),
+            Some(4)
+        );
+        assert_eq!(
+            Ty::Ptr(Box::new(Ty::u8())).size_bytes_with_arch(Arch::X86_64),
+            Some(8)
+        );
     }
 
     #[test]

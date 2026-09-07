@@ -25,11 +25,20 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Self {
-        Self { input, pos: 0, line: 1, col: 1 }
+        Self {
+            input,
+            pos: 0,
+            line: 1,
+            col: 1,
+        }
     }
 
     fn error(&self, msg: &str) -> ParseError {
-        ParseError { message: msg.to_string(), line: self.line, col: self.col }
+        ParseError {
+            message: msg.to_string(),
+            line: self.line,
+            col: self.col,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -39,12 +48,19 @@ impl<'a> Parser<'a> {
     fn advance(&mut self) -> Option<u8> {
         let b = self.peek()?;
         self.pos += 1;
-        if b == b'\n' { self.line += 1; self.col = 1; } else { self.col += 1; }
+        if b == b'\n' {
+            self.line += 1;
+            self.col = 1;
+        } else {
+            self.col += 1;
+        }
         Some(b)
     }
 
     fn skip_ws_no_newline(&mut self) {
-        while matches!(self.peek(), Some(b' ') | Some(b'\t')) { self.advance(); }
+        while matches!(self.peek(), Some(b' ') | Some(b'\t')) {
+            self.advance();
+        }
     }
 
     fn skip_ws_and_comments(&mut self) {
@@ -53,7 +69,9 @@ impl<'a> Parser<'a> {
             if self.peek() == Some(b'#') {
                 while let Some(b) = self.peek() {
                     self.advance();
-                    if b == b'\n' { break; }
+                    if b == b'\n' {
+                        break;
+                    }
                 }
             } else if self.peek() == Some(b'\n') || self.peek() == Some(b'\r') {
                 self.advance();
@@ -72,13 +90,19 @@ impl<'a> Parser<'a> {
 
         while self.pos < self.input.len() {
             self.skip_ws_and_comments();
-            if self.pos >= self.input.len() { break; }
+            if self.pos >= self.input.len() {
+                break;
+            }
 
             match self.peek() {
                 Some(b'[') => {
                     // Save previous table
                     if !current_table_path.is_empty() || !current_pairs.is_empty() {
-                        self.insert_table(&mut root, &current_table_path, Value::Object(current_pairs.clone()))?;
+                        self.insert_table(
+                            &mut root,
+                            &current_table_path,
+                            Value::Object(current_pairs.clone()),
+                        )?;
                         current_pairs.clear();
                     }
                     current_table_path = self.parse_table_header()?;
@@ -90,7 +114,9 @@ impl<'a> Parser<'a> {
                     if self.peek() == Some(b'#') {
                         while let Some(b) = self.peek() {
                             self.advance();
-                            if b == b'\n' { break; }
+                            if b == b'\n' {
+                                break;
+                            }
                         }
                     }
                 }
@@ -208,7 +234,10 @@ impl<'a> Parser<'a> {
 
     fn parse_bare_key(&mut self) -> Result<String, ParseError> {
         let start = self.pos;
-        while matches!(self.peek(), Some(b'A'..=b'Z') | Some(b'a'..=b'z') | Some(b'0'..=b'9') | Some(b'-') | Some(b'_')) {
+        while matches!(
+            self.peek(),
+            Some(b'A'..=b'Z') | Some(b'a'..=b'z') | Some(b'0'..=b'9') | Some(b'-') | Some(b'_')
+        ) {
             self.advance();
         }
         if self.pos == start {
@@ -283,10 +312,12 @@ impl<'a> Parser<'a> {
 
     fn parse_bool(&mut self) -> Result<Value, ParseError> {
         if self.input[self.pos..].starts_with("true") {
-            self.pos += 4; self.col += 4;
+            self.pos += 4;
+            self.col += 4;
             Ok(Value::Bool(true))
         } else if self.input[self.pos..].starts_with("false") {
-            self.pos += 5; self.col += 5;
+            self.pos += 5;
+            self.col += 5;
             Ok(Value::Bool(false))
         } else {
             Err(self.error("invalid boolean"))
@@ -297,23 +328,36 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         let mut is_float = false;
 
-        if self.peek() == Some(b'-') || self.peek() == Some(b'+') { self.advance(); }
-        while matches!(self.peek(), Some(b'0'..=b'9') | Some(b'_')) { self.advance(); }
+        if self.peek() == Some(b'-') || self.peek() == Some(b'+') {
+            self.advance();
+        }
+        while matches!(self.peek(), Some(b'0'..=b'9') | Some(b'_')) {
+            self.advance();
+        }
 
         if self.peek() == Some(b'.') {
             is_float = true;
             self.advance();
-            while matches!(self.peek(), Some(b'0'..=b'9') | Some(b'_')) { self.advance(); }
+            while matches!(self.peek(), Some(b'0'..=b'9') | Some(b'_')) {
+                self.advance();
+            }
         }
 
         if matches!(self.peek(), Some(b'e') | Some(b'E')) {
             is_float = true;
             self.advance();
-            if matches!(self.peek(), Some(b'+') | Some(b'-')) { self.advance(); }
-            while matches!(self.peek(), Some(b'0'..=b'9')) { self.advance(); }
+            if matches!(self.peek(), Some(b'+') | Some(b'-')) {
+                self.advance();
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.advance();
+            }
         }
 
-        let raw: String = self.input[start..self.pos].chars().filter(|c| *c != '_').collect();
+        let raw: String = self.input[start..self.pos]
+            .chars()
+            .filter(|c| *c != '_')
+            .collect();
         if is_float {
             match raw.parse::<f64>() {
                 Ok(f) if f.is_finite() => Ok(Value::Float(f)),
@@ -344,8 +388,13 @@ impl<'a> Parser<'a> {
             arr.push(self.parse_value(depth + 1)?);
             self.skip_ws_and_comments();
             match self.peek() {
-                Some(b',') => { self.advance(); }
-                Some(b']') => { self.advance(); return Ok(Value::Array(arr)); }
+                Some(b',') => {
+                    self.advance();
+                }
+                Some(b']') => {
+                    self.advance();
+                    return Ok(Value::Array(arr));
+                }
                 _ => return Err(self.error("expected ',' or ']' in array")),
             }
         }
@@ -385,9 +434,11 @@ port = 5432
 
     #[test]
     fn test_utf8_basic_string() {
-        let v = parse(r#"title = "Привет 🌍"
-name = "naïve""#)
-            .unwrap();
+        let v = parse(
+            r#"title = "Привет 🌍"
+name = "naïve""#,
+        )
+        .unwrap();
         assert_eq!(v.get("title").and_then(|v| v.as_str()), Some("Привет 🌍"));
         assert_eq!(v.get("name").and_then(|v| v.as_str()), Some("naïve"));
     }

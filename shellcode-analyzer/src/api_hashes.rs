@@ -149,7 +149,6 @@ const API_LIST: &[(&str, &str)] = &[
     ("kernel32.dll", "GetTempPathA"),
     ("kernel32.dll", "CreateDirectoryA"),
     ("kernel32.dll", "RemoveDirectoryA"),
-
     // ntdll.dll
     ("ntdll.dll", "NtAllocateVirtualMemory"),
     ("ntdll.dll", "NtProtectVirtualMemory"),
@@ -167,7 +166,6 @@ const API_LIST: &[(&str, &str)] = &[
     ("ntdll.dll", "LdrLoadDll"),
     ("ntdll.dll", "LdrGetProcedureAddress"),
     ("ntdll.dll", "NtFlushInstructionCache"),
-
     // ws2_32.dll
     ("ws2_32.dll", "WSAStartup"),
     ("ws2_32.dll", "WSASocketA"),
@@ -187,7 +185,6 @@ const API_LIST: &[(&str, &str)] = &[
     ("ws2_32.dll", "inet_addr"),
     ("ws2_32.dll", "htons"),
     ("ws2_32.dll", "WSAConnect"),
-
     // advapi32.dll
     ("advapi32.dll", "RegOpenKeyExA"),
     ("advapi32.dll", "RegSetValueExA"),
@@ -201,7 +198,6 @@ const API_LIST: &[(&str, &str)] = &[
     ("advapi32.dll", "LogonUserA"),
     ("advapi32.dll", "AdjustTokenPrivileges"),
     ("advapi32.dll", "OpenProcessToken"),
-
     // user32.dll
     ("user32.dll", "MessageBoxA"),
     ("user32.dll", "MessageBoxW"),
@@ -212,7 +208,6 @@ const API_LIST: &[(&str, &str)] = &[
     ("user32.dll", "PostMessageA"),
     ("user32.dll", "GetForegroundWindow"),
     ("user32.dll", "SetWinEventHook"),
-
     // wininet.dll / winhttp.dll
     ("wininet.dll", "InternetOpenA"),
     ("wininet.dll", "InternetConnectA"),
@@ -223,7 +218,6 @@ const API_LIST: &[(&str, &str)] = &[
     ("winhttp.dll", "WinHttpConnect"),
     ("winhttp.dll", "WinHttpOpenRequest"),
     ("winhttp.dll", "WinHttpSendRequest"),
-
     // urlmon.dll / oleaut32 / others
     ("urlmon.dll", "URLDownloadToFileA"),
     ("urlmon.dll", "URLDownloadToCacheFileA"),
@@ -233,7 +227,6 @@ const API_LIST: &[(&str, &str)] = &[
     ("msvcrt.dll", "system"),
     ("msvcrt.dll", "strcmp"),
     ("msvcrt.dll", "strncmp"),
-
     // ws2_32.dll (networking, common in staged loaders)
     ("ws2_32.dll", "WSAStartup"),
     ("ws2_32.dll", "WSASocketA"),
@@ -249,7 +242,6 @@ const API_LIST: &[(&str, &str)] = &[
     ("ws2_32.dll", "closesocket"),
     ("ws2_32.dll", "gethostbyname"),
     ("ws2_32.dll", "WSAConnect"),
-
     // ntdll.dll (native, common in manual maps / process injection)
     ("ntdll.dll", "NtAllocateVirtualMemory"),
     ("ntdll.dll", "NtWriteVirtualMemory"),
@@ -267,7 +259,6 @@ const API_LIST: &[(&str, &str)] = &[
     ("ntdll.dll", "NtResumeThread"),
     ("ntdll.dll", "NtSuspendThread"),
     ("ntdll.dll", "NtQueueApcThread"),
-
     // More kernel32
     ("kernel32.dll", "CreateRemoteThread"),
     ("kernel32.dll", "OpenProcess"),
@@ -291,11 +282,9 @@ const API_LIST: &[(&str, &str)] = &[
     ("kernel32.dll", "GetTempPathA"),
     ("kernel32.dll", "CreateFileMappingA"),
     ("kernel32.dll", "MapViewOfFile"),
-
     // iphlpapi / dnsapi
     ("iphlpapi.dll", "GetAdaptersInfo"),
     ("dnsapi.dll", "DnsQuery_A"),
-
     // advapi32 / wtsapi
     ("advapi32.dll", "RegOpenKeyExA"),
     ("advapi32.dll", "RegSetValueExA"),
@@ -303,7 +292,6 @@ const API_LIST: &[(&str, &str)] = &[
     ("advapi32.dll", "CryptCreateHash"),
     ("advapi32.dll", "CryptHashData"),
     ("wtsapi32.dll", "WTSQueryUserToken"),
-
     // gdi32 / shlwapi
     ("gdi32.dll", "CreateCompatibleDC"),
     ("shlwapi.dll", "StrStrA"),
@@ -318,7 +306,11 @@ fn build_db() -> HashMap<u32, ResolvedApi> {
             compute_ror13(&func.to_ascii_uppercase()),
             compute_ror13_nul(&func.to_ascii_uppercase()),
             compute_ror13(&format!("{}.{}", dll, func)),
-            compute_ror13(&format!("{}.{}", dll.to_ascii_uppercase(), func.to_ascii_uppercase())),
+            compute_ror13(&format!(
+                "{}.{}",
+                dll.to_ascii_uppercase(),
+                func.to_ascii_uppercase()
+            )),
             compute_ror13_module_func(dll, func),
             compute_ror13_module_func(&dll.to_ascii_lowercase(), &func.to_ascii_lowercase()),
         ];
@@ -385,7 +377,11 @@ mod tests {
         // VirtualAlloc hash must resolve back to VirtualAlloc.
         let h = compute_ror13("VirtualAlloc");
         let result = resolve_api_hash(h);
-        assert!(result.is_some(), "computed VirtualAlloc hash 0x{:08X} not resolved", h);
+        assert!(
+            result.is_some(),
+            "computed VirtualAlloc hash 0x{:08X} not resolved",
+            h
+        );
         let api = result.unwrap();
         assert_eq!(api.function_name, "VirtualAlloc");
         assert_eq!(api.dll_name, "kernel32.dll");
@@ -420,7 +416,9 @@ mod tests {
 
         let results = scan_for_api_hashes(&buf);
         assert!(
-            results.iter().any(|(off, a)| *off == 5 && a.function_name == "GetProcAddress"),
+            results
+                .iter()
+                .any(|(off, a)| *off == 5 && a.function_name == "GetProcAddress"),
             "unaligned hash DWORD at offset 5 not found"
         );
     }
@@ -442,14 +440,13 @@ mod tests {
     #[test]
     fn test_canonical_ror13_hashes() {
         // Canonical Metasploit-style ROR13 values (exact case, no NUL):
-        let resolved = resolve_api_hash(0x7C0DFCAA)
-            .expect("0x7C0DFCAA must resolve to GetProcAddress");
+        let resolved =
+            resolve_api_hash(0x7C0DFCAA).expect("0x7C0DFCAA must resolve to GetProcAddress");
         assert_eq!(resolved.dll_name, "kernel32.dll");
         assert_eq!(resolved.function_name, "GetProcAddress");
 
         assert_eq!(compute_ror13("LoadLibraryA"), 0xEC0E4E8E);
-        let ll = resolve_api_hash(0xEC0E4E8E)
-            .expect("0xEC0E4E8E must resolve to LoadLibraryA");
+        let ll = resolve_api_hash(0xEC0E4E8E).expect("0xEC0E4E8E must resolve to LoadLibraryA");
         assert_eq!(ll.dll_name, "kernel32.dll");
         assert_eq!(ll.function_name, "LoadLibraryA");
     }

@@ -1,4 +1,4 @@
-﻿//! Regression tests for previously confirmed decoder/LDE bugs.
+//! Regression tests for previously confirmed decoder/LDE bugs.
 //! Every test here failed before the corresponding fix.
 
 use freakre_x86::decoder::decode as dec;
@@ -74,12 +74,12 @@ fn decode_movsx_dest_and_src_sizes() {
     // movsx esi, al: reg field 7 = esi (dword), rm 0 = al (byte)
     assert_eq!(fmt(&[0x0F, 0xBE, 0xF0], 0, Mode::X64), "movsx esi, al");
     // movsx rax, al with REX.W: 48 0F BE C8 в†’ movsx rax, al
-    assert_eq!(fmt(&[0x48, 0x0F, 0xBE, 0xC0], 0, Mode::X64), "movsx rax, al");
-    // movzx edx, bx (register form reads the full 16-bit source): 0F B7 D3
     assert_eq!(
-        fmt(&[0x0F, 0xB7, 0xD3], 0, Mode::X64),
-        "movzx edx, bx"
+        fmt(&[0x48, 0x0F, 0xBE, 0xC0], 0, Mode::X64),
+        "movsx rax, al"
     );
+    // movzx edx, bx (register form reads the full 16-bit source): 0F B7 D3
+    assert_eq!(fmt(&[0x0F, 0xB7, 0xD3], 0, Mode::X64), "movzx edx, bx");
     // movzx edx, word ptr [rbx] (memory form): 0F B7 13
     assert_eq!(
         fmt(&[0x0F, 0xB7, 0x13], 0, Mode::X64),
@@ -122,10 +122,10 @@ fn decode_rex_swaps_high_bytes_for_low_bytes() {
 #[test]
 fn coverage_alu_reg_forms() {
     // mov r/m,r and byte forms via generic ALU table
-    assert_eq!(fmt(&[0x88, 0xC3], 0, Mode::X64), "mov bl, al");      // mov r/m8, r8
-    assert_eq!(fmt(&[0x8A, 0xD9], 0, Mode::X64), "mov bl, cl");      // mov r8, r/m8
-    assert_eq!(fmt(&[0x30, 0xDB], 0, Mode::X64), "xor bl, bl");      // xor r/m8, r8
-    assert_eq!(fmt(&[0x39, 0xCA], 0, Mode::X64), "cmp edx, ecx");    // cmp r/m, r
+    assert_eq!(fmt(&[0x88, 0xC3], 0, Mode::X64), "mov bl, al"); // mov r/m8, r8
+    assert_eq!(fmt(&[0x8A, 0xD9], 0, Mode::X64), "mov bl, cl"); // mov r8, r/m8
+    assert_eq!(fmt(&[0x30, 0xDB], 0, Mode::X64), "xor bl, bl"); // xor r/m8, r8
+    assert_eq!(fmt(&[0x39, 0xCA], 0, Mode::X64), "cmp edx, ecx"); // cmp r/m, r
 }
 
 #[test]
@@ -178,7 +178,10 @@ fn coverage_imul_with_immediate() {
 #[test]
 fn coverage_leave_enter_push_imm() {
     assert_eq!(fmt(&[0xC9], 0, Mode::X64), "leave");
-    assert_eq!(fmt(&[0x68, 0x0A, 0x00, 0x00, 0x00], 0, Mode::X64), "push 0xa");
+    assert_eq!(
+        fmt(&[0x68, 0x0A, 0x00, 0x00, 0x00], 0, Mode::X64),
+        "push 0xa"
+    );
     assert_eq!(fmt(&[0x6A, 0x02], 0, Mode::X64), "push 0x2");
 }
 
@@ -187,7 +190,10 @@ fn coverage_cmovcc_and_bt() {
     // cmovz eax, ebx в†’ 0F 44 C3
     assert_eq!(fmt(&[0x0F, 0x44, 0xC3], 0, Mode::X64), "cmove eax, ebx");
     // bt dword ptr [rax], ecx в†’ 0F A3 08
-    assert_eq!(fmt(&[0x0F, 0xA3, 0x08], 0, Mode::X64), "bt dword ptr [rax], ecx");
+    assert_eq!(
+        fmt(&[0x0F, 0xA3, 0x08], 0, Mode::X64),
+        "bt dword ptr [rax], ecx"
+    );
     // bt eax, 5 в†’ 0F BA E0 05
     assert_eq!(fmt(&[0x0F, 0xBA, 0xE0, 0x05], 0, Mode::X64), "bt eax, 0x5");
 }
@@ -227,23 +233,41 @@ fn coverage_sse() {
     // movaps xmm0, xmm1
     assert_eq!(fmt(&[0x0F, 0x28, 0xC1], 0, Mode::X64), "movaps xmm0, xmm1");
     // movups xmm0, oword ptr [rax]
-    assert_eq!(fmt(&[0x0F, 0x10, 0x00], 0, Mode::X64), "movups xmm0, oword ptr [rax]");
+    assert_eq!(
+        fmt(&[0x0F, 0x10, 0x00], 0, Mode::X64),
+        "movups xmm0, oword ptr [rax]"
+    );
     // addps xmm0, xmm1
     assert_eq!(fmt(&[0x0F, 0x58, 0xC1], 0, Mode::X64), "addps xmm0, xmm1");
     // movdqa xmm0, xmm1 (66 0F 6F C1)
-    assert_eq!(fmt(&[0x66, 0x0F, 0x6F, 0xC1], 0, Mode::X64), "movdqa xmm0, xmm1");
+    assert_eq!(
+        fmt(&[0x66, 0x0F, 0x6F, 0xC1], 0, Mode::X64),
+        "movdqa xmm0, xmm1"
+    );
     // pxor xmm0, xmm0 (66 0F EF C0)
-    assert_eq!(fmt(&[0x66, 0x0F, 0xEF, 0xC0], 0, Mode::X64), "pxor xmm0, xmm0");
+    assert_eq!(
+        fmt(&[0x66, 0x0F, 0xEF, 0xC0], 0, Mode::X64),
+        "pxor xmm0, xmm0"
+    );
 }
 
 #[test]
 fn coverage_avx() {
     // vmovaps xmm0, xmm1
-    assert_eq!(fmt(&[0xC5, 0xF8, 0x28, 0xC1], 0, Mode::X64), "vmovaps xmm0, xmm1");
+    assert_eq!(
+        fmt(&[0xC5, 0xF8, 0x28, 0xC1], 0, Mode::X64),
+        "vmovaps xmm0, xmm1"
+    );
     // vmovaps ymm0, ymm1 (L=1)
-    assert_eq!(fmt(&[0xC5, 0x84, 0x28, 0xC1], 0, Mode::X64), "vmovaps ymm0, ymm1");
+    assert_eq!(
+        fmt(&[0xC5, 0x84, 0x28, 0xC1], 0, Mode::X64),
+        "vmovaps ymm0, ymm1"
+    );
     // vaddps xmm1, xmm2, xmm3
-    assert_eq!(fmt(&[0xC5, 0xA8, 0x58, 0xCB], 0, Mode::X64), "vaddps xmm1, xmm2, xmm3");
+    assert_eq!(
+        fmt(&[0xC5, 0xA8, 0x58, 0xCB], 0, Mode::X64),
+        "vaddps xmm1, xmm2, xmm3"
+    );
     // vzeroupper
     assert_eq!(fmt(&[0xC5, 0xF8, 0x77], 0, Mode::X64), "vzeroupper");
 }
@@ -327,8 +351,14 @@ fn x16_lengths() {
     assert_eq!(decode_len(&[0xE8, 0x00, 0x00], M).unwrap(), 3);
     assert_eq!(decode_len(&[0xE9, 0x00, 0x00], M).unwrap(), 3);
     // operand-size override flips to 32-bit forms
-    assert_eq!(decode_len(&[0x66, 0xE8, 0x00, 0x00, 0x00, 0x00], M).unwrap(), 6);
-    assert_eq!(decode_len(&[0x66, 0xB8, 0x01, 0x02, 0x03, 0x04], M).unwrap(), 6);
+    assert_eq!(
+        decode_len(&[0x66, 0xE8, 0x00, 0x00, 0x00, 0x00], M).unwrap(),
+        6
+    );
+    assert_eq!(
+        decode_len(&[0x66, 0xB8, 0x01, 0x02, 0x03, 0x04], M).unwrap(),
+        6
+    );
     // far jmp ptr16:16
     assert_eq!(decode_len(&[0xEA, 0x00, 0x00, 0x00, 0x00], M).unwrap(), 5);
     // jcc rel16
@@ -367,7 +397,10 @@ fn x16_decode() {
     assert_eq!(fmt(&[0x98], 0, M), "cbw");
     // 32-bit with 0x67 address override uses 16-bit modrm length
     assert_eq!(decode_len(&[0x67, 0x8B, 0x07], Mode::X86).unwrap(), 3);
-    assert_eq!(fmt(&[0x67, 0x8B, 0x07], 0, Mode::X86), "mov eax, dword ptr [bx]");
+    assert_eq!(
+        fmt(&[0x67, 0x8B, 0x07], 0, Mode::X86),
+        "mov eax, dword ptr [bx]"
+    );
 }
 
 #[test]

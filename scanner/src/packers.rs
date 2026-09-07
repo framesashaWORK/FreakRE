@@ -11,7 +11,12 @@ use pe_parser::PeFile;
 const PACKER_MARKERS: &[(&str, &str, &str, Severity)] = &[
     ("upx", "UPX", "UPX", Severity::Medium),
     ("themida", "Themida / WinLicense", "THEMIDA", Severity::High),
-    ("winlicense", "Themida / WinLicense", "THEMIDA", Severity::High),
+    (
+        "winlicense",
+        "Themida / WinLicense",
+        "THEMIDA",
+        Severity::High,
+    ),
     ("vmp", "VMProtect", "VMPROTECT", Severity::High),
     (".vmp0", "VMProtect", "VMPROTECT", Severity::High),
     (".vmp1", "VMProtect", "VMPROTECT", Severity::High),
@@ -48,15 +53,25 @@ pub fn match_packer(name: &str) -> Option<(&'static str, &'static str, Severity)
 /// Byte-level packer/protector signatures. `needle`/`mask` pairs: bytes where the
 /// corresponding `mask` byte is `0xFF` must match exactly; `0x00` = wildcard (`??`).
 /// Catches packers even when section names are renamed or stripped.
-type PackerByteSig = (&'static str, &'static str, Severity, &'static [u8], &'static [u8]);
+type PackerByteSig = (
+    &'static str,
+    &'static str,
+    Severity,
+    &'static [u8],
+    &'static [u8],
+);
 const PACKER_BYTE_SIGS: &[PackerByteSig] = &[
     // ASPack 2.x entry stub: pushad; call $+5; pop ebp; sub ebp,0D; add ebp,[...]
     (
         "ASPack",
         "ASPACK",
         Severity::High,
-        &[0x60, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x5D, 0x83, 0xED, 0x0D, 0x03, 0x2D],
-        &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+        &[
+            0x60, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x5D, 0x83, 0xED, 0x0D, 0x03, 0x2D,
+        ],
+        &[
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        ],
     ),
     // VMProtect 2.x/3.x: push imm32; call rel32; pushfd; push imm32; call rel32; pushfd
     (

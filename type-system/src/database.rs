@@ -1,6 +1,6 @@
 //! Type database for managing all types in a project
 
-use crate::{EnumDef, StructDef, TypedefDef, Type, UnionDef};
+use crate::{EnumDef, StructDef, Type, TypedefDef, UnionDef};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
@@ -286,7 +286,8 @@ mod tests {
     #[test]
     fn test_resolve_typedef() {
         let mut db = TypeDatabase::new();
-        db.add_typedef(TypedefDef::new("MY_DWORD", Type::u32())).unwrap();
+        db.add_typedef(TypedefDef::new("MY_DWORD", Type::u32()))
+            .unwrap();
 
         let resolved = db.resolve_type(&Type::typedef("MY_DWORD")).unwrap();
         assert_eq!(resolved, Type::u32());
@@ -295,7 +296,8 @@ mod tests {
     #[test]
     fn test_import_json_is_atomic_on_duplicate() {
         let mut db = TypeDatabase::new();
-        db.add_struct(StructBuilder::new("Existing").build()).unwrap();
+        db.add_struct(StructBuilder::new("Existing").build())
+            .unwrap();
 
         // "Existing" collides with the pre-defined struct; the valid
         // entries before it must not be applied (no partial import).
@@ -314,7 +316,10 @@ mod tests {
             other => panic!("expected AlreadyExists error, got {:?}", other),
         }
 
-        assert!(db.get_struct("Fresh").is_none(), "partial import leaked an entry");
+        assert!(
+            db.get_struct("Fresh").is_none(),
+            "partial import leaked an entry"
+        );
         assert!(db.get_struct("Existing").is_some());
     }
 
