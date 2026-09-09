@@ -1007,9 +1007,46 @@ impl IrFunction {
                 stack.push(s);
             }
         }
+        // Retaining shifts vector positions, so every surviving BlockId gets
+        // a new dense id; remap terminators (Branch/CBranch/Switch targets)
+        // and the entry, then rebuild the derived graph state.
         self.blocks.retain(|b| reach[b.id.0 as usize]);
-        // Retaining shifts vector positions: rebuild the index from scratch
-        // instead of filtering stale `BlockId → old position` entries.
+        let mut remap: Vec<Option<BlockId>> = vec![None; self.blocks.len() + reach.len()];
+        for (next, b) in (0_u32..).zip(self.blocks.iter()) {
+            let old = b.id.0 as usize;
+            if old < remap.len() {
+                remap[old] = Some(BlockId(next));
+            }
+        }
+        let map_bid = |id: BlockId| -> BlockId {
+            remap.get(id.0 as usize).copied().flatten().unwrap_or(id)
+        };
+        for b in self.blocks.iter_mut() {
+            b.id = map_bid(b.id);
+            for inst in b.insts.iter_mut() {
+                match inst {
+                    IrInst::Branch { target } => *target = map_bid(*target),
+                    IrInst::CBranch {
+                        target_true,
+                        target_false,
+                        ..
+                    } => {
+                        *target_true = map_bid(*target_true);
+                        *target_false = map_bid(*target_false);
+                    }
+                    IrInst::Switch { cases, default, .. } => {
+                        for c in cases.iter_mut() {
+                            c.1 = map_bid(c.1);
+                        }
+                        *default = default.map(map_bid);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(ne) = remap.get(entry.0 as usize).copied().flatten() {
+            self.entry_block = ne;
+        }
         self.rebuild_index();
         // Recompute preds/succs so they reference surviving blocks only.
         self.build_cfg();

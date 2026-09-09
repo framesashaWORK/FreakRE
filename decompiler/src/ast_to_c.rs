@@ -16,6 +16,28 @@ fn unsigned_cmp_str(op: &BinOp) -> Option<&'static str> {
     }
 }
 
+/// Compound-assignment rendering for `x = x OP y` shapes (None for
+/// comparisons and logical operators, which have no compound form).
+fn compound_assign_op(op: &BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("+="),
+        BinOp::Sub => Some("-="),
+        BinOp::Mul => Some("*="),
+        BinOp::Div => Some("/="),
+        BinOp::Mod => Some("%="),
+        BinOp::And => Some("&="),
+        BinOp::Or => Some("|="),
+        BinOp::Xor => Some("^="),
+        BinOp::Shl => Some("<<="),
+        BinOp::Shr => Some(">>="),
+        _ => None,
+    }
+}
+
+fn is_int_zero(e: &Expr) -> bool {
+    matches!(e, Expr::IntLit(0))
+}
+
 /// Convert an AST function to C pseudocode with default configuration
 pub fn ast_to_c(func: &AstFunction) -> String {
     ast_to_c_with_config(func, &DecompilerConfig::default())
@@ -158,24 +180,7 @@ impl CEmitter {
         match stmt {
             Stmt::Assign { target, value } => {
                 self.emit_indent();
-                self.emit_expr(target, 0);
-                self.output.push_str(" = ");
-                // Cast hygiene: a cast is redundant only when it is a true
-                // no-op — its target type matches the *source* value's
-                // declared type (the assignment itself performs any needed
-                // width/signedness conversion to the destination). Width-
-                // changing casts (e.g. int32 → int64) are kept explicit.
-                match (target, value) {
-                    (Expr::Var(_), Expr::Cast { ty, expr })
-                        if matches!(
-                            expr.as_ref(),
-                            Expr::Var(inner) if self.declared_type_is(inner, ty)
-                        ) =>
-                    {
-                        self.emit_expr(expr, 0);
-                    }
-                    _ => self.emit_expr(value, 0),
-                }
+                self.emit_assign_core(target, value);
                 self.output.push_str(";\n");
             }
 
@@ -185,37 +190,14 @@ impl CEmitter {
                 else_body,
             } => {
                 self.emit_indent();
-                self.output.push_str("if (");
-                self.emit_expr(cond, 0);
-                self.output.push_str(") {\n");
-
-                self.indent += 1;
-                for s in then_body {
-                    self.emit_stmt(s);
-                }
-                self.indent -= 1;
-
-                self.emit_indent();
-                self.output.push('}');
-
-                if let Some(else_stmts) = else_body {
-                    self.output.push_str(" else {\n");
-                    self.indent += 1;
-                    for s in else_stmts {
-                        self.emit_stmt(s);
-                    }
-                    self.indent -= 1;
-                    self.emit_indent();
-                    self.output.push('}');
-                }
-
+                self.emit_if_chain(cond, then_body, else_body.as_deref());
                 self.output.push('\n');
             }
 
             Stmt::While { cond, body } => {
                 self.emit_indent();
                 self.output.push_str("while (");
-                self.emit_expr(cond, 0);
+                self.emit_cond(cond);
                 self.output.push_str(") {\n");
 
                 self.indent += 1;
@@ -243,7 +225,7 @@ impl CEmitter {
                 self.output.push_str("; ");
 
                 if let Some(cond_expr) = cond {
-                    self.emit_expr(cond_expr, 0);
+                    self.emit_cond(cond_expr);
                 }
                 self.output.push_str("; ");
 
@@ -275,7 +257,7 @@ impl CEmitter {
 
                 self.emit_indent();
                 self.output.push_str("} while (");
-                self.emit_expr(cond, 0);
+                self.emit_cond(cond);
                 self.output.push_str(");\n");
             }
 
@@ -467,14 +449,168 @@ impl CEmitter {
     fn emit_stmt_inline(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Assign { target, value } => {
-                self.emit_expr(target, 0);
-                self.output.push_str(" = ");
-                self.emit_expr(value, 0);
+                self.emit_assign_core(target, value);
             }
             Stmt::Expr(expr) => {
                 self.emit_expr(expr, 0);
             }
             _ => {}
+        }
+    }
+
+    /// Emit an assignment body (no indent, no trailing `;`): plain
+    /// `target = value`, compound `target op= rhs` when the value re-uses the
+    /// target as its left operand, or `target++` / `target--` for
+    /// `target = target ± 1`. Shared by statement and `for`-update emission.
+    fn emit_assign_core(&mut self, target: &Expr, value: &Expr) {
+        if self.try_emit_compound(target, value) {
+            return;
+        }
+        self.emit_expr(target, 0);
+        self.output.push_str(" = ");
+        // Cast hygiene: a cast is redundant only when it is a true
+        // no-op — its target type matches the *source* value's
+        // declared type (the assignment itself performs any needed
+        // width/signedness conversion to the destination). Width-
+        // changing casts (e.g. int32 → int64) are kept explicit.
+        match (target, value) {
+            (Expr::Var(_), Expr::Cast { ty, expr })
+                if matches!(
+                    expr.as_ref(),
+                    Expr::Var(inner) if self.declared_type_is(inner, ty)
+                ) =>
+            {
+                self.emit_expr(expr, 0);
+            }
+            _ => self.emit_expr(value, 0),
+        }
+    }
+
+    /// `target = target OP rhs` → `target OP= rhs`, and
+    /// `target = target ± 1` → `target++` / `target--`.
+    /// Returns `false` (printing nothing) when the value is not a compound
+    /// shape so the caller falls back to plain assignment emission.
+    fn try_emit_compound(&mut self, target: &Expr, value: &Expr) -> bool {
+        // Unwrap a redundant cast around the RHS first:
+        // `x = (int32_t)(x + y)` with `x` declared int32_t.
+        let value = match value {
+            Expr::Cast { ty, expr }
+                if matches!(target, Expr::Var(name) if self.declared_type_is(name, ty)) =>
+            {
+                expr.as_ref()
+            }
+            _ => value,
+        };
+        let Expr::Binary { op, lhs, rhs } = value else {
+            return false;
+        };
+        if !matches!(target, Expr::Var(_) | Expr::Deref(_)) || lhs.as_ref() != target {
+            return false;
+        }
+
+        // `x = x + 1` → `x++`; `*p = *p + 1` → `(*p)++` (parens required:
+        // `*p++` parses as `*(p++)`).
+        if matches!(op, BinOp::Add | BinOp::Sub) && matches!(&**rhs, Expr::IntLit(1)) {
+            let deref_target = matches!(target, Expr::Deref(_));
+            if deref_target {
+                self.output.push('(');
+            }
+            self.emit_expr(target, 0);
+            if deref_target {
+                self.output.push(')');
+            }
+            self.output.push_str(if *op == BinOp::Add { "++" } else { "--" });
+            return true;
+        }
+
+        let Some(cop) = compound_assign_op(op) else {
+            return false;
+        };
+        self.emit_expr(target, 0);
+        self.output.push(' ');
+        self.output.push_str(cop);
+        self.output.push(' ');
+        self.emit_expr(rhs, op.precedence());
+        true
+    }
+
+    /// Emit an `if` / `else if` / `else` chain. The caller prints the leading
+    /// indentation; chained `else if` continues on the same line so no
+    /// additional indent is emitted for the chain tail. An empty `else` arm
+    /// is dropped entirely.
+    fn emit_if_chain(&mut self, cond: &Expr, then_body: &[Stmt], else_body: Option<&[Stmt]>) {
+        self.output.push_str("if (");
+        self.emit_cond(cond);
+        self.output.push_str(") {\n");
+
+        self.indent += 1;
+        for s in then_body {
+            self.emit_stmt(s);
+        }
+        self.indent -= 1;
+
+        self.emit_indent();
+        self.output.push('}');
+
+        let Some(eb) = else_body else {
+            return;
+        };
+        if eb.is_empty() {
+            return;
+        }
+        // Single nested `if` in the else arm → `} else if (...)` chain.
+        if let [Stmt::If {
+            cond: inner_cond,
+            then_body: inner_then,
+            else_body: inner_else,
+        }] = eb
+        {
+            self.output.push_str(" else ");
+            self.emit_if_chain(inner_cond, inner_then, inner_else.as_deref());
+            return;
+        }
+        self.output.push_str(" else {\n");
+        self.indent += 1;
+        for s in eb {
+            self.emit_stmt(s);
+        }
+        self.indent -= 1;
+        self.emit_indent();
+        self.output.push('}');
+    }
+
+    /// Emit a boolean-context condition (if/while/do-while/for/ternary).
+    /// Zero comparisons collapse to truthiness: `v != 0` → `v`,
+    /// `v == 0` → `!v`.
+    fn emit_cond(&mut self, cond: &Expr) {
+        match cond {
+            Expr::Binary {
+                op: BinOp::Ne,
+                lhs,
+                rhs,
+            } if is_int_zero(rhs) && matches!(&**lhs, Expr::Var(_)) => self.emit_expr(lhs, 0),
+            Expr::Binary {
+                op: BinOp::Ne,
+                lhs,
+                rhs,
+            } if is_int_zero(lhs) && matches!(&**rhs, Expr::Var(_)) => self.emit_expr(rhs, 0),
+            Expr::Binary {
+                op: BinOp::Eq,
+                lhs,
+                rhs,
+            } if is_int_zero(rhs) && matches!(&**lhs, Expr::Var(_)) => {
+                self.output.push('!');
+                self.emit_expr(lhs, 15);
+            }
+            Expr::Binary {
+                op: BinOp::Eq,
+                lhs,
+                rhs,
+            } if is_int_zero(lhs) && matches!(&**rhs, Expr::Var(_)) => {
+                self.output.push('!');
+                self.emit_expr(rhs, 15);
+            }
+            _ => self.emit_expr(cond, 0),
         }
     }
 
@@ -625,10 +761,19 @@ impl CEmitter {
             }
 
             Expr::Cast { ty, expr } => {
+                // Collapse runs of identical casts: `(T)(T)x` → `(T)x`.
+                let mut inner: &Expr = expr;
+                while let Expr::Cast { ty: inner_ty, expr: next } = inner {
+                    if inner_ty == ty {
+                        inner = next;
+                    } else {
+                        break;
+                    }
+                }
                 self.output.push('(');
                 self.output.push_str(&self.type_to_c(ty));
                 self.output.push(')');
-                self.emit_expr(expr, 15);
+                self.emit_expr(inner, 15);
             }
 
             Expr::Ternary {
@@ -640,7 +785,7 @@ impl CEmitter {
                 if need_parens {
                     self.output.push('(');
                 }
-                self.emit_expr(cond, 4);
+                self.emit_cond(cond);
                 self.output.push_str(" ? ");
                 self.emit_expr(then_expr, 3);
                 self.output.push_str(" : ");
@@ -1144,6 +1289,199 @@ mod tests {
         });
         let c = ast_to_c(&func);
         assert!(c.contains("(int64_t)x"), "{}", c);
+    }
+
+    #[test]
+    fn test_compound_assignment_rendering() {
+        let mk = |op: BinOp, rhs: i64| {
+            let mut func = AstFunction::new("compound");
+            func.return_type = Ty::Void;
+            func.body.push(Stmt::Assign {
+                target: Expr::Var("x".to_string()),
+                value: Expr::Binary {
+                    op,
+                    lhs: Box::new(Expr::Var("x".to_string())),
+                    rhs: Box::new(Expr::IntLit(rhs)),
+                },
+            });
+            ast_to_c(&func)
+        };
+        assert!(mk(BinOp::Add, 5).contains("x += 0x5"), "{}", mk(BinOp::Add, 5));
+        assert!(mk(BinOp::Sub, 5).contains("x -= 0x5"));
+        assert!(mk(BinOp::Mul, 2).contains("x *= 0x2"));
+        assert!(mk(BinOp::Shr, 3).contains("x >>= 0x3"));
+        assert!(mk(BinOp::Xor, 0xFF).contains("x ^= 0xFF"));
+        // Comparisons and logical ops have no compound form.
+        let c = mk(BinOp::Lt, 5);
+        assert!(c.contains("x = x < 0x5"), "{}", c);
+    }
+
+    #[test]
+    fn test_increment_decrement_rendering() {
+        let mk = |op: BinOp| {
+            let mut func = AstFunction::new("incdec");
+            func.return_type = Ty::Void;
+            func.body.push(Stmt::Assign {
+                target: Expr::Var("i".to_string()),
+                value: Expr::Binary {
+                    op,
+                    lhs: Box::new(Expr::Var("i".to_string())),
+                    rhs: Box::new(Expr::IntLit(1)),
+                },
+            });
+            ast_to_c(&func)
+        };
+        assert!(mk(BinOp::Add).contains("i++;"), "{}", mk(BinOp::Add));
+        assert!(mk(BinOp::Sub).contains("i--;"), "{}", mk(BinOp::Sub));
+        // `i = i + 2` stays a plain (compound) assignment, not an increment.
+        let mut func = AstFunction::new("incdec2");
+        func.return_type = Ty::Void;
+        func.body.push(Stmt::Assign {
+            target: Expr::Var("i".to_string()),
+            value: Expr::Binary {
+                op: BinOp::Add,
+                lhs: Box::new(Expr::Var("i".to_string())),
+                rhs: Box::new(Expr::IntLit(2)),
+            },
+        });
+        let c = ast_to_c(&func);
+        assert!(c.contains("i += 0x2"), "{}", c);
+        assert!(!c.contains("i++"), "{}", c);
+    }
+
+    #[test]
+    fn test_deref_increment_is_parenthesized() {
+        // `*p = *p + 1` must render as `(*p)++`, never `*p++` (= `*(p++)`).
+        let mut func = AstFunction::new("derefinc");
+        func.return_type = Ty::Void;
+        let deref = Box::new(Expr::Deref(Box::new(Expr::Var("p".to_string()))));
+        func.body.push(Stmt::Assign {
+            target: Expr::Deref(Box::new(Expr::Var("p".to_string()))),
+            value: Expr::Binary {
+                op: BinOp::Add,
+                lhs: deref,
+                rhs: Box::new(Expr::IntLit(1)),
+            },
+        });
+        let c = ast_to_c(&func);
+        assert!(c.contains("(*p)++"), "{}", c);
+        assert!(!c.contains("*p++"), "{}", c);
+    }
+
+    #[test]
+    fn test_for_update_uses_compound_and_increment() {
+        let mut func = AstFunction::new("loopy");
+        func.return_type = Ty::Void;
+        func.body.push(Stmt::For {
+            init: Some(Box::new(Stmt::Assign {
+                target: Expr::Var("i".to_string()),
+                value: Expr::IntLit(0),
+            })),
+            cond: Some(Expr::Binary {
+                op: BinOp::Lt,
+                lhs: Box::new(Expr::Var("i".to_string())),
+                rhs: Box::new(Expr::IntLit(10)),
+            }),
+            update: Some(Box::new(Stmt::Assign {
+                target: Expr::Var("i".to_string()),
+                value: Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(Expr::Var("i".to_string())),
+                    rhs: Box::new(Expr::IntLit(1)),
+                },
+            })),
+            body: vec![Stmt::Empty],
+        });
+        let c = ast_to_c(&func);
+        assert!(c.contains("i = 0x0; i < 0xA; i++"), "{}", c);
+    }
+
+    #[test]
+    fn test_else_if_chain_rendering() {
+        let mut func = AstFunction::new("chainy");
+        func.return_type = Ty::Void;
+        func.body.push(Stmt::If {
+            cond: Expr::Binary {
+                op: BinOp::Lt,
+                lhs: Box::new(Expr::Var("x".to_string())),
+                rhs: Box::new(Expr::IntLit(0)),
+            },
+            then_body: vec![Stmt::Expr(Expr::IntLit(1))],
+            else_body: Some(vec![Stmt::If {
+                cond: Expr::Binary {
+                    op: BinOp::Gt,
+                    lhs: Box::new(Expr::Var("x".to_string())),
+                    rhs: Box::new(Expr::IntLit(0)),
+                },
+                then_body: vec![Stmt::Expr(Expr::IntLit(2))],
+                else_body: Some(vec![Stmt::Expr(Expr::IntLit(3))]),
+            }]),
+        });
+        let c = ast_to_c(&func);
+        assert!(c.contains("} else if (x > 0x0) {"), "{}", c);
+        assert!(!c.contains("else {\n    if"), "{}", c);
+    }
+
+    #[test]
+    fn test_bool_condition_zero_noise_collapsed() {
+        let mut func = AstFunction::new("truthy");
+        func.return_type = Ty::Void;
+        func.body.push(Stmt::If {
+            cond: Expr::Binary {
+                op: BinOp::Ne,
+                lhs: Box::new(Expr::Var("v".to_string())),
+                rhs: Box::new(Expr::IntLit(0)),
+            },
+            then_body: vec![Stmt::Empty],
+            else_body: None,
+        });
+        func.body.push(Stmt::While {
+            cond: Expr::Binary {
+                op: BinOp::Eq,
+                lhs: Box::new(Expr::Var("w".to_string())),
+                rhs: Box::new(Expr::IntLit(0)),
+            },
+            body: vec![Stmt::Empty],
+        });
+        let c = ast_to_c(&func);
+        assert!(c.contains("if (v)"), "{}", c);
+        assert!(c.contains("while (!w)"), "{}", c);
+        assert!(!c.contains("!= 0x0"), "{}", c);
+        assert!(!c.contains("== 0x0"), "{}", c);
+    }
+
+    #[test]
+    fn test_identical_cast_chain_collapsed() {
+        let cast = |inner: Expr| {
+            Expr::Cast {
+                ty: Ty::u32(),
+                expr: Box::new(Expr::Cast {
+                    ty: Ty::u32(),
+                    expr: Box::new(inner),
+                }),
+            }
+        };
+        let mut func = AstFunction::new("castchain");
+        func.return_type = Ty::Void;
+        func.body.push(Stmt::Assign {
+            target: Expr::Var("y".to_string()),
+            value: cast(Expr::Var("x".to_string())),
+        });
+        let c = ast_to_c(&func);
+        assert!(c.contains("(uint32_t)x"), "{}", c);
+        assert!(!c.contains("(uint32_t)(uint32_t)"), "{}", c);
+    }
+
+    #[test]
+    fn test_string_literal_rendering() {
+        let mut func = AstFunction::new("strings");
+        func.return_type = Ty::Void;
+        func.body.push(Stmt::Call {
+            func: "f".to_string(),
+            args: vec![Expr::StringLit("C:\\temp\\a.txt".to_string())],
+        });
+        let c = ast_to_c(&func);
+        assert!(c.contains(r#"f("C:\\temp\\a.txt");"#), "{}", c);
     }
 
     #[test]

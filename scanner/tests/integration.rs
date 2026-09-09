@@ -55,6 +55,85 @@ fn make_test_shellcode() -> Vec<u8> {
     ]
 }
 
+/// Minimal but structurally valid PE64 with two sections:
+/// `.text` (VA 0x1000, raw 0x200) holding one function that returns the
+/// address of a string, and `.rdata` (VA 0x2000, raw 0x400) holding the
+/// string itself. The function is `push rbp; mov rbp, rsp; movabs rax,
+/// <string VA>; pop rbp; ret`, so decompilation yields `return <VA>` and
+/// the string table must turn that into the C literal.
+#[cfg(feature = "decompiler")]
+fn make_pe64_with_string() -> Vec<u8> {
+    let image_base: u64 = 0x140000000;
+    let text_rva: u32 = 0x1000;
+    let rdata_rva: u32 = 0x2000;
+    let str_va: u64 = image_base + rdata_rva as u64;
+
+    let mut code: Vec<u8> = vec![0x55, 0x48, 0x89, 0xE5, 0x48, 0xB8];
+    code.extend_from_slice(&str_va.to_le_bytes());
+    code.extend_from_slice(&[0x5D, 0xC3]);
+    code.resize(0x200, 0xCC);
+
+    let mut rdata = b"Hello, string literal!\0".to_vec();
+    rdata.resize(0x200, 0);
+
+    let mut pe = vec![0u8; 0x600];
+    // DOS header + e_lfanew
+    pe[0] = b'M';
+    pe[1] = b'Z';
+    pe[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+    // PE signature
+    pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+    // COFF header: AMD64, 2 sections, 240-byte optional header
+    pe[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+    pe[0x86..0x88].copy_from_slice(&2u16.to_le_bytes());
+    pe[0x94..0x96].copy_from_slice(&240u16.to_le_bytes());
+    // Optional header (PE32+): magic, entry point, base of code, image base,
+    // alignments, image size, header size, 16 data dirs.
+    pe[0x98..0x9A].copy_from_slice(&0x020Bu16.to_le_bytes());
+    pe[0xA8..0xAC].copy_from_slice(&text_rva.to_le_bytes());
+    pe[0xAC..0xB0].copy_from_slice(&text_rva.to_le_bytes());
+    pe[0xB0..0xB8].copy_from_slice(&image_base.to_le_bytes());
+    pe[0xB8..0xBC].copy_from_slice(&0x1000u32.to_le_bytes());
+    pe[0xBC..0xC0].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[0xD0..0xD4].copy_from_slice(&0x3000u32.to_le_bytes());
+    pe[0xD4..0xD8].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[0x104..0x108].copy_from_slice(&16u32.to_le_bytes());
+    // Section table at 0x98 + 240 = 0x188
+    let s1 = 0x188;
+    pe[s1..s1 + 5].copy_from_slice(b".text");
+    pe[s1 + 8..s1 + 12].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[s1 + 12..s1 + 16].copy_from_slice(&text_rva.to_le_bytes());
+    pe[s1 + 16..s1 + 20].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[s1 + 20..s1 + 24].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[s1 + 36..s1 + 40].copy_from_slice(&0x60000020u32.to_le_bytes());
+    let s2 = s1 + 40;
+    pe[s2..s2 + 6].copy_from_slice(b".rdata");
+    pe[s2 + 8..s2 + 12].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[s2 + 12..s2 + 16].copy_from_slice(&rdata_rva.to_le_bytes());
+    pe[s2 + 16..s2 + 20].copy_from_slice(&0x200u32.to_le_bytes());
+    pe[s2 + 20..s2 + 24].copy_from_slice(&0x400u32.to_le_bytes());
+    pe[s2 + 36..s2 + 40].copy_from_slice(&0x40000040u32.to_le_bytes());
+    // Section raw data
+    pe[0x200..0x400].copy_from_slice(&code);
+    pe[0x400..0x600].copy_from_slice(&rdata);
+    pe
+}
+
+#[cfg(feature = "decompiler")]
+#[test]
+fn test_decompile_string_literal_e2e() {
+    let pe = make_pe64_with_string();
+    let out = match freakre_scanner::decompile_api::decompile_pe_function(&pe, None) {
+        Ok(out) => out,
+        Err(e) => panic!("decompilation failed: {e}"),
+    };
+    assert!(
+        out.c_code.contains(r#""Hello, string literal!""#),
+        "expected the .rdata string as a C literal in pseudocode:\n{}",
+        out.c_code
+    );
+}
+
 fn make_test_powershell() -> Vec<u8> {
     // PowerShell script content that triggers detection via #requires
     br#"#requires -Version 5.1

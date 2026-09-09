@@ -1248,19 +1248,38 @@ struct FamilyStats {
 ///    it is shared CRT/packer code, useless for family attribution.
 /// 4. Every survivor passes the degenerate-fill self-FP gate.
 /// 5. Same-family corroboration raises confidence (bounded).
-fn run_family_mode(
-    files: &[PathBuf],
-    pool: &rayon::ThreadPool,
-    cpu: &std::sync::Arc<CpuTracker>,
-    adaptive: &AdaptiveJobs,
+///
+/// `FamilyJob` groups the `--families` CLI knobs so the worker signature stays
+/// under clippy's argument-count gate.
+struct FamilyJob<'a> {
+    files: &'a [PathBuf],
+    pool: &'a rayon::ThreadPool,
+    cpu: &'a std::sync::Arc<CpuTracker>,
+    adaptive: &'a AdaptiveJobs,
     no_adaptive: bool,
     fam_max_funcs: usize,
     fam_min_len: usize,
-    against_path: Option<&Path>,
-    out: &Path,
-    stats_path: Option<&Path>,
+    against_path: Option<&'a Path>,
+    out: &'a Path,
+    stats_path: Option<&'a Path>,
     started: Instant,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_family_mode(
+    job: FamilyJob<'_>,
 ) -> i32 {
+    let files = job.files;
+    let pool = job.pool;
+    let cpu = job.cpu;
+    let adaptive = job.adaptive;
+    let no_adaptive = job.no_adaptive;
+    let fam_max_funcs = job.fam_max_funcs;
+    let fam_min_len = job.fam_min_len;
+    let against_path = job.against_path;
+    let out = job.out;
+    let stats_path = job.stats_path;
+    let started = job.started;
     let fam_cfg = FamilyConfig {
         max_funcs_per_file: fam_max_funcs,
         min_func_len: fam_min_len,
@@ -1422,10 +1441,9 @@ fn run_family_mode(
     // Aggregate by pattern; cross-family and duplicate occurrences resolve
     // here. Deterministic: family_files is in sorted-file order and batches
     // are collected in order.
-    let mut seen: std::collections::HashMap<
-        (Vec<u8>, Vec<bool>, String),
-        (String, std::collections::HashSet<usize>, RawEntry),
-    > = std::collections::HashMap::new();
+    /// Pattern key → (family, sample indices, merged entry).
+    type SeenMap = std::collections::HashMap<(Vec<u8>, Vec<bool>, String), (String, std::collections::HashSet<usize>, RawEntry)>;
+    let mut seen: SeenMap = std::collections::HashMap::new();
     let mut cross_keys: std::collections::HashSet<
         (Vec<u8>, Vec<bool>, String),
     > = std::collections::HashSet::new();
@@ -1871,19 +1889,19 @@ fn main() {
     // detection → operand-aware entry prefixes → cross-family junk drop →
     // corroboration-boosted confidence → degenerate-fill self-FP gate.
     if families_mode {
-        let code = run_family_mode(
-            &files,
-            &pool,
-            &cpu,
-            &adaptive,
+        let code = run_family_mode(FamilyJob {
+            files: &files,
+            pool: &pool,
+            cpu: &cpu,
+            adaptive: &adaptive,
             no_adaptive,
             fam_max_funcs,
             fam_min_len,
-            against_path.as_deref(),
-            &out,
-            stats_path.as_deref(),
+            against_path: against_path.as_deref(),
+            out: &out,
+            stats_path: stats_path.as_deref(),
             started,
-        );
+        });
         std::process::exit(code);
     }
 

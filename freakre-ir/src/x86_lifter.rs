@@ -1,4 +1,4 @@
-﻿use crate::ir::{BlockId, IrBlock, IrFunction, IrInst, OpCode, Value};
+use crate::ir::{BlockId, IrBlock, IrFunction, IrInst, OpCode, Value};
 use crate::lifter::{Lifter, LifterError};
 use crate::types::Ty;
 
@@ -155,6 +155,115 @@ fn reg_value(idx: u8, bits: u32, has_rex: bool) -> Value {
         name: reg_name(idx, bits, has_rex),
         ty: int_ty(bits),
     }
+}
+
+/// GPR register classes: canonical 64-bit name → every alias that overlaps it.
+/// One entry per calling-convention slot (rcx, rdx, r8, r9).
+const X64_ARG_SLOTS: [(&str, [&str; 5]); 4] = [
+    ("rcx", ["rcx", "ecx", "cx", "cl", "ch"]),
+    ("rdx", ["rdx", "edx", "dx", "dl", "dh"]),
+    ("r8", ["r8", "r8d", "r8w", "r8b", "r8b"]),
+    ("r9", ["r9", "r9d", "r9w", "r9b", "r9b"]),
+];
+
+/// GPR alias sets for a slot, where slot 0..1 are the classic regs
+/// (ecx/edx for 32-bit code) and 2..3 are r8/r9 (x64 only).
+const X86_ARG_SLOTS: [(&str, [&str; 4]); 4] = [
+    ("ecx", ["ecx", "cx", "cl", "ch"]),
+    ("edx", ["edx", "dx", "dl", "dh"]),
+    ("r8", ["r8", "r8d", "r8w", "r8b"]),
+    ("r9", ["r9", "r9d", "r9w", "r9b"]),
+];
+
+/// Values written by `inst` (dst operands, if any).
+fn writes_of(inst: &IrInst) -> impl Iterator<Item = &Value> {
+    let v: Vec<&Value> = match inst {
+        IrInst::Binary { dst, .. }
+        | IrInst::Unary { dst, .. }
+        | IrInst::Load { dst, .. } => vec![dst],
+        IrInst::Call { dst, .. } => dst.as_ref().into_iter().collect(),
+        _ => Vec::new(),
+    };
+    v.into_iter()
+}
+
+/// The argument value a write to `canonical` register contributes:
+/// `Copy(dst, src)` contributes `src` (register moves stay inline),
+/// anything else contributes the destination variable itself.
+/// The caller scans backwards, so the first hit is the live value.
+fn arg_value_for_slot(inst: &IrInst, canonical: &str) -> Option<Value> {
+    for w in writes_of(inst) {
+        if write_reg_names_of(w).any(|n| n == canonical) {
+            return match inst {
+                IrInst::Unary {
+                    op: OpCode::Copy,
+                    dst: _,
+                    src,
+                } => Some(src.clone()),
+                _ => Some(w.clone()),
+            };
+        }
+    }
+    None
+}
+
+/// The instruction in `blk` that defines `v` (last one wins).
+fn def_of<'a>(blk: &'a IrBlock, v: &Value) -> Option<&'a IrInst> {
+    blk.insts
+        .iter()
+        .rev()
+        .find(|inst| writes_of(inst).any(|d| d == v))
+}
+
+/// Canonical register name behind a register `Value` (64-bit spelling).
+fn canonical_reg(v: &Value) -> Option<&'static str> {
+    match v {
+        Value::Register { name, .. } => Some(match name.as_str() {
+            "rax" | "eax" | "ax" | "al" | "ah" => "rax",
+            "rcx" | "ecx" | "cx" | "cl" | "ch" => "rcx",
+            "rdx" | "edx" | "dx" | "dl" | "dh" => "rdx",
+            "rbx" | "ebx" | "bx" | "bl" | "bh" => "rbx",
+            "rsp" | "esp" | "sp" | "spl" => "rsp",
+            "rbp" | "ebp" | "bp" | "bpl" => "rbp",
+            "rsi" | "esi" | "si" | "sil" => "rsi",
+            "rdi" | "edi" | "di" | "dil" => "rdi",
+            "r8" | "r8d" | "r8w" | "r8b" => "r8",
+            "r9" | "r9d" | "r9w" | "r9b" => "r9",
+            "r10" | "r10d" | "r10w" | "r10b" => "r10",
+            "r11" | "r11d" | "r11w" | "r11b" => "r11",
+            "r12" | "r12d" | "r12w" | "r12b" => "r12",
+            "r13" | "r13d" | "r13w" | "r13b" => "r13",
+            "r14" | "r14d" | "r14w" | "r14b" => "r14",
+            "r15" | "r15d" | "r15w" | "r15b" => "r15",
+            "rip" | "eip" => "rip",
+            _ if name.starts_with("flag_") => "flags",
+            _ => "other",
+        }),
+        _ => None,
+    }
+}
+
+/// Register names written by a value that is a write destination
+/// (canonical 64-bit spellings).
+fn write_reg_names_of(v: &Value) -> impl Iterator<Item = &'static str> {
+    let names: Vec<&'static str> = canonical_reg(v)
+        .map(|n| {
+            if n == "other" {
+                Vec::new()
+            } else {
+                vec![n]
+            }
+        })
+        .unwrap_or_default();
+    names.into_iter()
+}
+
+/// Register names read by `inst` (canonical 64-bit spellings).
+fn read_reg_names(inst: &IrInst) -> Vec<&'static str> {
+    inst.sources()
+        .into_iter()
+        .filter_map(canonical_reg)
+        .collect()
 }
 
 /// Opaque 128-bit XMM register value (SSE register file).
@@ -914,6 +1023,129 @@ impl X86Lifter {
         self.write_pf(func, block, result);
     }
 
+    /// Calling-convention arguments for a call at the end of `block`.
+    ///
+    /// x64 (MS ABI): the four register slots rcx/rdx/r8/r9. A slot appears
+    /// when its register (or an alias) has a live definition in the block —
+    /// either written before the call or read before any write (the value
+    /// was prepared outside this block). Holes up to the highest defined
+    /// slot are filled with the bare register so argument positions stay
+    /// stable; if no slot has evidence the list stays empty.
+    ///
+    /// x86-32 (cdecl): stack arguments pushed before the call, in push
+    /// order reversed (arg0 is the last push). The synthetic return-address
+    /// push the lifter models right before the call is excluded.
+    fn call_args(&self, func: &IrFunction, block: BlockId) -> Vec<Value> {
+        let blk = func.block(block);
+        let Some(blk) = blk else {
+            return Vec::new();
+        };
+        if self.is_64bit {
+            let names: Vec<&str> = X64_ARG_SLOTS.iter().map(|(c, _)| *c).collect();
+            let defs = X86Lifter::arg_defs(func, blk, &names);
+            let Some(max_slot) = defs.iter().rposition(|d| d.is_some()) else {
+                return Vec::new();
+            };
+            (0..=max_slot)
+                .map(|i| {
+                    defs[i].clone().unwrap_or_else(|| {
+                        let (canon, _) = X64_ARG_SLOTS[i];
+                        Value::Register {
+                            name: canon.to_string(),
+                            ty: int_ty(64),
+                        }
+                    })
+                })
+                .collect()
+        } else {
+            let pb = self.ptr_bits() as usize;
+            // Walk backwards; collect push-shaped stores. Each emit_push is
+            // `tmp = rsp - size; [tmp] = val; rsp = tmp`, so the store's
+            // address is a temp defined by Sub(sp, const).
+            let mut args: Vec<Value> = Vec::new();
+            let mut ret_push_skipped = false;
+            let mut saw_current_call = false;
+            for inst in blk.insts.iter().rev() {
+                if let IrInst::Call { .. } = inst {
+                    if saw_current_call {
+                        break; // a previous call: its pushes are not ours
+                    }
+                    saw_current_call = true; // the call itself: keep scanning
+                    continue;
+                }
+                if let IrInst::Store { addr, value, size } = inst {
+                    if *size as usize != pb / 8 {
+                        continue;
+                    }
+                    let is_push = matches!(
+                        def_of(blk, addr),
+                        Some(IrInst::Binary {
+                            op: OpCode::Sub,
+                            ..
+                        })
+                    );
+                    if !is_push {
+                        continue;
+                    }
+                    if !ret_push_skipped {
+                        // The nearest store before the call is the modeled
+                        // return address, not an argument.
+                        ret_push_skipped = true;
+                        continue;
+                    }
+                    args.push(value.clone());
+                    if args.len() >= 4 {
+                        break;
+                    }
+                }
+            }
+            // Reverse scan order already yields arg0 (last push) first.
+            args
+        }
+    }
+
+    /// Last definitions of the calling-convention argument registers,
+    /// scanned backwards from the end of `block`.
+    ///
+    /// A register counts as defined when it was *written* (dst of a write
+    /// to any of its aliases) after its last *read* (any use, because
+    /// `read_reg_names` covers the full alias set). Scanning backwards and
+    /// taking the first "written and not read since" event therefore gives
+    /// exactly the value live at the call.
+    fn arg_defs(
+        func: &IrFunction,
+        block: &IrBlock,
+        names: &[&str],
+    ) -> Vec<Option<Value>> {
+        let mut res: Vec<Option<Value>> = vec![None; names.len()];
+        let mut defined = vec![false; names.len()];
+        for inst in block.insts.iter().rev() {
+            let reads = read_reg_names(inst);
+            for (slot, canonical) in names.iter().enumerate() {
+                if defined[slot] {
+                    continue;
+                }
+                // A write for this slot decides the argument value: a
+                // plain copy contributes its source, everything else the
+                // computed destination variable. This also covers
+                // read-modify-write (`add rax, 1`): the consumed value
+                // came from outside, but the *argument* is the result.
+                if let Some(argval) = arg_value_for_slot(inst, canonical) {
+                    res[slot] = Some(argval);
+                    defined[slot] = true;
+                    continue;
+                }
+                if reads.iter().any(|n| n == canonical) {
+                    // Read after its last write: value came from outside
+                    // the block (pre-call or caller state).
+                    defined[slot] = true;
+                }
+            }
+            let _ = func;
+        }
+        res
+    }
+
     fn emit_push(&self, func: &mut IrFunction, block: BlockId, val: Value, bits: u32) {
         let pb = self.ptr_bits();
         let sp = reg_value(4, pb, false);
@@ -1382,7 +1614,6 @@ impl X86Lifter {
         let Some((table_va, index_val, scale)) =
             parse_jt_addr(func, bid, &load_addr)
         else {
-            eprintln!("JT-DBG: bid {} bail at step2", bid.0);
             return false;
         };
         if !(scale == 4 || scale == 8) || load_size as u64 != scale {
@@ -1393,16 +1624,14 @@ impl X86Lifter {
         let Some(count) = find_bounds_count(func, bid, &index_val, self.is_64bit) else {
             return false;
         };
-        if count < 2 || count > 1024 {
-            eprintln!("JT-DBG: bid {} bail at step3b count<2", bid.0);
+        if !(2..=1024).contains(&count) {
+            return false;
         }
 
         // 4. Read + validate entries.
-        eprintln!("JT-DBG: bid {} step4 table_va={:#x} count={} scale={}", bid.0, table_va, count, scale);
         let mut targets: Vec<u64> = Vec::with_capacity(count as usize);
-        for i in 0..count as u64 {
+        for i in 0..count {
             let Some(raw) = image.read_ptr(table_va.wrapping_add(i * scale), scale) else {
-                eprintln!("JT-DBG: bid {} bail at step4 read", bid.0);
                 return false;
             };
             let va = if self.is_64bit {
@@ -1413,7 +1642,7 @@ impl X86Lifter {
             // Case targets must fall inside the function's code slice.
             let hi = base_address + code.len() as u64;
             if !(base_address..hi).contains(&va) {
-                eprintln!("JT-DBG: bid {} bail at step4 range va={:#x}", bid.0, va);
+                return false;
             }
             targets.push(va);
         }
@@ -1454,7 +1683,6 @@ impl X86Lifter {
         }
 
         // 6. Replace the terminator.
-        eprintln!("JT-DBG: bid {} step6 by_va={:?}", bid.0, by_va.iter().map(|(k, v)| (*k, v.0)).collect::<Vec<_>>());
         let cases: Vec<(i64, BlockId)> = targets
             .iter()
             .enumerate()
@@ -2333,12 +2561,13 @@ impl X86Lifter {
                 // [rspВ±k] memory operands stay aligned.
                 let ret_addr = address.wrapping_add(insn_len as u64) as i64;
                 self.emit_push(func, block, Value::Const(ret_addr), sbits);
+                let args = self.call_args(func, block);
                 func.push_inst(
                     block,
                     IrInst::Call {
                         dst: Some(reg_value(0, self.ptr_bits(), false)),
                         target: Value::Symbol(format!("func_{:X}", target_addr)),
-                        args: Vec::new(),
+                        args,
                     },
                 );
                 Ok((insn_len, true))
@@ -2538,12 +2767,13 @@ impl X86Lifter {
                     }
                     (0xFF, 2) => {
                         let v = loc.load(func, block, bits);
+                        let args = self.call_args(func, block);
                         func.push_inst(
                             block,
                             IrInst::Call {
                                 dst: Some(reg_value(0, self.ptr_bits(), false)),
                                 target: v,
-                                args: Vec::new(),
+                                args,
                             },
                         );
                         Ok((pos + 1 + loc.len, true))
@@ -2551,7 +2781,6 @@ impl X86Lifter {
                     (0xFF, 4) => {
                         let v = loc.load(func, block, bits);
                         func.push_inst(block, IrInst::IndirectBranch { target: v });
-                        eprintln!("JT-DBG: FF/4 at {:#x} pos={} loc.len={} consumed={}", address, pos, loc.len, pos + 1 + loc.len);
                         Ok((pos + 1 + loc.len, true))
                     }
                     (0xFF, 6) => {
@@ -3338,10 +3567,10 @@ mod tests {
         // resolves the no-base SIB form through rip_next, so the emitted
         // address constant is jmp_next + disp вЂ” hence disp = tbl - jmp_next.
         let table_va: u64 = 0x14002000;
-        let disp = (table_va as i64).wrapping_sub(jmp_next as i64);
+        let disp = (table_va as i64).wrapping_sub(jmp_next as i64) as i32; // disp32
         let mut code = vec![
             0x83, 0xF8, 0x01, // cmp eax, 1
-            0x77, 0x14, // ja default (0x1005 + 0x14 = 0x1019)
+            0x77, 0x14, // ja default
             0x48, 0xFF, 0x24, 0xC5,
         ];
         code.extend_from_slice(&disp.to_le_bytes());
@@ -3366,6 +3595,115 @@ mod tests {
     }
 
     #[test]
+    fn test_call_args_x64_registers() {
+        // mov ecx, 1        B9 01 00 00 00
+        // mov edx, 2        BA 02 00 00 00
+        // call rel32        E8 xx xx xx xx
+        // ret               C3
+        let mut code = vec![0xB9, 0x01, 0x00, 0x00, 0x00, 0xBA, 0x02, 0x00, 0x00, 0x00];
+        code.extend_from_slice(&[0xE8, 0x05, 0x00, 0x00, 0x00]);
+        code.push(0xC3);
+        let lifter = X86Lifter::new(true);
+        let func = lifter.lift_function(&code, 0x1000, "t").unwrap();
+        let call = func
+            .blocks
+            .iter()
+            .flat_map(|b| &b.insts)
+            .find_map(|i| match i {
+                IrInst::Call { args, .. } => Some(args.clone()),
+                _ => None,
+            })
+            .expect("call not found");
+        // `mov ecx, 1` zero-extends into rcx: the lifter models the value
+        // as its zext temp. Both args must be distinct value variables.
+        assert_eq!(call.len(), 2, "rcx/rdx args, no holes beyond");
+        assert!(
+            call.iter().all(|a| matches!(a, Value::Var { .. })),
+            "args must be computed values, not bare registers: {:?}",
+            call
+        );
+        assert_ne!(call[0], call[1]);
+    }
+
+    #[test]
+    fn test_call_args_x64_stale_register_dropped() {
+        // mov ecx, 1        B9 01 00 00 00   (written)
+        // mov ecx, 3        B9 03 00 00 00   (overwritten: last write wins)
+        // add ecx, 2        83 C1 02         (read-modify-write: consumes 3)
+        // call rel32        E8 xx xx xx xx
+        // ret               C3
+        let mut code = vec![
+            0xB9, 0x01, 0x00, 0x00, 0x00, 0xB9, 0x03, 0x00, 0x00, 0x00, 0x83, 0xC1, 0x02,
+        ];
+        code.extend_from_slice(&[0xE8, 0x05, 0x00, 0x00, 0x00]);
+        code.push(0xC3);
+        let lifter = X86Lifter::new(true);
+        let func = lifter.lift_function(&code, 0x1000, "t").unwrap();
+        let call = func
+            .blocks
+            .iter()
+            .flat_map(|b| &b.insts)
+            .find_map(|i| match i {
+                IrInst::Call { args, .. } => Some(args.clone()),
+                _ => None,
+            })
+            .expect("call not found");
+        // ecx was RMW'd: the pre-call value is `3 + 2`, carried by the
+        // add's dst variable — NOT the const 3 or 1.
+        assert_eq!(call.len(), 1);
+        let s = format!("{:?}", call[0]);
+        assert!(!s.contains("Value::Const"), "RMW value must be a var: {}", s);
+    }
+
+    #[test]
+    fn test_call_args_x64_no_args() {
+        // call rel32 with untouched argument registers.
+        let code = [0xE8, 0x05, 0x00, 0x00, 0x00, 0xC3];
+        let lifter = X86Lifter::new(true);
+        let func = lifter.lift_function(&code, 0x1000, "t").unwrap();
+        let call = func
+            .blocks
+            .iter()
+            .flat_map(|b| &b.insts)
+            .find_map(|i| match i {
+                IrInst::Call { args, .. } => Some(args.clone()),
+                _ => None,
+            })
+            .expect("call not found");
+        assert!(call.is_empty(), "no register evidence -> no args");
+    }
+
+    #[test]
+    fn test_call_args_x86_stack_pushes() {
+        // push 1        6A 01
+        // push 2        6A 02
+        // call rel32    E8 xx xx xx xx
+        // ret           C3
+        let mut code = vec![0x6A, 0x01, 0x6A, 0x02];
+        code.extend_from_slice(&[0xE8, 0x05, 0x00, 0x00, 0x00]);
+        code.push(0xC3);
+        let lifter = X86Lifter::new(false);
+        let func = lifter.lift_function(&code, 0x1000, "t").unwrap();
+        let call = func
+            .blocks
+            .iter()
+            .flat_map(|b| &b.insts)
+            .find_map(|i| match i {
+                IrInst::Call { args, .. } => Some(args.clone()),
+                _ => None,
+            })
+            .expect("call not found");
+        // cdecl: arg0 = last push. The modeled return-address push must be
+        // excluded, so exactly the two real pushes remain, in call order.
+        assert_eq!(call.len(), 2, "push args: {:?}", call);
+        assert!(
+            format!("{:?}", call[0]).contains("2") && format!("{:?}", call[1]).contains("1"),
+            "arg0 must be the last push: {:?}",
+            call
+        );
+    }
+
+    #[test]
     fn test_jump_table_recovered_reusing_lifted_bodies() {
         let jmp_next = 0x1400100Du64;
         let (code, table, _) = jt_code(jmp_next, &[0x1400100D, 0x14001013]);
@@ -3375,7 +3713,6 @@ mod tests {
             .expect("lift");
 
         // The dispatch became a Switch with exactly the two table cases.
-        eprintln!("JT-DBG: full func:\n{}", dump(&func));
         let (dispatch, cases) = jt_switch_block(&func);
         assert_eq!(cases.len(), 2, "case count\n{}", dump(&func));
         assert_eq!(cases[0].0, 0, "case values in order\n{}", dump(&func));

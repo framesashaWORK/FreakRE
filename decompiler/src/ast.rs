@@ -176,6 +176,45 @@ pub enum Expr {
     Sizeof(Box<Expr>),
 }
 
+impl Expr {
+    /// Rewrite this expression tree bottom-up: children first, then `self`.
+    /// The closure sees every node exactly once, parents after children.
+    pub fn rewrite_subexprs(&mut self, f: &mut impl FnMut(&mut Expr)) {
+        match self {
+            Expr::Binary { lhs, rhs, .. } => {
+                lhs.rewrite_subexprs(f);
+                rhs.rewrite_subexprs(f);
+            }
+            Expr::Unary { operand, .. }
+            | Expr::Deref(operand)
+            | Expr::AddrOf(operand)
+            | Expr::Sizeof(operand) => operand.rewrite_subexprs(f),
+            Expr::Call { args, .. } => {
+                for a in args.iter_mut() {
+                    a.rewrite_subexprs(f);
+                }
+            }
+            Expr::Index { base, index } => {
+                base.rewrite_subexprs(f);
+                index.rewrite_subexprs(f);
+            }
+            Expr::Member { base, .. } => base.rewrite_subexprs(f),
+            Expr::Cast { expr, .. } => expr.rewrite_subexprs(f),
+            Expr::Ternary {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                cond.rewrite_subexprs(f);
+                then_expr.rewrite_subexprs(f);
+                else_expr.rewrite_subexprs(f);
+            }
+            _ => {}
+        }
+        f(self);
+    }
+}
+
 /// Binary operators
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinOp {
@@ -315,6 +354,95 @@ impl AstFunction {
             locals: Vec::new(),
             entry_address: 0,
         }
+    }
+
+    /// Rewrite every expression in the function, bottom-up: subexpressions
+    /// are visited (and possibly rewritten) before their parent. The closure
+    /// is applied to every `Expr` node exactly once.
+    ///
+    /// Shared by pattern recognition (rotate/bswap idioms) and string-literal
+    /// annotation so all passes see the same traversal order.
+    pub fn rewrite_exprs(&mut self, f: &mut impl FnMut(&mut Expr)) {
+        rewrite_stmts_exprs(&mut self.body, f);
+    }
+}
+
+fn rewrite_stmts_exprs(stmts: &mut [Stmt], f: &mut impl FnMut(&mut Expr)) {
+    for stmt in stmts.iter_mut() {
+        rewrite_stmt_exprs(stmt, f);
+    }
+}
+
+fn rewrite_stmt_exprs(stmt: &mut Stmt, f: &mut impl FnMut(&mut Expr)) {
+    match stmt {
+        Stmt::Assign { target, value } => {
+            target.rewrite_subexprs(f);
+            value.rewrite_subexprs(f);
+        }
+        Stmt::If {
+            cond,
+            then_body,
+            else_body,
+        } => {
+            cond.rewrite_subexprs(f);
+            rewrite_stmts_exprs(then_body, f);
+            if let Some(eb) = else_body {
+                rewrite_stmts_exprs(eb, f);
+            }
+        }
+        Stmt::While { cond, body } | Stmt::DoWhile { body, cond } => {
+            cond.rewrite_subexprs(f);
+            rewrite_stmts_exprs(body, f);
+        }
+        Stmt::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(i) = init {
+                rewrite_stmt_exprs(i, f);
+            }
+            if let Some(c) = cond {
+                c.rewrite_subexprs(f);
+            }
+            if let Some(u) = update {
+                rewrite_stmt_exprs(u, f);
+            }
+            rewrite_stmts_exprs(body, f);
+        }
+        Stmt::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            expr.rewrite_subexprs(f);
+            for case in cases.iter_mut() {
+                case.value.rewrite_subexprs(f);
+                rewrite_stmts_exprs(&mut case.body, f);
+            }
+            if let Some(d) = default {
+                rewrite_stmts_exprs(d, f);
+            }
+        }
+        Stmt::Return { value: Some(v) } => v.rewrite_subexprs(f),
+        Stmt::Call { args, .. } => {
+            for a in args.iter_mut() {
+                a.rewrite_subexprs(f);
+            }
+        }
+        Stmt::Expr(e) => e.rewrite_subexprs(f),
+        Stmt::Decl { init: Some(e), .. } => e.rewrite_subexprs(f),
+        Stmt::Block(inner) => rewrite_stmts_exprs(inner, f),
+        Stmt::TryCatch {
+            try_body,
+            catch_body,
+            ..
+        } => {
+            rewrite_stmts_exprs(try_body, f);
+            rewrite_stmts_exprs(catch_body, f);
+        }
+        _ => {}
     }
 }
 

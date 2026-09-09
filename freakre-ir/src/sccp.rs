@@ -129,6 +129,7 @@ pub fn sccp(ssa: &mut SsaFunction) -> SccpStats {
                                 mark_edge(bid, *target_true, &mut exec_edges, &mut exec_blocks, &mut block_wl, &mut in_block_wl);
                             }
                             _ => {
+                                // Condition unknown: both edges stay.
                                 mark_edge(bid, *target_true, &mut exec_edges, &mut exec_blocks, &mut block_wl, &mut in_block_wl);
                                 mark_edge(bid, *target_false, &mut exec_edges, &mut exec_blocks, &mut block_wl, &mut in_block_wl);
                             }
@@ -140,9 +141,8 @@ pub fn sccp(ssa: &mut SsaFunction) -> SccpStats {
                             // known index also proves the default is dead
                             // unless no case value matches.
                             let hit = cases.iter().find(|(v, _)| *v == c).map(|(_, t)| *t);
-                            match hit.or(*default) {
-                                Some(t) => mark_edge(bid, t, &mut exec_edges, &mut exec_blocks, &mut block_wl, &mut in_block_wl),
-                                None => {}
+                            if let Some(t) = hit.or(*default) {
+                                mark_edge(bid, t, &mut exec_edges, &mut exec_blocks, &mut block_wl, &mut in_block_wl);
                             }
                         } else {
                             for (_, t) in cases.iter() {
@@ -221,7 +221,7 @@ pub fn sccp(ssa: &mut SsaFunction) -> SccpStats {
                 kept_phis.push(keep);
             }
         }
-        for (id, keep) in dropped_phis.into_iter().zip(kept_phis.into_iter()) {
+        for (id, keep) in dropped_phis.into_iter().zip(kept_phis) {
             if let Some(dst) = ssa.blocks.iter_mut().find(|bb| bb.id == id) {
                 dst.phis = keep;
             }
@@ -249,13 +249,11 @@ pub fn sccp(ssa: &mut SsaFunction) -> SccpStats {
                     changed = true;
                 }
                 // (c) fold constant conditional branches
-                if let SsaInst::CBranch { cond, target_true, target_false } = inst {
-                    if let SsaVal::Const(c) = *cond {
-                        let target = if c != 0 { *target_true } else { *target_false };
-                        *inst = SsaInst::Branch { target };
-                        stats.branches_folded += 1;
-                        changed = true;
-                    }
+                if let SsaInst::CBranch { cond: SsaVal::Const(c), target_true, target_false } = inst {
+                    let target = if c != &0 { *target_true } else { *target_false };
+                    *inst = SsaInst::Branch { target };
+                    stats.branches_folded += 1;
+                    changed = true;
                 }
             }
         }
@@ -278,13 +276,11 @@ fn mark_edge(
     wl: &mut VecDeque<BlockId>,
     seen: &mut HashSet<BlockId>,
 ) {
-    if exec_edges.insert((from, to)) {
-        if exec_blocks.insert(to) {
-            if seen.insert(to) {
+    if exec_edges.insert((from, to))
+        && exec_blocks.insert(to)
+            && seen.insert(to) {
                 wl.push_back(to);
             }
-        }
-    }
 }
 
 fn ssa_lattice(v: &SsaVal, lat: &HashMap<VersionedVar, Lattice>) -> Lattice {
@@ -537,10 +533,8 @@ fn substitute_inst(
                 changed |= sub(a);
             }
         }
-        SsaInst::Return { value } => {
-            if let Some(v) = value {
-                changed |= sub(v);
-            }
+        SsaInst::Return { value: Some(v) } => {
+            changed |= sub(v);
         }
         SsaInst::IndirectBranch { target } => changed |= sub(target),
         SsaInst::Switch { index, .. } => changed |= sub(index),

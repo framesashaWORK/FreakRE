@@ -31,6 +31,7 @@ pub mod ir_to_ast;
 pub mod patterns;
 pub mod simplify;
 pub mod stack_vars;
+pub mod strings;
 pub mod structuring;
 pub mod types;
 
@@ -53,6 +54,7 @@ pub struct IfElsePattern {
 
 pub use decompile::{
     decompile_exports, decompile_exports_with_config, decompile_exports_with_diagnostics,
-    decompile_function, decompile_function_with_config, DecompileDiagnostic,
-    DecompileDiagnosticKind, DecompileError, DecompilerConfig,
+    decompile_function, decompile_function_with_config, decompile_function_with_strings,
+    DecompileDiagnostic, DecompileDiagnosticKind, DecompileError, DecompilerConfig,
 };
+pub use strings::StringTable;

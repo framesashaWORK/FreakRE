@@ -79,6 +79,24 @@ pub fn decompile_function(func: &IrFunction) -> Result<String, DecompileError> {
     decompile_function_with_config(func, &DecompilerConfig::default())
 }
 
+/// Decompile a single IR function, rendering address constants that point at
+/// known image strings as C string literals (`f(0x14001000)` → `f("...")`).
+///
+/// The caller (scanner) owns the image layout and builds the table; this
+/// entry point is the image-aware variant of [`decompile_function`].
+pub fn decompile_function_with_strings(
+    func: &IrFunction,
+    strings: &crate::strings::StringTable,
+) -> Result<String, DecompileError> {
+    decompile_function_inner(
+        func,
+        &DecompilerConfig::default(),
+        &crate::call_naming::SignatureMap::default(),
+        &crate::call_naming::AddrNameMap::default(),
+        Some(strings),
+    )
+}
+
 /// Decompile a function through an explicit SSA round-trip.
 ///
 /// When `use_ssa` is enabled (now default with stack-aware fallback), the
@@ -104,6 +122,7 @@ pub fn decompile_function_with_config(
         config,
         &crate::call_naming::SignatureMap::default(),
         &crate::call_naming::AddrNameMap::default(),
+        None,
     )
 }
 
@@ -112,6 +131,7 @@ fn decompile_function_inner(
     config: &DecompilerConfig,
     signatures: &crate::call_naming::SignatureMap,
     addr_names: &crate::call_naming::AddrNameMap,
+    strings: Option<&crate::strings::StringTable>,
 ) -> Result<String, DecompileError> {
     validate_function_size(func)?;
 
@@ -203,6 +223,13 @@ fn decompile_function_inner(
         Some(ir.entry_address),
     );
 
+    // Phase 5.6: string-literal annotation — image addresses that point at
+    // known strings become C literals. Runs after call naming so signature
+    // matching still sees the original integer arguments.
+    if let Some(table) = strings {
+        crate::strings::annotate_function(&mut ast, table);
+    }
+
     // Phase 6: Convert AST to C pseudocode
     let c_code = ast_to_c_with_config(&ast, config);
 
@@ -284,7 +311,8 @@ pub fn decompile_program_with_config(
                 }
             }
         }
-        let c_code = decompile_function_inner(&enriched, config, &signatures, &addr_names)?;
+        let c_code =
+            decompile_function_inner(&enriched, config, &signatures, &addr_names, None)?;
         results.push((func.name.clone(), c_code));
     }
     Ok(results)
@@ -386,7 +414,7 @@ pub fn decompile_exports_with_diagnostics(
                 }
             }
         }
-        match decompile_function_inner(&enriched, config, &signatures, &addr_names) {
+        match decompile_function_inner(&enriched, config, &signatures, &addr_names, None) {
             Ok(code) => results.push((export_name.clone(), code)),
             Err(e) => diagnostics.push(DecompileDiagnostic {
                 export_name: export_name.clone(),

@@ -1106,7 +1106,7 @@ pub fn harvest_family_pe(
     let funcs_total = detected.len();
     let mut candidates: Vec<&func_finder::DetectedFunction> = detected
         .iter()
-        .filter(|f| f.size as usize >= cfg.min_func_len)
+        .filter(|f| f.size >= cfg.min_func_len)
         .collect();
     // Candidate pool: prefer the largest functions (they carry real logic),
     // but over-select so quality ranking has room to work.
@@ -1146,7 +1146,7 @@ pub fn harvest_family_pe(
         }
         let rva = sec.virtual_address + start as u32;
         let mut bounded = cfg.harvest.clone();
-        let distance = f.size as usize;
+        let distance = f.size;
         bounded.harvest_window = bounded.harvest_window.min(distance);
         bounded.max_prefix_len = bounded.max_prefix_len.min(distance);
         let entry = match harvest_function(
@@ -1171,7 +1171,7 @@ pub fn harvest_family_pe(
         let fixed = entry.as_ref().map_or(0, |e| e.mask.iter().filter(|&&m| m).count());
         pool.push(Cand {
             rva,
-            size: f.size as usize,
+            size: f.size,
             entry,
             fixed,
         });

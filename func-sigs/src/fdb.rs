@@ -57,7 +57,7 @@ fn put_u64(out: &mut Vec<u8>, v: u64) {
 }
 
 fn align8(out: &mut Vec<u8>) {
-    while out.len() % 8 != 0 {
+    while !out.len().is_multiple_of(8) {
         out.push(0);
     }
 }
@@ -212,7 +212,7 @@ pub fn write_fdb(entries: &[DbEntry], w: &mut impl std::io::Write) -> std::io::R
         let pat_off = patterns.len() as u32;
         patterns.extend_from_slice(&e.bytes);
         let bit_base = mask_bits.len();
-        mask_bits.extend(std::iter::repeat(0u8).take(e.bytes.len().div_ceil(8)));
+        mask_bits.extend(std::iter::repeat_n(0u8, e.bytes.len().div_ceil(8)));
         for (i, &m) in e.mask.iter().enumerate() {
             if m {
                 mask_bits[bit_base + i / 8] |= 1 << (i % 8);
@@ -408,14 +408,14 @@ pub struct FdbOverlay {
     refs_end: [usize; KIND_COUNT],
 }
 
-fn u32s<'a>(data: &'a [u8], range: (usize, usize)) -> &'a [u32] {
+fn u32s(data: &[u8], range: (usize, usize)) -> &[u32] {
     let sl = &data[range.0..range.1];
     let (head, mid, tail) = unsafe { sl.align_to::<u32>() };
     debug_assert!(head.is_empty() && tail.is_empty(), "unaligned u32 section");
     mid
 }
 
-fn u64s<'a>(data: &'a [u8], range: (usize, usize)) -> &'a [u64] {
+fn u64s(data: &[u8], range: (usize, usize)) -> &[u64] {
     let sl = &data[range.0..range.1];
     let (head, mid, tail) = unsafe { sl.align_to::<u64>() };
     debug_assert!(head.is_empty() && tail.is_empty(), "unaligned u64 section");
@@ -964,7 +964,7 @@ mod tests {
         code3.extend_from_slice(&[0xE8, 0x11, 0x22, 0x33, 0x44, 0x8B, 0x45, 0xFC]);
         let hits = ov.scan_code(&code3, 0, 10, None);
         assert!(hits.is_empty(), "min_len gate must reject short match");
-        code3.extend(std::iter::repeat(0x90u8).take(6));
+        code3.extend(std::iter::repeat_n(0x90u8, 6));
         let hits = ov.scan_code(&code3, 0, 10, None);
         assert_eq!(hits.len(), 1, "pair-ladder hit");
         assert_eq!(ov.function_name(hits[0].entry), "CmdTail");

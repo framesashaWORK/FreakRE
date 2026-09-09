@@ -92,7 +92,8 @@ pub fn decompile_pe_function(data: &[u8], address: Option<u64>) -> Result<Decomp
         .lift_function(func_slice, func.start, &func_name)
         .map_err(|e| format!("IR lift failed: {e}"))?;
 
-    let c_code = decompiler::decompile_function(&ir_func)
+    let string_table = build_string_table(&pe, data);
+    let c_code = decompiler::decompile_function_with_strings(&ir_func, &string_table)
         .map_err(|e| format!("decompilation failed: {e}"))?;
 
     Ok(DecompiledFunction {
@@ -101,6 +102,34 @@ pub fn decompile_pe_function(data: &[u8], address: Option<u64>) -> Result<Decomp
         size: func.size as u64,
         c_code,
     })
+}
+
+/// Build a virtual-address → string table for the whole PE image.
+///
+/// Strings are extracted from every section's raw data and mapped to their
+/// virtual addresses (`image_base + section VA + file offset`), so
+/// decompiled references like `f(0x14001000)` render as `f("...")`.
+/// ASCII only, minimum 5 characters — UTF-16 API strings on Windows are
+/// passed via explicit pointer math and rarely appear as bare constants.
+fn build_string_table(pe: &pe_parser::PeFile, data: &[u8]) -> decompiler::StringTable {
+    let mut table = decompiler::StringTable::new();
+    let config = str_extract::ExtractConfig::ascii_only(5);
+    for s in str_extract::extract_strings(data, &config) {
+        let file_off = s.offset;
+        // Find the section whose raw data range contains this offset.
+        for sec in &pe.sections {
+            let start = sec.raw_data_offset as usize;
+            let end = start.saturating_add(sec.raw_data_size as usize);
+            if file_off >= start && file_off < end {
+                let va = pe.image_base
+                    + sec.virtual_address as u64
+                    + (file_off - start) as u64;
+                table.insert(va, s.value.clone());
+                break;
+            }
+        }
+    }
+    table
 }
 
 /// Decompile and wrap failures as a `DECOMPILE_FAILED`-style finding list.

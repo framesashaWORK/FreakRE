@@ -998,13 +998,19 @@ impl<'a> ControlFlowStructurer<'a> {
                 });
                 continue;
             }
+            // The arm's own entry block must not act as its boundary —
+            // otherwise process_region breaks immediately and the arm
+            // comes out empty. Other case entries stay as boundaries so a
+            // body never swallows the neighbouring case or the join.
+            let mut arm_bounds = arm_boundaries.clone();
+            arm_bounds.remove(&target);
             let case_body = self.process_region(
                 target,
                 enclosing_loop_idx,
                 converter,
                 ctx,
                 depth + 1,
-                &arm_boundaries,
+                &arm_bounds,
             );
             let fallthrough = !ends_with_jump(&case_body);
             cases.push(SwitchCase {
@@ -1018,13 +1024,15 @@ impl<'a> ControlFlowStructurer<'a> {
             if !emitted_targets.insert(d) {
                 Vec::new()
             } else {
+                let mut arm_bounds = arm_boundaries.clone();
+                arm_bounds.remove(&d);
                 self.process_region(
                     d,
                     enclosing_loop_idx,
                     converter,
                     ctx,
                     depth + 1,
-                    &arm_boundaries,
+                    &arm_bounds,
                 )
             }
         });
@@ -2011,7 +2019,7 @@ mod tests {
         let flag = func.alloc_var(Ty::i32());
         func.push_inst(action, IrInst::Store {
             addr: Value::int(0x2000),
-            value: flag.into(),
+            value: flag,
             size: 4,
         });
         func.push_inst(action, IrInst::Branch { target: join });
@@ -2063,7 +2071,7 @@ mod tests {
         let flag = func.alloc_var(Ty::i32());
         func.push_inst(action, IrInst::Store {
             addr: Value::int(0x2000),
-            value: flag.into(),
+            value: flag,
             size: 4,
         });
         func.push_inst(action, IrInst::Branch { target: join });

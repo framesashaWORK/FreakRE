@@ -21,6 +21,9 @@ pub fn recognize_patterns(func: &mut AstFunction) {
     // Pass 3: Detect memory idioms
     detect_memory_idioms(&mut func.body);
 
+    // Pass 3b: Bit-manipulation idioms (rotates, byte swaps)
+    detect_bit_idioms(func);
+
     // Pass 4: Normalize compiler artifacts
     normalize_prologue_epilogue(&mut func.body);
 
@@ -32,6 +35,48 @@ fn expr_is_var_eq(a: &Expr, b: &Expr) -> bool {
     match (a, b) {
         (Expr::Var(x), Expr::Var(y)) => x == y,
         _ => false,
+    }
+}
+
+/// Negate a condition without a double negation or a `!(...)` wrapper when
+/// the operator itself has an inverse: `a < b` → `a >= b`, `!c` → `c`.
+/// Anything else is wrapped in `!`.
+fn negate_cond(cond: Expr) -> Expr {
+    match cond {
+        Expr::Unary {
+            op: UnOp::LogNot,
+            operand,
+        } => *operand,
+        Expr::Binary { op, lhs, rhs } => {
+            let inverted = match op {
+                BinOp::Eq => Some(BinOp::Ne),
+                BinOp::Ne => Some(BinOp::Eq),
+                BinOp::Lt => Some(BinOp::Ge),
+                BinOp::Ge => Some(BinOp::Lt),
+                BinOp::Le => Some(BinOp::Gt),
+                BinOp::Gt => Some(BinOp::Le),
+                BinOp::LtU => Some(BinOp::GeU),
+                BinOp::GeU => Some(BinOp::LtU),
+                BinOp::LeU => Some(BinOp::GtU),
+                BinOp::GtU => Some(BinOp::LeU),
+                _ => None,
+            };
+            match inverted {
+                Some(iop) => Expr::Binary {
+                    op: iop,
+                    lhs,
+                    rhs,
+                },
+                None => Expr::Unary {
+                    op: UnOp::LogNot,
+                    operand: Box::new(Expr::Binary { op, lhs, rhs }),
+                },
+            }
+        }
+        other => Expr::Unary {
+            op: UnOp::LogNot,
+            operand: Box::new(other),
+        },
     }
 }
 
@@ -56,10 +101,7 @@ fn cleanup_noops_and_empty_branches(stmts: &mut Vec<Stmt>) {
                 let then_empty = then_body.is_empty();
                 let else_nonempty = else_body.as_ref().map(|e| !e.is_empty()).unwrap_or(false);
                 if then_empty && else_nonempty {
-                    *cond = Expr::Unary {
-                        op: UnOp::LogNot,
-                        operand: Box::new(std::mem::replace(cond, Expr::BoolLit(true))),
-                    };
+                    *cond = negate_cond(std::mem::replace(cond, Expr::BoolLit(true)));
                     let taken = std::mem::take(then_body);
                     if let Some(eb) = else_body.take() {
                         *then_body = eb;
@@ -669,6 +711,362 @@ fn is_zero_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::IntLit(0))
 }
 
+// ─── Bit-Manipulation Idioms (rotate / byte swap) ────────────────────
+
+/// Rewrite rotate and byte-swap idioms into `__ROL__`/`__ROR__`/
+/// `__builtin_bswap` calls. Runs bottom-up over every expression so nested
+/// idioms (a rotate inside a call argument, a bswap in a return value) are
+/// recognized too.
+///
+/// Soundness: a fold requires two shifts of the *same* operand with
+/// complementary constant counts summing to a power-of-two width (8/16/32/64)
+/// — that shape can only come from a width-truncating rotate — or the exact
+/// four-arm byte-lane shape of a 32-bit bswap with consistent masks.
+fn detect_bit_idioms(func: &mut AstFunction) {
+    func.rewrite_exprs(&mut |e| {
+        if let Some(rot) = recognize_rotate(e) {
+            *e = rot;
+        } else if let Some(bs) = recognize_bswap(e) {
+            *e = bs;
+        }
+    });
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShiftDir {
+    Left,
+    Right,
+}
+
+/// A shift with a constant count: `(value, direction, count)`.
+fn as_shift(e: &Expr) -> Option<(&Expr, ShiftDir, i64)> {
+    if let Expr::Binary {
+        op: op @ (BinOp::Shl | BinOp::Shr),
+        lhs,
+        rhs,
+    } = e
+    {
+        if let Expr::IntLit(n) = rhs.as_ref() {
+            let dir = if matches!(op, BinOp::Shl) {
+                ShiftDir::Left
+            } else {
+                ShiftDir::Right
+            };
+            return Some((lhs.as_ref(), dir, *n));
+        }
+    }
+    None
+}
+
+/// Normalize an `IntLit` mask constant to its low 32 bits so both zero- and
+/// sign-extended encodings of u32 immediates compare equal.
+fn norm32(m: i64) -> u64 {
+    (m as u64) & 0xFFFF_FFFF
+}
+
+/// Peel `arm & mask` (either operand order) when `mask` is a full-width
+/// mask (0xFF / 0xFFFF / 0xFFFFFFFF), returning the unmasked arm and the
+/// mask width in bits.
+fn peel_full_mask(arm: &Expr) -> (&Expr, Option<u32>) {
+    if let Expr::Binary {
+        op: BinOp::And,
+        lhs,
+        rhs,
+    } = arm
+    {
+        if let Expr::IntLit(m) = lhs.as_ref() {
+            if let Some(w) = mask_bits(norm32(*m)) {
+                return (rhs.as_ref(), Some(w));
+            }
+        }
+        if let Expr::IntLit(m) = rhs.as_ref() {
+            if let Some(w) = mask_bits(norm32(*m)) {
+                return (lhs.as_ref(), Some(w));
+            }
+        }
+    }
+    (arm, None)
+}
+
+/// Full-width mask width in bits, if `m` (normalized u32/u64) is one.
+fn mask_bits(m: u64) -> Option<u32> {
+    match m {
+        0xFF => Some(8),
+        0xFFFF => Some(16),
+        0xFFFF_FFFF => Some(32),
+        0xFFFF_FFFF_FFFF_FFFF => Some(64),
+        _ => None,
+    }
+}
+
+/// `(x << n) | (x >> (bits - n))` → `__ROL<n/8 bytes>__(x, n)` (and the ROR
+/// mirror). `|` and `^` are both accepted (the shifted lanes never overlap,
+/// so the two are equivalent here). Arms and the whole expression may carry
+/// full-width masks, which must agree with the rotate width.
+fn recognize_rotate(e: &Expr) -> Option<Expr> {
+    // Post-fold cleanup: the bottom-up traversal already replaced the inner
+    // rotate, so a full-width mask on its result is seen here as
+    // `__ROLn__(...) & mask`. When the mask width equals the rotate width it
+    // is a no-op and is unwrapped.
+    if let Expr::Binary {
+        op: BinOp::And,
+        lhs,
+        rhs,
+    } = e
+    {
+        for (call, mask) in [(lhs.as_ref(), rhs.as_ref()), (rhs.as_ref(), lhs.as_ref())] {
+            if let Expr::Call { func, args } = call {
+                if let Some(width_bits) = rotate_call_width(func) {
+                    if let Expr::IntLit(m) = mask {
+                        if mask_bits(*m as u64) == Some(width_bits) {
+                            return Some(Expr::Call {
+                                func: func.clone(),
+                                args: args.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Allow the whole idiom to be masked to its working width.
+    let (e, top_mask) = peel_full_mask(e);
+    let Expr::Binary {
+        op: BinOp::Or | BinOp::Xor,
+        lhs,
+        rhs,
+    } = e
+    else {
+        return None;
+    };
+
+    for (a, b) in [
+        (lhs.as_ref(), rhs.as_ref()),
+        (rhs.as_ref(), lhs.as_ref()),
+    ] {
+        let (a, mask_a) = peel_full_mask(a);
+        let (b, mask_b) = peel_full_mask(b);
+        let Some((xa, dir_a, na)) = as_shift(a) else {
+            continue;
+        };
+        let Some((xb, dir_b, nb)) = as_shift(b) else {
+            continue;
+        };
+        if xa != xb || dir_a == dir_b {
+            continue;
+        }
+        // Constant, positive, complementary counts: their sum is the width.
+        if na <= 0 || nb <= 0 {
+            continue;
+        }
+        let bits = na + nb;
+        if !matches!(bits, 8 | 16 | 32 | 64) {
+            continue;
+        }
+        // Present full-width masks must agree with the rotate width.
+        if [top_mask, mask_a, mask_b]
+            .into_iter()
+            .flatten()
+            .any(|w| w as i64 != bits)
+        {
+            continue;
+        }
+        let (is_rol, n) = match dir_a {
+            ShiftDir::Left => (true, na),
+            ShiftDir::Right => (false, na),
+        };
+        let func = if is_rol {
+            format!("__ROL{}__", bits / 8)
+        } else {
+            format!("__ROR{}__", bits / 8)
+        };
+        return Some(Expr::Call {
+            func,
+            args: vec![xa.clone(), Expr::IntLit(n)],
+        });
+    }
+    None
+}
+
+/// Rotate width in bits parsed back from a `__ROLn__` / `__RORn__` call name
+/// (n = width in bytes).
+fn rotate_call_width(func: &str) -> Option<u32> {
+    let body = func
+        .strip_prefix("__ROL")
+        .or_else(|| func.strip_prefix("__ROR"))?;
+    let body = body.strip_suffix("__")?;
+    let bytes: u32 = body.parse().ok()?;
+    let bits = bytes * 8;
+    if matches!(bits, 8 | 16 | 32 | 64) {
+        Some(bits)
+    } else {
+        None
+    }
+}
+
+/// Flatten an `|` tree (either associativity) into its arms.
+fn flatten_or<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+    if let Expr::Binary {
+        op: BinOp::Or,
+        lhs,
+        rhs,
+    } = e
+    {
+        flatten_or(lhs, out);
+        flatten_or(rhs, out);
+    } else {
+        out.push(e);
+    }
+}
+
+/// A bswap arm: `(value, direction, count, mask)` where mask is a byte-lane
+/// mask (`0xFF`, `0xFF00`, `0xFF0000`, `0xFF000000`) applied either to the
+/// value before the shift (`(x & 0xFF) << 24`) or to the shift result after
+/// it (`(x >> 8) & 0xFF00`).
+fn classify_bswap_arm(arm: &Expr) -> Option<(&Expr, ShiftDir, i64, Option<u64>)> {
+    // Pre-mask: `shift(x & lane, n)` (either And operand order).
+    if let Expr::Binary {
+        op: op @ (BinOp::Shl | BinOp::Shr),
+        lhs,
+        rhs,
+    } = arm
+    {
+        if let Expr::IntLit(n) = rhs.as_ref() {
+            if let Expr::Binary {
+                op: BinOp::And,
+                lhs: mx,
+                rhs: mr,
+            } = lhs.as_ref()
+            {
+                if let Some(m) = lane_of_int(mr) {
+                    return Some((mx.as_ref(), dir_of(op), *n, Some(m)));
+                }
+                if let Some(m) = lane_of_int(mx) {
+                    return Some((mr.as_ref(), dir_of(op), *n, Some(m)));
+                }
+            }
+        }
+    }
+
+    // Post-mask: `shift(x, n) & lane` (either And operand order). A
+    // full-width mask is equivalent to no mask at all and is peeled.
+    if let Expr::Binary {
+        op: BinOp::And,
+        lhs,
+        rhs,
+    } = arm
+    {
+        let (shift, mask) = if let Some(m) = lane_of_int(rhs) {
+            (lhs.as_ref(), m)
+        } else if let Some(m) = lane_of_int(lhs) {
+            (rhs.as_ref(), m)
+        } else {
+            // Full-width post-mask: `(x << n) & 0xFFFFFFFF` ≡ `(x << n)`.
+            let (inner, width) = peel_full_mask(arm);
+            if width.is_some() {
+                if let Some((x, d, n)) = as_shift(inner) {
+                    return Some((x, d, n, None));
+                }
+            }
+            return None;
+        };
+        if let Some((x, d, n)) = as_shift(shift) {
+            return Some((x, d, n, Some(mask)));
+        }
+        return None;
+    }
+
+    // Plain unmasked shift.
+    as_shift(arm).map(|(x, d, n)| (x, d, n, None))
+}
+
+fn dir_of(op: &BinOp) -> ShiftDir {
+    if matches!(op, BinOp::Shl) {
+        ShiftDir::Left
+    } else {
+        ShiftDir::Right
+    }
+}
+
+fn lane_of_int(e: &Expr) -> Option<u64> {
+    match e {
+        Expr::IntLit(m) => match norm32(*m) {
+            m @ (0xFF | 0xFF00 | 0xFF0000 | 0xFF000000) => Some(m),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The exact four-arm 32-bit byte-swap shape (both mask placements):
+/// `(x << 24) | ((x & 0xFF00) << 8) | ((x >> 8) & 0xFF00) | (x >> 24)`
+/// and its variants → `__builtin_bswap32(x)`.
+fn recognize_bswap(e: &Expr) -> Option<Expr> {
+    let mut arms: Vec<&Expr> = Vec::new();
+    flatten_or(e, &mut arms);
+    if arms.len() != 4 {
+        return None;
+    }
+
+    let mut x: Option<&Expr> = None;
+    let mut saw_l8_mask = false;
+    let mut saw_r8_mask = false;
+    let mut saw_l24 = false;
+    let mut saw_r24 = false;
+    let mut saw_l8 = false;
+    let mut saw_r8 = false;
+
+    for arm in arms {
+        let (ax, dir, n, mask) = classify_bswap_arm(arm)?;
+        match x {
+            None => x = Some(ax),
+            Some(prev) if prev == ax => {}
+            _ => return None,
+        }
+        match (dir, n) {
+            (ShiftDir::Left, 24) => {
+                // Destination lane 3; pre-mask 0xFF or post 0xFF000000 or none.
+                if !matches!(mask, None | Some(0xFF) | Some(0xFF000000)) {
+                    return None;
+                }
+                saw_l24 = true;
+            }
+            (ShiftDir::Left, 8) => {
+                // The middle lane contribution must be bounded by a mask.
+                if !matches!(mask, Some(0xFF00) | Some(0xFF0000)) {
+                    return None;
+                }
+                saw_l8 = true;
+                saw_l8_mask = true;
+            }
+            (ShiftDir::Right, 8) => {
+                if !matches!(mask, Some(0xFF00) | Some(0xFF0000)) {
+                    return None;
+                }
+                saw_r8 = true;
+                saw_r8_mask = true;
+            }
+            (ShiftDir::Right, 24) => {
+                if !matches!(mask, None | Some(0xFF) | Some(0xFF000000)) {
+                    return None;
+                }
+                saw_r24 = true;
+            }
+            _ => return None,
+        }
+    }
+
+    if !saw_l24 || !saw_r24 || !saw_l8 || !saw_r8 || !saw_l8_mask || !saw_r8_mask {
+        return None;
+    }
+    let x = x?;
+    Some(Expr::Call {
+        func: "__builtin_bswap32".to_string(),
+        args: vec![x.clone()],
+    })
+}
+
 // ─── Prologue/Epilogue Normalization ────────────────────────────────
 
 /// Annotate compiler-generated prologue/epilogue code.
@@ -1117,5 +1515,187 @@ mod tests {
             rhs: Box::new(Expr::Var("__security_cookie".into())),
         };
         assert!(expr_contains_symbol(&expr, "__security_cookie"));
+    }
+
+    // ─── Bit-idiom tests ──────────────────────────────────────────────
+
+    fn shl(x: &str, n: i64) -> Expr {
+        Expr::Binary {
+            op: BinOp::Shl,
+            lhs: Box::new(Expr::Var(x.into())),
+            rhs: Box::new(Expr::IntLit(n)),
+        }
+    }
+
+    fn shr(x: &str, n: i64) -> Expr {
+        Expr::Binary {
+            op: BinOp::Shr,
+            lhs: Box::new(Expr::Var(x.into())),
+            rhs: Box::new(Expr::IntLit(n)),
+        }
+    }
+
+    fn or(a: Expr, b: Expr) -> Expr {
+        Expr::Binary {
+            op: BinOp::Or,
+            lhs: Box::new(a),
+            rhs: Box::new(b),
+        }
+    }
+
+    fn xor(a: Expr, b: Expr) -> Expr {
+        Expr::Binary {
+            op: BinOp::Xor,
+            lhs: Box::new(a),
+            rhs: Box::new(b),
+        }
+    }
+
+    fn run_bit_idioms(e: Expr) -> Expr {
+        let mut f = AstFunction::new("t");
+        f.body.push(Stmt::Return { value: Some(e) });
+        detect_bit_idioms(&mut f);
+        match f.body.pop() {
+            Some(Stmt::Return { value: Some(e) }) => e,
+            other => panic!("unexpected statement: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rotate_rol_recognized() {
+        // (x << 13) | (x >> 19) — the canonical 32-bit rol.
+        let out = run_bit_idioms(or(shl("x", 13), shr("x", 19)));
+        assert!(
+            matches!(&out, Expr::Call { func, args } if func == "__ROL4__"
+                && matches!(&args[0], Expr::Var(v) if v == "x")
+                && matches!(&args[1], Expr::IntLit(13))),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn test_rotate_ror_recognized() {
+        // (x >> 7) | (x << 57) — 64-bit ror by 7.
+        let out = run_bit_idioms(or(shr("x", 7), shl("x", 57)));
+        assert!(
+            matches!(&out, Expr::Call { func, args } if func == "__ROR8__"
+                && matches!(&args[1], Expr::IntLit(7))),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn test_rotate_xor_and_masks_recognized() {
+        // ((x << 3) ^ (x >> 13)) & 0xFFFF — 16-bit rol with xor and a mask.
+        let masked = Expr::Binary {
+            op: BinOp::And,
+            lhs: Box::new(xor(shl("x", 3), shr("x", 13))),
+            rhs: Box::new(Expr::IntLit(0xFFFF)),
+        };
+        let out = run_bit_idioms(masked);
+        assert!(
+            matches!(&out, Expr::Call { func, args } if func == "__ROL2__"
+                && matches!(&args[1], Expr::IntLit(3))),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn test_rotate_non_complementary_not_folded() {
+        // Counts summing to 20 — not a power-of-two width, keep verbatim.
+        let input = or(shl("x", 5), shr("x", 15));
+        let out = run_bit_idioms(input.clone());
+        assert_eq!(out, input);
+        // Different operands — not a rotate.
+        let input2 = or(shl("x", 13), shr("y", 19));
+        assert_eq!(run_bit_idioms(input2.clone()), input2);
+        // Same direction — not a rotate.
+        let input3 = or(shl("x", 4), shl("x", 28));
+        assert_eq!(run_bit_idioms(input3.clone()), input3);
+    }
+
+    #[test]
+    fn test_bswap32_recognized_form_a() {
+        // (x << 24) | ((x << 8) & 0xFF0000) | ((x >> 8) & 0xFF00) | (x >> 24)
+        let arm_l8 = Expr::Binary {
+            op: BinOp::And,
+            lhs: Box::new(shl("x", 8)),
+            rhs: Box::new(Expr::IntLit(0xFF0000)),
+        };
+        let arm_r8 = Expr::Binary {
+            op: BinOp::And,
+            lhs: Box::new(shr("x", 8)),
+            rhs: Box::new(Expr::IntLit(0xFF00)),
+        };
+        let e = or(or(or(shl("x", 24), arm_l8), arm_r8), shr("x", 24));
+        let out = run_bit_idioms(e);
+        assert!(
+            matches!(&out, Expr::Call { func, args } if func == "__builtin_bswap32"
+                && args.len() == 1 && matches!(&args[0], Expr::Var(v) if v == "x")),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn test_bswap32_recognized_form_b() {
+        // ((x & 0xFF) << 24) | ((x & 0xFF00) << 8) | ((x >> 8) & 0xFF00) | (x >> 24)
+        let pre = |m: i64, n: i64| Expr::Binary {
+            op: BinOp::Shl,
+            lhs: Box::new(Expr::Binary {
+                op: BinOp::And,
+                lhs: Box::new(Expr::Var("x".into())),
+                rhs: Box::new(Expr::IntLit(m)),
+            }),
+            rhs: Box::new(Expr::IntLit(n)),
+        };
+        let arm_r8 = Expr::Binary {
+            op: BinOp::And,
+            lhs: Box::new(shr("x", 8)),
+            rhs: Box::new(Expr::IntLit(0xFF00)),
+        };
+        let e = or(or(or(pre(0xFF, 24), pre(0xFF00, 8)), arm_r8), shr("x", 24));
+        let out = run_bit_idioms(e);
+        assert!(
+            matches!(&out, Expr::Call { func, .. } if func == "__builtin_bswap32"),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn test_bswap32_unmasked_middle_not_folded() {
+        // Missing masks on the middle arms — could be a different bit
+        // combination, keep verbatim.
+        let e = or(or(or(shl("x", 24), shl("x", 8)), shr("x", 8)), shr("x", 24));
+        assert_eq!(run_bit_idioms(e.clone()), e);
+    }
+
+    #[test]
+    fn test_empty_then_inverts_comparison_operator() {
+        // if (a < b) {} else { work(); } → if (a >= b) { work(); }
+        let mut f = AstFunction::new("invy");
+        f.body.push(Stmt::If {
+            cond: Expr::Binary {
+                op: BinOp::Lt,
+                lhs: Box::new(Expr::Var("a".into())),
+                rhs: Box::new(Expr::Var("b".into())),
+            },
+            then_body: vec![],
+            else_body: Some(vec![Stmt::Expr(Expr::Var("work".into()))]),
+        });
+        cleanup_noops_and_empty_branches(&mut f.body);
+        match &f.body[0] {
+            Stmt::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                assert!(
+                    matches!(cond, Expr::Binary { op: BinOp::Ge, .. }),
+                    "expected inverted comparison, got {cond:?}"
+                );
+                assert!(then_body.len() == 1 && else_body.is_none());
+            }
+            other => panic!("unexpected statement: {other:?}"),
+        }
     }
 }

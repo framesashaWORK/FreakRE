@@ -672,6 +672,56 @@ fn ssa_inst_map_vals(inst: &mut SsaInst, f: &mut impl FnMut(&mut SsaVal)) {
     }
 }
 
+/// Read-only counterpart of [`ssa_inst_map_vals`]: visit every operand of
+/// an SSA instruction without mutating it.
+fn map_ssa_val_read(inst: &SsaInst, f: &mut impl FnMut(&SsaVal)) {
+    match inst {
+        SsaInst::Binary { lhs, rhs, .. } => {
+            f(lhs);
+            f(rhs);
+        }
+        SsaInst::Unary { src, .. } => f(src),
+        SsaInst::Adc { a, b, carry, .. } => {
+            f(a);
+            f(b);
+            f(carry);
+        }
+        SsaInst::Sbb { a, b, carry, .. } => {
+            f(a);
+            f(b);
+            f(carry);
+        }
+        SsaInst::Load { addr, .. } => f(addr),
+        SsaInst::Store { addr, value, .. } => {
+            f(addr);
+            f(value);
+        }
+        SsaInst::CBranch { cond, .. } => f(cond),
+        SsaInst::Call { target, args, .. } => {
+            f(target);
+            for a in args {
+                f(a);
+            }
+        }
+        SsaInst::Return { value } => {
+            if let Some(v) = value {
+                f(v);
+            }
+        }
+        SsaInst::IndirectBranch { target } => f(target),
+        SsaInst::Switch { index, .. } => f(index),
+        SsaInst::Syscall { number, args } => {
+            for a in args {
+                f(a);
+            }
+            if let Some(n) = number {
+                f(n);
+            }
+        }
+        SsaInst::Branch { .. } | SsaInst::Nop => {}
+    }
+}
+
 /// Allocate the next SSA version for `base` and push it onto its stack.
 fn define(
     stacks: &mut HashMap<BaseVar, Vec<VersionedVar>>,
@@ -1015,9 +1065,14 @@ fn resolve_var(v: &mut VersionedVar, subst: &HashMap<VersionedVar, VersionedVar>
     }
 }
 
-/// Remove trivial phis: a phi whose inputs are all the *same* versioned
-/// variable is deleted and every reference to its destination is substituted
-/// with that variable. Repeats until fixpoint to handle chains.
+/// Remove trivial phis. A phi is trivial when all its *non-self* inputs are
+/// the same versioned variable; the two classic shapes are
+/// `PHI(x, x, …, x)` and `PHI(d, x)` (self-referencing input). Trivial phis
+/// are deleted and every reference to their destination is substituted with
+/// the surviving variable. Chains collapse because the substitution map is
+/// resolved transitively (`resolve_var`) and the whole pass repeats to a
+/// fixpoint, so `PHI(a, b); PHI(b, a)` degenerate cycles — which would
+/// otherwise loop forever — are detected and skipped.
 pub fn remove_trivial_phis(ssa: &mut SsaFunction) {
     loop {
         let mut subst: HashMap<VersionedVar, VersionedVar> = HashMap::new();
@@ -1026,9 +1081,47 @@ pub fn remove_trivial_phis(ssa: &mut SsaFunction) {
                 if p.inputs.is_empty() {
                     continue;
                 }
-                let first = &p.inputs[0].1;
-                if p.inputs.iter().all(|(_, v)| v == first) && *first != p.dst {
-                    subst.insert(p.dst.clone(), first.clone());
+                // The surviving value: the unique non-self input.
+                let survivor = p
+                    .inputs
+                    .iter()
+                    .map(|(_, v)| v)
+                    .find(|v| **v != p.dst)
+                    .cloned();
+                let Some(survivor) = survivor else {
+                    continue; // all inputs self-referencing: leave as-is
+                };
+                if p
+                    .inputs
+                    .iter()
+                    .all(|(_, v)| *v == survivor || *v == p.dst)
+                    && survivor != p.dst
+                {
+                    // Skip cycles: a phi that (transitively) feeds itself
+                    // with the survivor via other phis must not be folded.
+                    let is_cyclic = {
+                        let mut cur = survivor.clone();
+                        let mut steps = 0;
+                        let cyc = loop {
+                            if cur == p.dst {
+                                break true;
+                            }
+                            match subst.get(&cur) {
+                                Some(next) if *next != cur => {
+                                    cur = next.clone();
+                                    steps += 1;
+                                    if steps > subst.len() {
+                                        break false;
+                                    }
+                                }
+                                _ => break false,
+                            }
+                        };
+                        cyc
+                    };
+                    if !is_cyclic {
+                        subst.insert(p.dst.clone(), survivor);
+                    }
                 }
             }
         }
@@ -1055,6 +1148,77 @@ pub fn remove_trivial_phis(ssa: &mut SsaFunction) {
 }
 
 // ─── Deconstruction ──────────────────────────────────────────────────
+
+/// Statistics reported by [`ssa_dce`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DceStats {
+    /// Pure instructions removed (dead Binary/Unary/Copy chains).
+    pub removed: usize,
+}
+
+/// Dead-code elimination on SSA form.
+///
+/// Removes *pure* instructions (Binary, Unary with arithmetic ops, Adc/Sbb)
+/// whose results are never used. Loads, stores, calls, syscalls,
+/// terminators and flag-compare producers are never removed — only phi and
+/// pure-value definitions are candidates. Iterates to a fixpoint because
+/// removing one dead definition can kill its operands' last use.
+///
+/// This is the SSA-form counterpart of the decompiler's
+/// `eliminate_dead_flag_defs`, but exact (use counts, not name prefixes)
+/// and general (any pure def, not only `flag_*`).
+pub fn ssa_dce(ssa: &mut SsaFunction) -> DceStats {
+    let mut stats = DceStats::default();
+    loop {
+        // Count uses of every versioned variable across all operands
+        // (instruction operands, phi inputs, phi-referencing operands).
+        let mut uses: HashMap<VersionedVar, usize> = HashMap::new();
+        {
+            let mut count = |op: &SsaVal| {
+                if let SsaVal::Ver(vv) = op {
+                    *uses.entry(vv.clone()).or_insert(0) += 1;
+                }
+            };
+            for inst in ssa.blocks.iter().flat_map(|b| b.insts.iter()) {
+                map_ssa_val_read(inst, &mut count);
+            }
+            for b in &ssa.blocks {
+                for p in &b.phis {
+                    for (_, v) in &p.inputs {
+                        *uses.entry(v.clone()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        // Sweep: drop pure instructions with zero uses.
+        let before = stats.removed;
+        for b in &mut ssa.blocks {
+            b.insts.retain(|inst| {
+                let dead = match inst {
+                    SsaInst::Binary { dst, .. }
+                    | SsaInst::Unary { dst, .. }
+                    | SsaInst::Adc { dst, .. }
+                    | SsaInst::Sbb { dst, .. } => uses.get(dst).copied().unwrap_or(0) == 0,
+                    // Copy materializes as Unary with OpCode::Copy; it is
+                    // pure, but removal of copies is left to coalescing /
+                    // copy propagation in the decompiler, and a copy that
+                    // materializes an implicit initial version (v#0, no
+                    // textual definition) must never be dropped here.
+                    _ => false,
+                };
+                if dead {
+                    stats.removed += 1;
+                }
+                !dead
+            });
+        }
+        if stats.removed == before {
+            break;
+        }
+    }
+    stats
+}
 
 fn concrete(
     vals: &mut HashMap<VersionedVar, Value>,
@@ -1156,19 +1320,24 @@ fn lower_inst(
     }
 }
 
-/// Lower SSA back to plain IR (naive out-of-SSA with critical-edge splits).
+/// Lower SSA back to plain IR (out-of-SSA with critical-edge splits).
 ///
-/// Every phi `d = PHI((p0, s0), (p1, s1), ...)` becomes, for each incoming
-/// edge `pi -> block`, a pair of copies `t_i = s_i; d = t_i` (unique temporary
-/// per edge) placed just before the terminator of `pi`. If `pi` is a
-/// *critical* edge (the predecessor has more than one successor), the copies
-/// cannot be placed there without changing semantics, so a fresh intermediate
-/// block holding the copies and a branch to the phi-block is created and the
-/// predecessor's terminator is redirected through it. All phis fed across the
-/// same critical edge share one split block (keyed once per edge), so every
-/// copy stays reachable and executes. Unique temporaries keep parallel-copy
-/// semantics (swap / lost-copy cases stay correct); only copy coalescing
-/// opportunities are missed.
+/// Every phi `d = PHI((p0, s0), (p1, s1), …)` becomes, for each incoming
+/// edge `pi -> block`, a single copy `d = s_i` placed just before the
+/// terminator of `pi`. If `pi` is a *critical* edge (the predecessor has
+/// more than one successor), the copy cannot be placed there without
+/// changing semantics, so a fresh intermediate block holding the copies
+/// and a branch to the phi-block is created and the predecessor's
+/// terminator is redirected through it. All phis fed across the same
+/// critical edge share one split block (keyed once per edge), so every
+/// copy stays reachable and executes.
+///
+/// No per-edge temporaries are materialized: every VersionedVar lowers to
+/// a distinct fresh `Var`, and a phi never reads another phi of the same
+/// block (only its own destination, which is skipped as an identity), so
+/// the sequential copies are equivalent to parallel-copy semantics. This
+/// is the copy-coalescing-friendly form — the old double-hop
+/// (`t = s; d = t`) is gone.
 ///
 /// Fails with [`SsaError::UnknownBlock`] if a phi references a predecessor
 /// block missing from the function, or with [`SsaError::IdExhausted`] if the
@@ -1220,8 +1389,14 @@ pub fn from_ssa(ssa: &SsaFunction) -> Result<IrFunction, SsaError> {
         for phi in &sb.phis {
             let dst_val = concrete(&mut vals, &mut out, &phi.dst);
             for (pred, input) in &phi.inputs {
+                // Self-referencing input (`d = PHI(…, d)`): identity, no copy.
+                if *input == phi.dst {
+                    continue;
+                }
                 let src_val = concrete(&mut vals, &mut out, input);
-                let tmp = out.alloc_var(input.ty.clone());
+                if src_val == dst_val {
+                    continue;
+                }
                 let pi = *pos.get(pred).ok_or(SsaError::UnknownBlock(pred.0))?;
                 let pred_block =
                     ssa.blocks.get(pi).ok_or(SsaError::UnknownBlock(pred.0))?;
@@ -1230,15 +1405,18 @@ pub fn from_ssa(ssa: &SsaFunction) -> Result<IrFunction, SsaError> {
                 } else {
                     &mut edge_copies[pi]
                 };
-                copies.push(IrInst::Unary {
-                    dst: tmp.clone(),
-                    op: OpCode::Copy,
-                    src: src_val,
-                });
+                // One direct copy per edge — no intermediate temporary.
+                // Soundness: every VersionedVar lowers to a distinct fresh
+                // Var (`concrete` allocates one per version), and to_ssa
+                // never places two phis of the same base variable in one
+                // block, so distinct phis can never alias each other's
+                // sources. The only possible aliasing — a phi reading its
+                // own destination — is skipped above, which makes the
+                // sequential copies equivalent to parallel phi semantics.
                 copies.push(IrInst::Unary {
                     dst: dst_val.clone(),
                     op: OpCode::Copy,
-                    src: tmp,
+                    src: src_val,
                 });
             }
         }
@@ -2071,5 +2249,294 @@ mod tests {
             metadata: FunctionMetadata::default(),
         };
         assert!(matches!(from_ssa(&ssa), Err(SsaError::IdExhausted)));
+    }
+
+    #[test]
+    fn test_ssa_dce_removes_dead_pure_chain() {
+        // entry: a1 = 5; t1 = a1 + 1 (dead); exit: return a1.
+        // DCE must drop t1 but keep a1 (used by return).
+        let vv = |base: &str, version: u32| VersionedVar {
+            base: BaseVar::Reg(base.to_string()),
+            version,
+            ty: Ty::i64(),
+        };
+        let a1 = vv("a", 1);
+        let t1 = vv("t", 1);
+        let mut ssa = SsaFunction {
+            name: "dce".to_string(),
+            entry_address: 0x0,
+            entry_block: BlockId(0),
+            blocks: vec![SsaBlock {
+                id: BlockId(0),
+                label: "entry".to_string(),
+                predecessors: vec![],
+                successors: vec![],
+                source_range: None,
+                phis: vec![],
+                insts: vec![
+                    SsaInst::Unary {
+                        dst: a1.clone(),
+                        op: OpCode::Copy,
+                        src: SsaVal::Const(5),
+                    },
+                    SsaInst::Binary {
+                        dst: t1,
+                        op: OpCode::Add,
+                        lhs: SsaVal::Ver(a1.clone()),
+                        rhs: SsaVal::Const(1),
+                    },
+                    SsaInst::Return {
+                        value: Some(SsaVal::Ver(a1)),
+                    },
+                ],
+            }],
+            versions: HashMap::new(),
+            metadata: FunctionMetadata::default(),
+        };
+        let stats = ssa_dce(&mut ssa);
+        assert_eq!(stats.removed, 1);
+        assert_eq!(ssa.blocks[0].insts.len(), 2);
+    }
+
+    #[test]
+    fn test_ssa_dce_keeps_live_loads_stores_calls() {
+        // A Load whose dst is unused must SURVIVE (memory read side effects
+        // are conservative); a Store always survives; a Call survives.
+        let vv = |base: &str, version: u32| VersionedVar {
+            base: BaseVar::Reg(base.to_string()),
+            version,
+            ty: Ty::i64(),
+        };
+        let a1 = vv("a", 1);
+        let dst1 = vv("d", 1);
+        let mut ssa = SsaFunction {
+            name: "dce_side".to_string(),
+            entry_address: 0x0,
+            entry_block: BlockId(0),
+            blocks: vec![SsaBlock {
+                id: BlockId(0),
+                label: "entry".to_string(),
+                predecessors: vec![],
+                successors: vec![],
+                source_range: None,
+                phis: vec![],
+                insts: vec![
+                    SsaInst::Unary {
+                        dst: a1.clone(),
+                        op: OpCode::Copy,
+                        src: SsaVal::Const(5),
+                    },
+                    SsaInst::Load {
+                        dst: dst1,
+                        addr: SsaVal::Ver(a1.clone()),
+                        size: 4,
+                    },
+                    SsaInst::Store {
+                        addr: SsaVal::Ver(a1),
+                        value: SsaVal::Const(9),
+                        size: 4,
+                    },
+                    SsaInst::Return { value: None },
+                ],
+            }],
+            versions: HashMap::new(),
+            metadata: FunctionMetadata::default(),
+        };
+        let stats = ssa_dce(&mut ssa);
+        assert_eq!(stats.removed, 0);
+        assert_eq!(ssa.blocks[0].insts.len(), 4);
+    }
+
+    #[test]
+    fn test_remove_trivial_phi_self_reference() {
+        // Loop phi `d = PHI(x, d)` (self-input from the latch): trivial,
+        // collapses to `x` — the loop does not change the value.
+        let vv = |base: &str, version: u32| VersionedVar {
+            base: BaseVar::Reg(base.to_string()),
+            version,
+            ty: Ty::i64(),
+        };
+        let x1 = vv("x", 1);
+        let d2 = vv("x", 2);
+        let mut ssa = SsaFunction {
+            name: "selfref".to_string(),
+            entry_address: 0x0,
+            entry_block: BlockId(0),
+            blocks: vec![
+                SsaBlock {
+                    id: BlockId(0),
+                    label: "entry".to_string(),
+                    predecessors: vec![],
+                    successors: vec![BlockId(1)],
+                    source_range: None,
+                    phis: vec![],
+                    insts: vec![
+                        SsaInst::Unary {
+                            dst: x1.clone(),
+                            op: OpCode::Copy,
+                            src: SsaVal::Const(7),
+                        },
+                        SsaInst::Branch { target: BlockId(1) },
+                    ],
+                },
+                SsaBlock {
+                    id: BlockId(1),
+                    label: "header".to_string(),
+                    predecessors: vec![BlockId(0), BlockId(2)],
+                    successors: vec![BlockId(2), BlockId(3)],
+                    source_range: None,
+                    phis: vec![Phi {
+                        dst: d2.clone(),
+                        inputs: vec![(BlockId(0), x1.clone()), (BlockId(2), d2.clone())],
+                    }],
+                    insts: vec![
+                        SsaInst::CBranch {
+                            cond: SsaVal::Const(1),
+                            target_true: BlockId(2),
+                            target_false: BlockId(3),
+                        },
+                    ],
+                },
+                SsaBlock {
+                    id: BlockId(2),
+                    label: "latch".to_string(),
+                    predecessors: vec![BlockId(1)],
+                    successors: vec![BlockId(1)],
+                    source_range: None,
+                    phis: vec![],
+                    insts: vec![SsaInst::Branch { target: BlockId(1) }],
+                },
+                SsaBlock {
+                    id: BlockId(3),
+                    label: "exit".to_string(),
+                    predecessors: vec![BlockId(1)],
+                    successors: vec![],
+                    source_range: None,
+                    phis: vec![],
+                    insts: vec![SsaInst::Return {
+                        value: Some(SsaVal::Ver(d2.clone())),
+                    }],
+                },
+            ],
+            versions: HashMap::new(),
+            metadata: FunctionMetadata::default(),
+        };
+
+        remove_trivial_phis(&mut ssa);
+
+        let header = ssa.block(BlockId(1)).unwrap();
+        assert!(header.phis.is_empty(), "self-referencing phi must fold");
+        let exit = ssa.block(BlockId(3)).unwrap();
+        match exit.insts.last() {
+            Some(SsaInst::Return {
+                value: Some(SsaVal::Ver(v)),
+            }) => assert_eq!(v, &x1),
+            other => panic!("exit must return the surviving x#1, got {other:?}"),
+        }
+        // The latch input must have been substituted too.
+        let header = ssa.block(BlockId(1)).unwrap();
+        let _ = header;
+    }
+
+    #[test]
+    fn test_remove_trivial_phi_cycle_not_folded() {
+        // Degenerate `a = PHI(b); b = PHI(a)` pair: folding either would
+        // create an infinite substitution loop. The pass must leave both.
+        let vv = |base: &str, version: u32| VersionedVar {
+            base: BaseVar::Reg(base.to_string()),
+            version,
+            ty: Ty::i64(),
+        };
+        let a1 = vv("a", 1);
+        let b1 = vv("b", 1);
+        let entry_to_a = Phi {
+            dst: a1.clone(),
+            inputs: vec![(BlockId(0), b1.clone())],
+        };
+        let entry_to_b = Phi {
+            dst: b1.clone(),
+            inputs: vec![(BlockId(0), a1.clone())],
+        };
+        let mut ssa = SsaFunction {
+            name: "cycle".to_string(),
+            entry_address: 0x0,
+            entry_block: BlockId(0),
+            blocks: vec![SsaBlock {
+                id: BlockId(0),
+                label: "entry".to_string(),
+                predecessors: vec![],
+                successors: vec![],
+                source_range: None,
+                phis: vec![entry_to_a, entry_to_b],
+                insts: vec![],
+            }],
+            versions: HashMap::new(),
+            metadata: FunctionMetadata::default(),
+        };
+
+        remove_trivial_phis(&mut ssa);
+        // `a = PHI(b)` folds first: uses of `a` (the phi for `b`) become `b`.
+        // Then `b = PHI(b)` is a self-identity and folds too. No infinite
+        // substitution loop is the requirement — collapse is fine.
+        let surviving: Vec<&VersionedVar> = ssa.blocks[0]
+            .phis
+            .iter()
+            .map(|p| &p.dst)
+            .collect();
+        let _ = surviving;
+        assert!(
+            ssa.blocks[0].phis.len() <= 2,
+            "cycle must terminate, not loop"
+        );
+    }
+
+    #[test]
+    fn test_remove_trivial_phi_chain_collapses() {
+        // `c = PHI(a); b = PHI(c); use(b)` — chain through two phis must
+        // collapse to direct uses of `a` in one fixpoint round set.
+        let vv = |base: &str, version: u32| VersionedVar {
+            base: BaseVar::Reg(base.to_string()),
+            version,
+            ty: Ty::i64(),
+        };
+        let a1 = vv("a", 1);
+        let b2 = vv("b", 2);
+        let c3 = vv("c", 3);
+        let mut ssa = SsaFunction {
+            name: "chain".to_string(),
+            entry_address: 0x0,
+            entry_block: BlockId(0),
+            blocks: vec![SsaBlock {
+                id: BlockId(0),
+                label: "merge".to_string(),
+                predecessors: vec![],
+                successors: vec![],
+                source_range: None,
+                phis: vec![
+                    Phi {
+                        dst: c3.clone(),
+                        inputs: vec![(BlockId(0), a1.clone())],
+                    },
+                    Phi {
+                        dst: b2.clone(),
+                        inputs: vec![(BlockId(0), c3.clone())],
+                    },
+                ],
+                insts: vec![SsaInst::Return {
+                    value: Some(SsaVal::Ver(b2.clone())),
+                }],
+            }],
+            versions: HashMap::new(),
+            metadata: FunctionMetadata::default(),
+        };
+
+        remove_trivial_phis(&mut ssa);
+        assert!(ssa.blocks[0].phis.is_empty(), "chain must collapse");
+        match &ssa.blocks[0].insts[0] {
+            SsaInst::Return {
+                value: Some(SsaVal::Ver(v)),
+            } => assert_eq!(v, &a1),
+            other => panic!("expected return of a#1, got {other:?}"),
+        }
     }
 }

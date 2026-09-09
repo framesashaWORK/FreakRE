@@ -449,7 +449,7 @@ fn loaded_db() -> &'static Db {
 /// Overlay storage: the classic parsed-text `Db`, or a memory-mapped binary
 /// `.fbd` file (FRBD format) that skips parsing and index building entirely.
 enum OverlaySource {
-    Text(Db),
+    Text(Box<Db>),
     Binary(std::sync::Arc<crate::fdb::FdbOverlay>),
 }
 
@@ -461,7 +461,7 @@ static OVERLAY: std::sync::RwLock<Option<OverlaySource>> = std::sync::RwLock::ne
 fn with_overlay<R>(f: impl FnOnce(Option<&Db>) -> R) -> R {
     let guard = OVERLAY.read().unwrap_or_else(|e| e.into_inner());
     match guard.as_ref() {
-        Some(OverlaySource::Text(db)) => f(Some(db)),
+        Some(OverlaySource::Text(db)) => f(Some(db.as_ref())),
         Some(OverlaySource::Binary(_)) => {
             // The binary overlay keeps its own mmap-backed scan/verify path;
             // callers that need entry data use the fdb-specific accessors
@@ -549,7 +549,7 @@ fn install_overlay(entries: Vec<DbEntry>) -> usize {
     db.entries = entries;
     rebuild_index(&mut db);
     let n = db.entries.len();
-    *OVERLAY.write().unwrap_or_else(|e| e.into_inner()) = Some(OverlaySource::Text(db));
+    *OVERLAY.write().unwrap_or_else(|e| e.into_inner()) = Some(OverlaySource::Text(Box::new(db)));
     n
 }
 
