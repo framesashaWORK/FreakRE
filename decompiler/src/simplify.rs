@@ -2060,6 +2060,34 @@ mod tests {
     use freakre_ir::Ty;
 
     #[test]
+    fn test_ensure_declared_temps() {
+        // `v42` is referenced but never declared: the pass must add a
+        // declaration; already-declared `v7` stays untouched.
+        let mut func = AstFunction {
+            name: "t".into(),
+            entry_address: 0,
+            params: vec![],
+            body: vec![Stmt::Assign {
+                target: Expr::Var("v7".into()),
+                value: Expr::Var("v42".into()),
+            }],
+            locals: vec![LocalVar {
+                name: "v7".into(),
+                ty: Ty::Int(32),
+                is_used: true,
+                fields: Vec::new(),
+            }],
+            return_type: Ty::Void,
+            param_register_names: vec![],
+        };
+        let added = ensure_declared_temps(&mut func);
+        assert_eq!(added, 1);
+        assert!(func.locals.iter().any(|l| l.name == "v42"));
+        // Second run is a no-op.
+        assert_eq!(ensure_declared_temps(&mut func), 0);
+    }
+
+    #[test]
     fn test_dead_locals_removed() {
         // local `dead` is declared but never referenced → dropped;
         // `used` is read → kept; params are never in locals anyway.
