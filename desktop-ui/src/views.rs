@@ -1235,6 +1235,56 @@ pub fn settings_view(ui: &mut egui::Ui, app: &mut FreakREApp) {
         ui.add_space(8.0);
 
         ui.label(
+            egui::RichText::new("Signature Base")
+                .color(c.info)
+                .size(12.0)
+                .monospace()
+                .strong(),
+        );
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("FLIRT tier:")
+                    .monospace()
+                    .size(11.0)
+                    .color(c.text_primary),
+            );
+            let (sel, tier_text) = match app.settings.sigs_tier {
+                0 => (0u8, "low (~1.2M)"),
+                2 => (2u8, "freak (all ~2.9M)"),
+                _ => (1u8, "basic (~2.7M)"),
+            };
+            egui::ComboBox::from_label("")
+                .selected_text(tier_text)
+                .width(160.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut app.settings.sigs_tier,
+                        0,
+                        "low (~1.2M) — fast, low memory",
+                    );
+                    ui.selectable_value(
+                        &mut app.settings.sigs_tier,
+                        1,
+                        "basic (~2.7M) — balanced (default)",
+                    );
+                    ui.selectable_value(
+                        &mut app.settings.sigs_tier,
+                        2,
+                        "freak (all ~2.9M) — max recall",
+                    );
+                });
+            let _ = sel;
+        });
+        ui.label(
+            egui::RichText::new("Applies on next scan start (FREAKRE_SIGS_TIER).")
+                .monospace()
+                .size(10.0)
+                .color(c.text_secondary),
+        );
+        ui.add_space(8.0);
+
+        ui.label(
             egui::RichText::new("Disassembly")
                 .color(c.info)
                 .size(12.0)

@@ -408,6 +408,11 @@ impl FreakREApp {
         let settings = AppSettings::load();
         let colors = ThemeColors::ida_dark();
 
+        // The signature tier is read once by the func-sigs auto-loader in the
+        // analysis worker thread; set it before spawning so the very first
+        // job already uses the user's tier.
+        std::env::set_var("FREAKRE_SIGS_TIER", settings.sigs_tier_name());
+
         let (job_tx, job_rx_in) = mpsc::channel::<Job>();
         let (res_tx, job_rx_out) = mpsc::channel::<JobResult>();
 

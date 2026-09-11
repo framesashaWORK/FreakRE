@@ -736,9 +736,132 @@ pub fn find_overlay_dir() -> Option<std::path::PathBuf> {
 
 static AUTO_LOADED: OnceLock<Option<usize>> = OnceLock::new();
 
-/// Load the overlay once (directory of chunks, or a single legacy `.fsig`
-/// via `$FREAKRE_GENERATED_SIGS`). Safe to call from every consumer at
-/// startup; returns the entry count.
+/// Signature-base tier controlling how much of the harvested overlay is
+/// loaded. Higher tiers add recall at the cost of memory and a slightly
+/// noisier match set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigsTier {
+    /// ~1.2M highest-confidence patterns: fast, low memory, low FP risk.
+    Low,
+    /// ~2.7M patterns: the balanced default.
+    Basic,
+    /// All ~2.9M clean patterns: maximum recall.
+    Freak,
+}
+
+impl SigsTier {
+    /// File-stem suffix used by the tier files produced by `fsig-clean`
+    /// (`generated-low.fbd`, `generated-basic.fbd`, `generated-freak.fbd`).
+    pub fn file_stem(self) -> &'static str {
+        match self {
+            Self::Low => "generated-low",
+            Self::Basic => "generated-basic",
+            Self::Freak => "generated-freak",
+        }
+    }
+
+    /// Size ordering; used for fallback when the requested tier file is absent.
+    fn rank(self) -> u8 {
+        match self {
+            Self::Low => 0,
+            Self::Basic => 1,
+            Self::Freak => 2,
+        }
+    }
+
+    /// Parse a tier name (`low` | `basic` | `freak`, case-insensitive).
+    /// Unknown names fall back to [`SigsTier::Basic`].
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "low" => Self::Low,
+            "freak" => Self::Freak,
+            _ => Self::Basic,
+        }
+    }
+}
+
+/// Resolve the tier requested for this process: `$FREAKRE_SIGS_TIER`
+/// (`low|basic|freak`), defaulting to [`SigsTier::Basic`].
+pub fn tier_from_env() -> SigsTier {
+    tier_from_env_value(std::env::var("FREAKRE_SIGS_TIER").ok().as_deref())
+}
+
+/// Testable core of [`tier_from_env`]: resolve a tier from an optional env value.
+fn tier_from_env_value(v: Option<&str>) -> SigsTier {
+    v.map(SigsTier::parse).unwrap_or(SigsTier::Basic)
+}
+
+/// Find a loadable base for `tier`: the exact tier file if present, else the
+/// nearest available tier (never worse than nothing). Searches the explicit
+/// dir first, then the standard overlay dirs.
+fn find_tier_file(tier: SigsTier, dir: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(d) = dir {
+        dirs.push(d.to_path_buf());
+    }
+    if let Some(d) = find_overlay_dir() {
+        dirs.push(d);
+    }
+    let want = tier.rank();
+    for d in &dirs {
+        // Collect every available tier base in this dir with its rank.
+        let mut available: Vec<(u8, std::path::PathBuf)> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(d) {
+            for ent in rd.flatten() {
+                let p = ent.path();
+                let ext_ok = p
+                    .extension()
+                    .map(|e| e.eq_ignore_ascii_case("fbd") || e.eq_ignore_ascii_case("fsig"))
+                    .unwrap_or(false);
+                if !ext_ok {
+                    continue;
+                }
+                let Some(name) = p.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let rank = match name {
+                    "generated-low" => 0,
+                    "generated-basic" => 1,
+                    "generated-freak" => 2,
+                    _ => continue,
+                };
+                available.push((rank, p));
+            }
+        }
+        if available.is_empty() {
+            continue;
+        }
+        // Exact hit first; otherwise pick the closest larger tier (more data
+        // beats less data when the requested size is not shipped).
+        available.sort_by_key(|(r, _)| {
+            let dist = if *r >= want { *r - want } else { 8 + want - *r };
+            (dist, *r)
+        });
+        return Some(available.remove(0).1);
+    }
+    None
+}
+
+/// Load the overlay restricted to `tier` (single `.fbd`/`.fsig` file chosen by
+/// tier name). Does not touch the family DB — callers layer that separately.
+/// Returns the entry count, or `None` when no tier base could be loaded.
+pub fn auto_load_overlay_with_tier(
+    tier: SigsTier,
+    dir: Option<&std::path::Path>,
+) -> Option<usize> {
+    let p = find_tier_file(tier, dir)?;
+    let n = if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fbd")) {
+        load_overlay_fbd(&p).ok()?
+    } else {
+        load_overlay_file(&p).ok()?
+    };
+    Some(n)
+}
+
+/// Load the overlay once (tier file preferred; directory of chunks, or a
+/// single legacy `.fsig` via `$FREAKRE_GENERATED_SIGS` as fallbacks). The tier
+/// comes from `$FREAKRE_SIGS_TIER` (`low|basic|freak`, default basic). Safe to
+/// call from every consumer at startup; returns the entry count.
 pub fn auto_load_overlay() -> Option<usize> {
     *AUTO_LOADED.get_or_init(|| {
         let mut loaded = None;
@@ -751,6 +874,10 @@ pub fn auto_load_overlay() -> Option<usize> {
                     load_overlay_file(&p).ok()
                 };
             }
+        }
+        if loaded.is_none() {
+            // Tier-selected single base (mmap when `.fbd` is available).
+            loaded = auto_load_overlay_with_tier(tier_from_env(), None);
         }
         if loaded.is_none() {
             loaded = find_overlay_dir().and_then(|d| load_overlay_dir(&d).ok());
@@ -1181,6 +1308,26 @@ pub struct DbHit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tier_parse_names_and_invalid() {
+        assert_eq!(SigsTier::parse("low"), SigsTier::Low);
+        assert_eq!(SigsTier::parse("basic"), SigsTier::Basic);
+        assert_eq!(SigsTier::parse("freak"), SigsTier::Freak);
+        // Case-insensitive.
+        assert_eq!(SigsTier::parse("LOW"), SigsTier::Low);
+        // Unknown names fall back to Basic.
+        assert_eq!(SigsTier::parse(""), SigsTier::Basic);
+        assert_eq!(SigsTier::parse("ultra"), SigsTier::Basic);
+    }
+
+    #[test]
+    fn tier_env_resolves_or_defaults_to_basic() {
+        // Invalid values must fall back to Basic, not panic or pick Low.
+        assert_eq!(tier_from_env_value(Some("nope")), SigsTier::Basic);
+        assert_eq!(tier_from_env_value(Some("freak")), SigsTier::Freak);
+        assert_eq!(tier_from_env_value(None), SigsTier::Basic);
+    }
 
     const SAMPLE: &str = "\
 # comment line

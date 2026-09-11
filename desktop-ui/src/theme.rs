@@ -19,6 +19,10 @@ pub struct AppSettings {
     pub suppressed_rules: Vec<String>,
     #[serde(default)]
     pub baseline_hashes: Vec<String>,
+    /// FLIRT signature-base tier: 0 = low (~1.2M), 1 = basic (~2.7M),
+    /// 2 = freak (all ~2.9M). Persisted across runs.
+    #[serde(default)]
+    pub sigs_tier: u8,
 }
 
 impl Default for AppSettings {
@@ -34,6 +38,18 @@ impl Default for AppSettings {
             max_recent_files: 20,
             suppressed_rules: Vec::new(),
             baseline_hashes: Vec::new(),
+            sigs_tier: 1,
+        }
+    }
+}
+
+impl AppSettings {
+    /// Tier name for the currently selected signature tier.
+    pub fn sigs_tier_name(&self) -> &'static str {
+        match self.sigs_tier {
+            0 => "low",
+            2 => "freak",
+            _ => "basic",
         }
     }
 }

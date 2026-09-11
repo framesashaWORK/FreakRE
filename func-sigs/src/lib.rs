@@ -39,10 +39,10 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 pub use db::{
-    auto_load_overlay, db_entries, db_libraries, db_load_errors, db_signature_count,
-    find_overlay_dir, load_overlay_dir, load_overlay_file, load_overlay_text,
+    auto_load_overlay, auto_load_overlay_with_tier, db_entries, db_libraries, db_load_errors,
+    db_signature_count, find_overlay_dir, load_overlay_dir, load_overlay_file, load_overlay_text,
     overlay_memory_stats, overlay_signature_count, resolve_hit, resolve_metadata,
-    scan_db_for_arch, validation_fills, DbMemoryStats,
+    scan_db_for_arch, tier_from_env, validation_fills, DbMemoryStats, SigsTier,
 };
 
 // ─── Types ────────────────────────────────────────────────────────────
