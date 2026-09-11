@@ -135,6 +135,9 @@ pub struct EmuResult {
     pub flags: std::collections::BTreeMap<String, bool>,
     /// Approximate source address of the last executed block.
     pub final_address: u64,
+    /// Every executed call (direct and indirect), in execution order.
+    /// Indirect targets are resolved from the machine state at the call site.
+    pub calls: Vec<CallRecord>,
 }
 
 /// Control-flow outcome of interpreting one IR instruction.
@@ -427,6 +430,11 @@ impl<E: EmuEnv> Emulator<E> {
         self.breakpoints.iter().copied().collect()
     }
 
+    /// Map `data` into guest memory at `base` (code, tables, globals).
+    pub fn load_image(&mut self, base: u64, data: &[u8]) {
+        self.mem.load_image(base, data);
+    }
+
     /// Run until the block at `target` (one-shot breakpoint), `Return`, or
     /// any other stop. The temporary breakpoint is always removed, even when
     /// the run stops elsewhere.
@@ -460,6 +468,8 @@ impl<E: EmuEnv> Emulator<E> {
         entry_offset: u64,
         max_steps: u64,
     ) -> EmuResult {
+        // Each run reports only its own calls.
+        self.calls.clear();
         // For mid-block entry (e.g., XOR_LOOP+4 where 0x04 is inside the entry block),
         // split the containing block at `want` so execution starts at the correct instruction.
         let func_owned: Option<IrFunction>;
@@ -497,6 +507,7 @@ impl<E: EmuEnv> Emulator<E> {
             registers: self.machine.gpr_snapshot(),
             flags: self.machine.flag_snapshot(),
             final_address: self.last_addr,
+            calls: self.calls.clone(),
         }
     }
 

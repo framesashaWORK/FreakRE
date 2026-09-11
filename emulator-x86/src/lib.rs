@@ -55,6 +55,7 @@
 //!   beyond zf/cf/sf/of/pf as computed by the lifter.
 
 pub mod decrypt;
+pub mod emu_resolve;
 pub mod env;
 pub mod exec;
 pub mod memory;
