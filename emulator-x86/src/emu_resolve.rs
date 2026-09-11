@@ -51,13 +51,55 @@ pub fn resolve_indirect_calls(
     func_base: u64,
     max_steps: u64,
 ) -> std::collections::HashMap<Site, u64> {
+    resolve_indirect_calls_with_data(func, image, image_base, func_base, max_steps, &[])
+}
+
+/// Like [`resolve_indirect_calls`], but with additional read-only guest
+/// windows (e.g. `.rdata`/`.data` raw bytes mapped at their virtual
+/// addresses) so memory-indirect calls through tables
+/// (`call [rax+0x188]` where `rax` was loaded from a vtable) resolve too.
+pub fn resolve_indirect_calls_with_data(
+    func: &IrFunction,
+    image: &[u8],
+    image_base: u64,
+    func_base: u64,
+    max_steps: u64,
+    data_windows: &[(u64, &[u8])],
+) -> std::collections::HashMap<Site, u64> {
     let sites = dynamic_sites(func, func_base);
     if sites.is_empty() {
+        return Default::default();
+    }
+    // Sites in blocks unreachable from entry never execute; skipping them
+    // avoids paying the emulation budget on exception/handler tables that
+    // CRT code carries but a single-path run can never observe.
+    let reachable: std::collections::HashSet<u64> = {
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![func.entry_block];
+        while let Some(b) = stack.pop() {
+            if !seen.insert(b) {
+                continue;
+            }
+            if let Some(block) = func.blocks.get(b.0 as usize) {
+                for s in func.successors(b) {
+                    stack.push(s);
+                }
+            }
+        }
+        seen.into_iter()
+            .filter_map(|b| func.blocks.get(b.0 as usize))
+            .filter_map(|block| crate::exec::block_address(&block.label, func_base))
+            .collect()
+    };
+    if !sites.iter().any(|(baddr, _)| reachable.contains(baddr)) {
         return Default::default();
     }
     let image_end = image_base + image.len() as u64;
     let mut emu = Emulator::new(DefaultEnv::new());
     emu.load_image(image_base, image);
+    for (base, bytes) in data_windows {
+        emu.load_image(*base, bytes);
+    }
     let res = emu.run(func, func_base, 0, max_steps);
 
     // Block address → dynamic-call ordinals observed, in execution order.
@@ -178,5 +220,62 @@ mod tests {
             ))
         });
         assert!(has_concrete, "call target must be rewritten to Const(0x1010)");
+    }
+
+    /// x64 vtable dispatch: `mov rax, [rip+obj]; call [rax+8]` — the object
+    /// field holds the vtable base and the callee pointer lives in a DATA
+    /// window (`.rdata`), not in the code image. Resolution must succeed
+    /// only when the data window is mapped.
+    #[test]
+    fn resolves_vtable_dispatch_through_data_window() {
+        // Code (base 0x1000):
+        //   0x1000: 48 8B 05 disp32      mov rax, [rip+disp] -> 0x2000
+        //   0x1007: 48 FF 50 08          call qword [rax+8]
+        //   0x100B: C3                   ret
+        //   0x100C..0x100F: nops
+        //   0x1010: C3                   vtable[0] target (ret)
+        //   0x1011: C3                   vtable[1] target (ret)
+        let mut code = vec![0u8; 0x20];
+        // disp = 0x2000 - (0x1000 + 7) = 0xFF9
+        code[0..7].copy_from_slice(&[0x48, 0x8B, 0x05, 0xF9, 0x0F, 0x00, 0x00]);
+        code[7..11].copy_from_slice(&[0x48, 0xFF, 0x50, 0x08]); // call [rax+8]
+        code[11] = 0xC3; // ret
+        for b in &mut code[0x0C..0x10] {
+            *b = 0x90;
+        }
+        code[0x10] = 0xC3;
+        code[0x11] = 0xC3;
+
+        // .rdata window at 0x2000: object field -> vtable base 0x2010,
+        // vtable at 0x2010 with two qword entries.
+        let mut rdata = vec![0u8; 0x20];
+        rdata[0..8].copy_from_slice(&0x2010u64.to_le_bytes());
+        rdata[0x10..0x18].copy_from_slice(&0x1010u64.to_le_bytes());
+        rdata[0x18..0x20].copy_from_slice(&0x1011u64.to_le_bytes());
+
+        let lifter = X86Lifter::new(true);
+        let func = lifter.lift_function(&code, 0x1000, "t").expect("lift");
+
+        // Without the data window the load reads zeros -> opaque.
+        let no_data = resolve_indirect_calls(&func, &code, 0x1000, 0x1000, 10_000);
+        assert!(
+            no_data.is_empty(),
+            "must not resolve without the .rdata window: {no_data:?}"
+        );
+
+        // With the .rdata window the vtable entry resolves.
+        let map = resolve_indirect_calls_with_data(
+            &func,
+            &code,
+            0x1000,
+            0x1000,
+            10_000,
+            &[(0x2000, &rdata)],
+        );
+        assert_eq!(
+            map.get(&(0x1000, 0)),
+            Some(&0x1011),
+            "call [rax+8] must resolve to vtable[1] = 0x1011; got {map:?}"
+        );
     }
 }

@@ -99,6 +99,7 @@ pub fn decompile_pe_function(data: &[u8], address: Option<u64>) -> Result<Decomp
         code_region,
         sec.virtual_address as u64,
         func.start,
+        &pe_data_windows(&pe, data),
     );
 
     let string_table = build_string_table(&pe, data);
@@ -152,7 +153,13 @@ pub fn decompile_pe_function_sized(
     let mut ir_func = lifter
         .lift_function(func_slice, rel, &func_name)
         .map_err(|e| format!("IR lift failed: {e}"))?;
-    resolve_indirect_calls_emu(&mut ir_func, code_region, sec.virtual_address as u64, rel);
+    resolve_indirect_calls_emu(
+        &mut ir_func,
+        code_region,
+        sec.virtual_address as u64,
+        rel,
+        &pe_data_windows(&pe, data),
+    );
     let string_table = build_string_table(&pe, data);
     let c_code = decompiler::decompile_function_with_strings(&ir_func, &string_table)
         .map_err(|e| format!("decompilation failed: {e}"))?;
@@ -203,6 +210,7 @@ pub fn decompile_pe_all_functions(data: &[u8]) -> Result<Vec<DecompiledFunction>
         .map_err(|e| format!("function detection failed: {e}"))?;
 
     let string_table = build_string_table(&pe, data);
+    let windows = pe_data_windows(&pe, data);
     let lifter = X86Lifter::new(pe.is_64bit);
     let mut out = Vec::new();
     for func in &detected {
@@ -223,6 +231,7 @@ pub fn decompile_pe_all_functions(data: &[u8]) -> Result<Vec<DecompiledFunction>
             code_region,
             sec.virtual_address as u64,
             func.start,
+            &windows,
         );
         if let Ok(c_code) =
             decompiler::decompile_function_with_strings(&ir_func, &string_table)
@@ -249,19 +258,34 @@ fn resolve_indirect_calls_emu(
     code_region: &[u8],
     section_va: u64,
     func_base: u64,
+    windows: &[(u64, &[u8])],
 ) {
     use emulator_x86::emu_resolve;
     const EMU_BUDGET_STEPS: u64 = 20_000;
-    let resolved = emu_resolve::resolve_indirect_calls(
+    let resolved = emu_resolve::resolve_indirect_calls_with_data(
         ir_func,
         code_region,
         section_va,
         func_base,
         EMU_BUDGET_STEPS,
+        windows,
     );
     if !resolved.is_empty() {
         emu_resolve::apply_resolved_calls(ir_func, func_base, &resolved);
     }
+}
+
+/// Raw bytes of every non-executable section mapped at its virtual
+/// address, so emulation can read vtables and data pointers.
+fn pe_data_windows<'a>(pe: &pe_parser::PeFile, data: &'a [u8]) -> Vec<(u64, &'a [u8])> {
+    pe.sections
+        .iter()
+        .filter(|s| s.name_string() != ".text" && s.name_string() != "CODE")
+        .filter_map(|s| {
+            let raw = s.raw_data(data);
+            (!raw.is_empty()).then_some((s.virtual_address as u64, raw))
+        })
+        .collect()
 }
 
 /// Build a virtual-address → string table for the whole PE image.
