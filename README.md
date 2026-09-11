@@ -1,88 +1,122 @@
 # FreakRE
 
-Modular reverse engineering framework written in Rust. Multi-format binary analysis with built-in decompiler, plugin system, and native desktop UI.
+Modular reverse engineering framework written in Rust. From raw bytes to
+readable C: multi-format parsers, a platform-independent IR with SSA and
+SCCP constant propagation, a structured decompiler, a FLIRT-style signature
+engine with a memory-mapped binary database, malware-family detection,
+emulation-assisted analysis, an HTTP API and a native desktop UI.
 
-## Prerequisites
+Everything is written from scratch in safe Rust with zero-copy parsing where
+possible. The only `unsafe` lives in FFI bindings (`capstone-ffi`,
+`libloading`) and a handful of isolated low-level helpers.
 
-### Required
+---
 
-- **Rust** ≥ 1.75 ([rustup.rs](https://rustup.rs))
-- **C/C++ compiler** — MSVC or MinGW on Windows, GCC/Clang on Linux/macOS
-  - Needed by `libloading` (plugin system), `cc` build scripts, and FFI crates
-  - Ubuntu/Debian: `sudo apt install build-essential`
-  - Fedora: `sudo dnf install gcc-c++ make`
-  - macOS: `xcode-select --install`
-  - Windows: Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++"
+## Highlights
 
-### Linux Desktop UI Dependencies
-
-The `freakre-desktop` crate uses `eframe` (egui) which requires system libraries on Linux:
-
-```bash
-# Ubuntu/Debian
-sudo apt install libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
-
-# Fedora
-sudo dnf install gtk3-devel libxkbcommon-devel openssl-devel
-```
-
-Not needed for CLI.
-
-### Optional: Capstone Disassembly Engine
-
-FreakRE includes a built-in length-disassembler fallback. For full Capstone disassembly support:
-
-| Platform | Command |
-|----------|---------|
-| Ubuntu/Debian | `sudo apt install libcapstone-dev` |
-| Fedora | `sudo dnf install capstone-devel` |
-| macOS | `brew install capstone` |
-| Windows (vcpkg) | `vcpkg install capstone:x64-windows` |
-| Windows (manual) | Set `CAPSTONE_LIB_DIR` env var to directory containing `capstone.lib` |
-
-Without Capstone, the `capstone-ffi` crate gracefully falls back to the internal LDE.
+- **Real decompiler** — x86/x64 (plus ARM, DEX, PPC lifters) → IR → SSA →
+  SCCP → CFG structuring (`if`/`while`/`for`/`switch`, short-circuit
+  `&&`/`||`) → typed C with recovered parameters, struct fields, string
+  literals and named call targets.
+- **Jump-table / switch recovery** in the lifter: `cmp idx,N; ja default;
+  jmp [tbl+idx*scale]` and the MSVC two-level form (`mov ecx,[idx*4+jtbl];
+  add rcx,base; jmp rcx`) become `switch (x) { case 0: ... }`.
+- **Emulation-assisted decompilation** — one bounded emulation run resolves
+  dynamic `call reg` sites (vtable dispatch, function-pointer tables) whose
+  observed targets agree across executions.
+- **FLIRT-style signature engine** — ~3M signatures with a custom
+  memory-mapped `.fbd` format and a prebuilt hash-index ladder; 1.2M
+  signatures load in ~0.1s (vs ~4s for text parsing, a 32× speedup).
+- **Malware-family engine** — a dedicated signature DB auto-built from
+  quarantine corpora (`fsig-gen --families`), detecting families such as
+  icedid / magniber / mafia by function-level patterns.
+- **Signature tiers** — `low` (~1.2M) / `basic` (~2.7M) / `freak` (~2.9M)
+  selectable at runtime for a speed/recall tradeoff.
+- **Backdoor detection with provenance** — a serializable
+  `BackdoorReport` contract (JSON/SARIF-ready) with MITRE ATT&CK mapping,
+  semantic import tags (source/sink/role) and weighted signal correlation.
+- **YARA-subset engine** — hex with wildcards, text/regex with modifiers,
+  integer functions, boolean conditions, Aho-Corasick matching.
+- **HTTP API** — scan, strings, entropy, xrefs, SARIF, explain and
+  function-level decompilation over multipart uploads.
+- **48-crate workspace** — parsers for PE, ELF, Mach-O, COFF, DEX, WASM,
+  PDF, .NET, Pyc, firmware, memory dumps; 117 test suites, fuzz contracts
+  for IR soundness.
 
 ## Architecture
 
 ```
-freakre-desktop  (egui native app,   pkg: freakre-desktop)
-freakre          (CLI binary,         pkg: freakre-scanner)
-freakre-server   (HTTP API on :8080,  pkg: freakre-server)
-│
-├── freakre-scanner     ← Orchestrator with weighted signal correlation
-├── pe-parser           ← PE32/PE32+ parser with malware anomaly detection
-├── elf-parser          ← ELF32/ELF64 parser with security warnings
-├── macho-parser        ← Mach-O parser with load command analysis
-├── coff-parser         ← COFF object/parse support
-├── dex-parser          ← Android DEX parser
-├── wasm-parser         ← WebAssembly module parser
-├── pdf-analyzer / dotnet-analyzer / pyc-parser / firmware-analyzer / memdump-analyzer / dll-analyzer
-├── entropy-rs          ← Shannon entropy + sliding window analysis
-├── str-extract         ← ASCII/UTF-16 string extraction with byte offsets
-├── import-analyzer     ← Import table analysis with 8+ detection categories
-├── yara-lite           ← YARA-subset engine (hex/text/regex + conditions)
-├── backdoor-analyzer   ← Backdoor detection with MITRE ATT&CK mapping
-├── shellcode-analyzer  ← Shellcode detection + API hash resolution
-├── xrefs               ← Cross-reference database for strings and imports
-├── cfg-builder         ← Control Flow Graph construction + anomaly detection
-├── func-finder         ← Function boundary detection (recursive descent + patterns)
-├── func-sigs           ← FLIRT-style signature matching + .fsig/.fbd databases + malware family engine
-├── capstone-ffi        ← Capstone disassembly bindings with fallback LDE
-├── freakre-ir          ← IR with SSA + SCCP; x86/x64, ARM, DEX, PPC lifters
-├── emulator-x86        ← x86/x64 emulation engine (decryption traces, call resolution)
-├── dataflow            ← Live variables, reaching definitions, use-def chains (pkg: dataflow)
-├── type-propagation    ← Type inference and constraint propagation (pkg: freakre-type-propagation)
-├── type-system         ← Type database, layout computation, builtin types
-├── decompiler          ← IR → AST → C decompilation pipeline (pkg: decompiler)
-├── diffing             ← Binary diffing engine
-├── project-db          ← Sled-backed project database with undo/redo + bookmarks
-├── scripting           ← Rhai scripting engine integration
-├── plugins             ← Dynamic plugin loading via libloading
-├── freakre-sys-plugins ← Built-in plugins (crypto finder, entropy mapper, string analyzer)
-└── ml-detection        ← Feature-based binary classification with decision trees
+                    ┌────────────────────────────────────────────┐
+                    │  freakre-desktop (egui app, pkg: freakre-desktop)
+                    │  freakre           (CLI,  pkg: freakre-scanner)
+                    │  freakre-server    (HTTP API on :8080)
+                    └─────────────────────┬──────────────────────┘
+                                          │
+                 ┌────────────────────────▼─────────────────────────┐
+                 │  freakre-scanner — orchestrator, weighted signal  │
+                 │  correlation, single canonical BackdoorReport     │
+                 └──┬──────────┬──────────┬──────────┬─────────────┘
+                    │          │          │          │
+        ┌───────────▼──┐ ┌─────▼────┐ ┌───▼────┐ ┌───▼──────────┐
+        │ parsers      │ │ engines  │ │ sigs   │ │ decompiler   │
+        │ PE ELF Mach-O│ │ entropy  │ │ func-  │ │ freakre-ir   │
+        │ COFF DEX WASM│ │ strings  │ │ sigs   │ │ decompiler   │
+        │ PDF .NET Pyc │ │ imports  │ │ yara-  │ │ dataflow     │
+        │ firmware ... │ │ xrefs    │ │ lite   │ │ type-*       │
+        └──────────────┘ └──────────┘ └────────┘ └──────────────┘
 ```
 
-All analysis libraries are written from scratch in safe Rust with zero-copy parsing where possible. The only `unsafe` usage is in FFI bindings (`capstone-ffi`, `libloading`) and isolated low-level helpers.
+### The decompilation pipeline
+
+```
+bytes ──► disassembler ──► x86 lifter ──► IR
+                                            │
+   ┌────────────────────────────────────────┘
+   │  1. lift_function (registers, flags, calls with recovered arguments)
+   │  2. jump-table recovery  : IndirectBranch → IrInst::Switch
+   │  3. strip_call_shadows   : push/pop call-shadow cleanup
+   │  4. prune_unreachable    : BlockId-remapped reachability cleanup
+   │  5. SSA: to_ssa → remove_trivial_phis → SCCP → from_ssa
+   │  6. CFG structuring      : if/else, loops, short-circuit && / ||,
+   │  │                         switch dispatch
+   ▼  7. params.rs           : arg registers / stack slots → a1..aN
+      8. stack_vars.rs       : Mem2Reg for stack slots
+      9. struct_fields.rs    : *(T*)(base+off) → base->field_0xNN
+     10. types.rs            : constraint solving + interproc summaries
+     11. strings.rs          : IntLit(va) → "literal"
+     12. simplify.rs         : dead locals, compound assigns, idioms
+     13. ast_to_c            : readable C emission
+```
+
+`freakre-ir` keeps the IR honest: width-aware memory access, SCCP with a
+monotone lattice and restart-style propagation, and a block-graph that
+remaps `BlockId`s correctly when unreachable code is pruned.
+
+### Signature engine
+
+```
+tools/fsig-gen
+├── fsig-gen          (default)   export-based signatures for library bases
+├── fsig-gen --families           malware family signatures from quarantine
+│                                 corpora: func-finder detection, entropy
+│                                 gate (packed skip), cross-family and
+│                                 --against-base filtering, provenance names
+├── fsig-clean                    curator: dedup, conflict resolution
+│                                 (survivor gains aka=), junk gating,
+│                                 tier generation (low/basic/freak)
+└── fsig-pack                     .fsig → .fbd (memory-mapped binary DB)
+```
+
+- **.fsig** — text base: `lib|arch|name|min_len|conf|pattern`, optional
+  `|meta=role=...;cc=...;source=...;sink=...` semantic tags.
+- **.fbd** — mmap overlay, 128-byte header, open-addressed probe tables
+  keyed by a packed byte ladder (oct → quint → triple → pair → single →
+  slow). Zero-copy: the scanner reads the DB straight from the OS page
+  cache.
+- **Family engine** — separate `FAMILY_DB`, auto-loaded from
+  `malware-families.fbd`; hits surface in `libraries_found`.
+- **Tiers** — `--sigs-tier low|basic|freak` (CLI) or a settings dropdown
+  (desktop UI); `FREAKRE_SIGS_TIER` env var is honored everywhere.
 
 ## Quick Start
 
@@ -91,27 +125,58 @@ All analysis libraries are written from scratch in safe Rust with zero-copy pars
 ```bash
 cargo build --release -p freakre-scanner
 
-# Scan a file
+# Scan a file / directory
 ./target/release/freakre suspicious.exe
-
-# Scan a directory
 ./target/release/freakre /path/to/samples/
+
+# All formats: pretty, json, csv, html
+./target/release/freakre -f json target.exe > report.json
+./target/release/freakre -f html target.exe > report.html
 
 # With YARA rules
 ./target/release/freakre -r rules.yar target.exe
 
-# JSON output
-./target/release/freakre -f json target.exe
-
-# CSV output
-./target/release/freakre -f csv target.exe > results.csv
-
-# Filter by severity
+# Filter output
 ./target/release/freakre --findings-only --min-severity high ./samples/
 
-# Parallel scanning
+# Parallel scanning (0 = auto)
 ./target/release/freakre -j 8 ./large_directory/
+
+# Signature tier
+./target/release/freakre --sigs-tier freak target.exe
 ```
+
+Full flag list: `-r/--rules`, `-f/--format`, `-d/--depth`, `-j/--threads`,
+`--findings-only`, `--min-severity`, `-o/--output`, `-q/--quiet`,
+`-v/--verbose`, `--sigs-tier`.
+
+Exit codes: `0` clean, `1` suspicious, `2` malicious.
+
+### HTTP server
+
+```bash
+cargo run --release -p freakre-server
+```
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/health` | GET | liveness |
+| `/api/capabilities` | GET | feature discovery |
+| `/api/scan` | POST | multipart scan (full report) |
+| `/api/scan/base64` | POST | base64-body scan |
+| `/api/scan/path` | POST | scan a server-side path |
+| `/api/strings` | POST | string extraction |
+| `/api/entropy` | POST | entropy profile |
+| `/api/xrefs` | POST | cross-references |
+| `/api/decompile` | POST | function decompilation to C |
+| `/api/explain` | POST | plain-language verdict explanation |
+| `/api/sarif` | POST | SARIF output |
+| `/api/jobs/scan`, `/api/jobs/:id` | POST/GET | async scan jobs |
+
+`/api/decompile` runs the full pipeline: func-finder → x86 lifter (with
+image context for jump tables) → emulation-assisted indirect-call
+resolution → decompiler → C with parameters, typed locals, struct fields
+and string literals.
 
 ### Desktop UI
 
@@ -119,7 +184,31 @@ cargo build --release -p freakre-scanner
 cargo run -p freakre-desktop --release
 ```
 
-Native egui application with sidebar navigation, hex viewer, disassembler, CFG graph, theme switching, and settings persistence.
+Native egui application: sidebar navigation, hex viewer, disassembler, CFG
+graph, signature-tier selector, theme switching and settings persistence.
+
+### Building your own signature bases
+
+```bash
+cargo build --release -p fsig-gen
+
+# Library base from a directory of clean DLLs
+fsig-gen --out mybase.fsig --jobs 3 ./libs/
+
+# Malware family signatures from a quarantine folder
+fsig-gen --families --out families.fsig --against mybase.fsig \
+         --families-max-funcs 8 --jobs 4 ./quarantine/
+
+# Clean, dedup and split into tiers
+fsig-clean --in mybase.fsig --out mybase-clean.fsig \
+           --low-target 1200000 --basic-target 2700000
+
+# Pack to the mmap format
+fsig-pack mybase-clean.fsig mybase-clean.fbd
+```
+
+Point the scanner at a directory containing `generated-*.fbd` (or set
+`FREAKRE_SIGS_DIR`) and select the tier.
 
 ## Modules
 
@@ -130,94 +219,139 @@ Native egui application with sidebar navigation, hex viewer, disassembler, CFG g
 | `pe-parser` | PE32, PE32+ | RWX sections, overlapping regions, anomalous headers, TLS callbacks, delay imports |
 | `elf-parser` | ELF32, ELF64 | Executable stack, missing NX, static linking, suspicious interpreter, section anomalies |
 | `macho-parser` | Mach-O 32/64 | Load commands, dylib dependencies, code signatures, encryption info |
+| `coff-parser` | COFF | object/symbol parsing |
+| `dex-parser` | Android DEX | classes, methods, bytecode for the DEX lifter |
+| `wasm-parser` | WebAssembly | module sections, imports/exports |
+| `pdf-analyzer` / `dotnet-analyzer` / `pyc-parser` / `firmware-analyzer` / `memdump-analyzer` / `dll-analyzer` | — | format-specific analyzers |
 
 ### Analysis Engines
 
 | Module | Description |
 |--------|------------|
-| `entropy-rs` | Shannon entropy with zero-alloc histogram; sliding window for packed region detection |
-| `str-extract` | ASCII + UTF-16LE + UTF-16BE in single pass with byte offset tracking |
-| `import-analyzer` | 8+ rule categories: process injection, hollowing, APC injection, persistence, anti-debug, dynamic resolve, C2/network, ransomware crypto, keylogging, credential theft |
-| `yara-lite` | Hex patterns with wildcards, text/regex with modifiers, integer functions (`uint8/16/32`, `entrypoint`), boolean conditions, Aho-Corasick multi-pattern matching |
-| `backdoor-analyzer` | Import + string based backdoor detection with MITRE ATT&CK T-code mapping |
-| `shellcode-analyzer` | Shellcode pattern detection + API hash resolution (CRC32, MD5, ROR13) |
-| `func-sigs` | Known function signatures (crypto, compression, network) + compiler fingerprinting (MSVC, GCC, Clang, Delphi, Go) |
-| `ml-detection` | 96-feature vector extraction + rule-based heuristic scoring engine with feature importance output |
+| `entropy-rs` | Shannon entropy with zero-alloc histogram; sliding window for packed-region detection |
+| `str-extract` | ASCII + UTF-16LE/BE in a single pass with byte offsets |
+| `import-analyzer` | 8+ rule categories: injection, hollowing, APC, persistence, anti-debug, dynamic resolve, C2, ransomware crypto, keylogging, credential theft |
+| `yara-lite` | Hex wildcards, text/regex modifiers, `uint8/16/32`, `entrypoint`, boolean conditions, Aho-Corasick |
+| `backdoor-analyzer` | Import/string backdoor detection with MITRE ATT&CK T-codes; canonical serializable report |
+| `shellcode-analyzer` | Shellcode patterns + API hash resolution (CRC32, MD5, ROR13) |
+| `cfg-builder` | CFG construction, unreachable code and branching anomalies |
+| `xrefs` | Cross-reference database for strings and imports |
+| `diffing` | Binary diffing engine |
+| `ml-detection` | 96-feature vector + heuristic decision scoring with feature importance |
 
-### Intermediate Representation & Decompilation
+### IR & Decompilation
 
 | Module | Description |
 |--------|------------|
-| `capstone-ffi` | Capstone disassembly FFI with graceful fallback to built-in length-disassembler |
-| `freakre-ir` | Platform-independent IR with SSA + SCCP constant propagation; x86/x64, ARM, DEX and PPC lifters; jump-table/switch recovery |
-| `emulator-x86` | x86/x64 emulation: decryption traces, indirect-call resolution for the decompiler |
-| `dataflow` | Live variable analysis, reaching definitions, use-def chain construction |
+| `capstone-ffi` | Capstone FFI with graceful fallback to the built-in length-disassembler |
+| `freakre-ir` | SSA + SCCP, x86/x64/ARM/DEX/PPC lifters, jump-table recovery, emulation-assisted call resolution hooks |
+| `emulator-x86` | Bounded x86/x64 emulation: decryption traces, indirect-call resolution |
+| `dataflow` | Live variables, reaching definitions, use-def chains |
 | `type-propagation` | Constraint-based type inference across IR |
-| `type-system` | Type database with layout computation and builtin type definitions |
-| `decompiler` | IR → AST → C with CFG structuring, SCCP, param/struct-field recovery, cross-function type propagation, string literals, jump-table switches |
-| `cfg-builder` | Control flow graph construction with unreachable code and branching anomaly detection |
-| `xrefs` | Cross-reference database mapping strings and imports to code locations |
+| `type-system` | Type database, layout computation, builtins |
+| `decompiler` | IR → AST → C pipeline (structuring, params, stack vars, struct fields, types, strings, simplify) |
+| `func-finder` | Function boundary detection (recursive descent + patterns) |
 
-### Signature Databases
-
-`func-sigs` ships a FLIRT-style signature pipeline with a custom binary format:
-
-- **.fsig** — text signature base (6/7-field lines, optional semantic tags)
-- **.fbd** — memory-mapped binary overlay with a prebuilt hash-index ladder (oct/quint/triple/pair/single); loads 1.2M signatures in ~0.1s vs ~4s for text parsing
-- **Family engine** — separate malware-family signatures (icedid, magniber, ...) auto-loaded as `malware-families.fbd`
-- **Tiers** — `low` / `basic` / `freak` signature tiers selectable via `--sigs-tier` in the CLI and the desktop UI settings
-
-### HTTP API
-
-`freakre-server` exposes the scanner on `:8080`, including `/api/decompile` (function decompilation with emulation-assisted indirect-call resolution, recovered parameters, typed locals and string literals).
-
-### Project Management & Extensibility
+### Extensibility
 
 | Module | Description |
 |--------|------------|
-| `project-db` | Sled-backed persistent storage with undo/redo history and bookmarks |
-| `plugins` | Runtime plugin loading via `libloading` with trait-based API |
-| `freakre-sys-plugins` | Built-in plugins: crypto constant finder, entropy mapper, function classifier, string analyzer |
-| `scripting` | Rhai scripting engine for custom analysis scripts |
-| `diffing` | Binary diffing for comparing two binaries |
+| `project-db` | Sled-backed storage with undo/redo and bookmarks |
+| `plugins` | Runtime plugin loading via `libloading` with a trait API |
+| `freakre-sys-plugins` | Built-ins: crypto constant finder, entropy mapper, function classifier, string analyzer |
+| `scripting` | Rhai scripting engine for custom analyses |
 
 ### Scanner Orchestrator
 
-Combines all modules into a unified report with **weighted signal correlation**:
+Combines every module into a unified report with **weighted signal
+correlation**:
 
-- **Base signals**: import score (25%), backdoor score (25%)
-- **Content signals**: shellcode (25%), YARA matches, high entropy regions
-- **Structural signals**: RWX sections, overlapping regions, CFG anomalies
-- **Diminishing returns**: repeated low-severity findings don't scale linearly
-- **Signal compounding bonus**: 3+ active signal categories add bonus weight
-- **Hard overrides**: critical findings and shellcode force Malicious verdict
+- **Base signals** — import score (25%), backdoor score (25%)
+- **Content signals** — shellcode (25%), YARA matches, high-entropy regions
+- **Structural signals** — RWX sections, overlapping regions, CFG anomalies
+- **Diminishing returns** — repeated low-severity findings don't scale
+  linearly
+- **Compounding bonus** — 3+ active signal categories add bonus weight
+- **Hard overrides** — critical findings and shellcode force a Malicious
+  verdict
 
-## Exit Codes
+The report is computed once (`BackdoorReport`, serde + provenance +
+suppression metadata) and reused by pretty/JSON/CSV/HTML outputs, `/api/explain`
+and `/api/sarif` — one data source, no divergence.
 
-| Code | Meaning |
-|------|---------|
-| `0` | Clean |
-| `1` | Suspicious files found |
-| `2` | Malicious files found |
+## Measured Results
+
+Honest numbers from the committed benchmark harness (`tmp/bench`,
+`decomp_bench` bin, MSVC `/O0` toy corpus + real Windows DLLs):
+
+| Suite | Avg similarity | Structural |
+|-------|---------------:|-----------:|
+| Pure C toys (10 files) | **38.7%** | **59.2%** |
+| Python via Cython→native | 33.3% | 54.4% |
+
+System32 sample (40 DLLs > 120KB, 24,362 decompiled functions):
+parameters recovered in 52.6%, struct fields in 47.2%, loops in 16.2%,
+typed pointer casts in 39.5%.
+
+Self-hosting (decomp_bench on itself, 13,366 functions): 0 lift failures,
+66.1% named calls, 54.2% typed pointer casts, 41.6% typed locals.
+
+Java remains out of scope: only JVM bytecode is available and the lifter
+consumes native machine code (DEX ≠ JVM).
+
+## Prerequisites
+
+### Required
+
+- **Rust** ≥ 1.75 (toolchain pinned by `rust-toolchain.toml`) —
+  [rustup.rs](https://rustup.rs)
+- **C/C++ compiler** — MSVC or MinGW on Windows, GCC/Clang on Linux/macOS
+  (needed by `libloading`, `cc` build scripts, and FFI crates)
+  - Ubuntu/Debian: `sudo apt install build-essential`
+  - Fedora: `sudo dnf install gcc-c++ make`
+  - macOS: `xcode-select --install`
+  - Windows: [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+    with "Desktop development with C++"
+
+### Linux Desktop UI Dependencies
+
+```bash
+# Ubuntu/Debian
+sudo apt install libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
+                 libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+# Fedora
+sudo dnf install gtk3-devel libxkbcommon-devel openssl-devel
+```
+
+Not needed for the CLI.
+
+### Optional: Capstone Disassembly Engine
+
+A built-in length-disassembler fallback is always available. For full
+Capstone support:
+
+| Platform | Command |
+|----------|---------|
+| Ubuntu/Debian | `sudo apt install libcapstone-dev` |
+| Fedora | `sudo dnf install capstone-devel` |
+| macOS | `brew install capstone` |
+| Windows (vcpkg) | `vcpkg install capstone:x64-windows` |
+| Windows (manual) | `CAPSTONE_LIB_DIR` env var pointing at `capstone.lib` |
 
 ## Testing
 
 ```bash
-# All workspace tests
-cargo test --workspace
+cargo test --workspace          # 117 test suites
 
-# Specific module
-cargo test -p yara-lite
-cargo test -p pe-parser
-cargo test -p freakre-scanner
+cargo test -p decompiler        # pipeline + emission
+cargo test -p freakre-ir        # IR, SSA, SCCP, lifters, jump tables
 
-# With output
-cargo test --workspace -- --nocapture
+# IR soundness smoke fuzzer: random IR graphs through the SCCP pipeline,
+# contract-checked (no panics, no undeclared temps, consistent CFG)
+cd fuzz && cargo run --release --bin smoke_decompiler_ir -- 2017
 ```
 
-## Fuzzing
-
-Fuzz targets for all parsers are in the `fuzz/` directory:
+Fuzz targets for all parsers live in `fuzz/`:
 
 ```bash
 cd fuzz
