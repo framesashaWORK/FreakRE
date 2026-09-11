@@ -18,6 +18,10 @@ pub struct ImageCtx {
     sections: Vec<(u64, u64)>,
     /// Image base (VA of the first mapped byte in `bytes[0]` coordinate).
     image_base: u64,
+    /// Image base expressed in the LIFTER'S coordinate space (the same
+    /// space as `base_address` / rip-relative consts). Defaults to
+    /// `image_base`; set to 0 when functions are lifted in RVA space.
+    coord_base: u64,
     /// The mapped image bytes, starting at `image_base`.
     bytes: Vec<u8>,
 }
@@ -27,15 +31,23 @@ impl ImageCtx {
     pub fn new(sections: Vec<(u64, u64)>, image_base: u64, bytes: Vec<u8>) -> Self {
         ImageCtx {
             sections,
+            coord_base: image_base,
             image_base,
             bytes,
         }
     }
 
+    /// Override the coordinate base for lifters running in a different
+    /// address space (e.g. RVA space while the file is at a real base).
+    pub fn in_coord_base(mut self, coord_base: u64) -> Self {
+        self.coord_base = coord_base;
+        self
+    }
+
     /// Resolve a virtual address to a byte slice if it lies inside a mapped
     /// section and the full `len` window is present.
     fn read(&self, va: u64, len: usize) -> Option<&[u8]> {
-        let off = va.checked_sub(self.image_base)?;
+        let off = va.checked_sub(self.coord_base)?;
         for &(sva, ssize) in &self.sections {
             if off >= sva && off < sva.checked_add(ssize)? {
                 let start = off as usize;
@@ -1634,8 +1646,11 @@ impl X86Lifter {
             let Some(raw) = image.read_ptr(table_va.wrapping_add(i * scale), scale) else {
                 return false;
             };
+            // Table contents hold absolute VAs; convert them into the
+            // lifter's coordinate space for extent validation.
             let va = if self.is_64bit {
-                raw
+                raw.wrapping_sub(image.image_base)
+                    .wrapping_add(image.coord_base)
             } else {
                 base_address.wrapping_add(raw)
             };
