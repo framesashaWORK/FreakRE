@@ -20,6 +20,10 @@ pub struct CompiledRule {
     pub hex_patterns: HashMap<String, CompiledHexPattern>,
     /// Regex patterns indexed by string identifier.
     pub regex_patterns: HashMap<String, CompiledRegexPattern>,
+    /// `private rule` — matches but is not reported in scan output.
+    pub is_private: bool,
+    /// `global rule` — must match for ANY other rule to match.
+    pub is_global: bool,
 }
 
 #[derive(Debug)]
@@ -154,12 +158,31 @@ pub fn compile_rule(rule: &Rule) -> Result<CompiledRule, CompileError> {
         text_patterns,
         hex_patterns,
         regex_patterns,
+        is_private: rule.is_private,
+        is_global: rule.is_global,
     })
 }
 
 /// Expand a text pattern into byte-sequence variants based on modifiers.
 fn expand_text_variants(text: &[u8], mods: &Modifiers) -> Vec<Vec<u8>> {
     let mut variants = Vec::new();
+
+    if mods.base64 {
+        // base64 replaces raw matching: the rule matches the base64
+        // encodings of the (ascii and/or wide) pattern in all three
+        // alignments.
+        if mods.ascii || !mods.wide {
+            variants.extend(base64_variants(text));
+        }
+        if mods.wide {
+            let wide: Vec<u8> = text.iter().flat_map(|&b| [b, 0]).collect();
+            variants.extend(base64_variants(&wide));
+        }
+        if variants.is_empty() {
+            variants.push(text.to_vec());
+        }
+        return variants;
+    }
 
     if mods.ascii || (!mods.wide && !mods.ascii) {
         variants.push(text.to_vec());
@@ -190,6 +213,63 @@ fn expand_text_variants(text: &[u8], mods: &Modifiers) -> Vec<Vec<u8>> {
     }
 
     variants
+}
+
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// The three base64 encodings of `data`, one per possible stream alignment.
+///
+/// Characters that depend on bytes outside the pattern (the alignment
+/// prefix and the trailing group) are stripped, so each variant is a
+/// substring of any true full-stream encoding — no false negatives.
+fn base64_variants(data: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    for align in 0usize..3 {
+        let mut buf: Vec<u8> = Vec::with_capacity(align + data.len());
+        buf.extend(std::iter::repeat_n(0u8, align));
+        buf.extend_from_slice(data);
+        let encoded = base64_encode_no_pad(&buf);
+        // Leading chars that depend on the alignment prefix bytes.
+        let lead_strip = match align {
+            0 => 0,
+            1 => 2,
+            _ => 3,
+        };
+        // Trailing chars that depend on following data or padding.
+        let tail_strip = match (align + data.len()) % 3 {
+            0 => 0,
+            1 => 3,
+            _ => 2,
+        };
+        let keep_from = lead_strip.min(encoded.len());
+        let keep_to = encoded.len().saturating_sub(tail_strip).max(keep_from);
+        let variant = &encoded[keep_from..keep_to];
+        if !variant.is_empty() {
+            out.push(variant.to_vec());
+        }
+    }
+    out
+}
+
+/// Standard base64 without padding characters.
+fn base64_encode_no_pad(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(BASE64_ALPHABET[(n >> 18) as usize & 0x3F]);
+        out.push(BASE64_ALPHABET[(n >> 12) as usize & 0x3F]);
+        if chunk.len() > 1 {
+            out.push(BASE64_ALPHABET[(n >> 6) as usize & 0x3F]);
+        }
+        if chunk.len() > 2 {
+            out.push(BASE64_ALPHABET[n as usize & 0x3F]);
+        }
+    }
+    out
 }
 
 /// Compute the minimum number of bytes a hex pattern can match.

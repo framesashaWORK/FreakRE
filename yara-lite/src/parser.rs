@@ -45,7 +45,22 @@ pub fn parse_rules(input: &str) -> Result<Vec<Rule>> {
         if p.at_end() {
             break;
         }
-        rules.push(p.parse_rule()?);
+        // Rule modifiers: `private rule` / `global rule`.
+        let mut is_private = false;
+        let mut is_global = false;
+        loop {
+            if p.try_keyword("private") {
+                is_private = true;
+            } else if p.try_keyword("global") {
+                is_global = true;
+            } else {
+                break;
+            }
+        }
+        let mut rule = p.parse_rule()?;
+        rule.is_private = is_private;
+        rule.is_global = is_global;
+        rules.push(rule);
     }
     Ok(rules)
 }
@@ -216,6 +231,19 @@ impl<'a> Parser<'a> {
     // ─── Rule parsing ──────────────────────────────────────
 
     fn parse_rule(&mut self) -> Result<Rule> {
+        // Optional modifiers before `rule`: private, global.
+        let mut is_private = false;
+        let mut is_global = false;
+        loop {
+            self.skip_ws();
+            if self.try_keyword("private") {
+                is_private = true;
+            } else if self.try_keyword("global") {
+                is_global = true;
+            } else {
+                break;
+            }
+        }
         self.expect_keyword("rule")?;
         let name = self.read_identifier()?;
 
@@ -269,6 +297,8 @@ impl<'a> Parser<'a> {
             tags,
             strings,
             condition,
+            is_private,
+            is_global,
         })
     }
 
@@ -526,6 +556,7 @@ impl<'a> Parser<'a> {
                 "ascii" => mods.ascii = true,
                 "fullword" => mods.fullword = true,
                 "xor" => mods.xor = true,
+                "base64" => mods.base64 = true,
                 "at" => {
                     self.advance(word_len);
                     self.skip_ws();
@@ -655,6 +686,134 @@ impl<'a> Parser<'a> {
         false
     }
 
+    /// `$name` — or a bare `$` (current string of an enclosing `for of`).
+    fn read_current_or_named_identifier(&mut self) -> Result<String> {
+        self.skip_ws();
+        if self.peek_char() == Some('$') {
+            let after = &self.remaining()[1..];
+            let boundary = after
+                .chars()
+                .next()
+                .map(|c| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(true);
+            if boundary {
+                self.advance(1);
+                return Ok("$".to_string());
+            }
+        }
+        self.read_string_identifier()
+    }
+
+    /// `#name` — or a bare `#` (current string of an enclosing `for of`).
+    fn read_current_or_count_identifier(&mut self) -> Result<String> {
+        self.skip_ws();
+        if self.peek_char() == Some('#') {
+            let after = &self.remaining()[1..];
+            let boundary = after
+                .chars()
+                .next()
+                .map(|c| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(true);
+            if boundary {
+                self.advance(1);
+                return Ok("$".to_string());
+            }
+        }
+        self.read_count_identifier()
+    }
+
+    /// `/regex/` source between slashes (escapes preserved verbatim).
+    fn read_regex_source(&mut self) -> Result<String> {
+        self.skip_ws();
+        if self.peek_char() != Some('/') {
+            return Err(ParseError::Expected(
+                "/regex/".into(),
+                self.peek_token_preview(),
+                self.pos,
+            ));
+        }
+        self.advance(1);
+        let start = self.pos;
+        let mut escaped = false;
+        loop {
+            if self.at_end() {
+                return Err(ParseError::UnexpectedEof);
+            }
+            let c = self.peek_char().unwrap();
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '/' {
+                let src = self.input[start..self.pos].to_string();
+                self.advance(1);
+                return Ok(src);
+            }
+            self.advance(c.len_utf8());
+        }
+    }
+
+    /// `for` expression with the `for` keyword already consumed.
+    fn parse_for_expr(&mut self, depth: usize) -> Result<Condition> {
+        const MAX_EXPR_DEPTH: usize = 64;
+        if depth > MAX_EXPR_DEPTH {
+            return Err(ParseError::Syntax(
+                self.pos,
+                "expression nesting too deep".into(),
+            ));
+        }
+        self.skip_ws();
+        // Quantifier: any | all | N
+        let kind = if self.try_keyword("any") {
+            OfKind::Any
+        } else if self.try_keyword("all") {
+            OfKind::All
+        } else if self
+            .peek_char()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
+        {
+            OfKind::Exactly(self.read_usize()?)
+        } else {
+            return Err(ParseError::Syntax(
+                self.pos,
+                "expected 'any', 'all' or a count after 'for'".into(),
+            ));
+        };
+
+        self.skip_ws();
+        if self.try_keyword("of") {
+            let set = self.parse_of_set()?;
+            self.expect_char(':')?;
+            self.expect_char('(')?;
+            let body = self.parse_or_expr_inner(depth + 1)?;
+            self.expect_char(')')?;
+            return Ok(Condition::ForOf(kind, set, Box::new(body)));
+        }
+
+        // for <var> in (<start>..<end>) : ( <cond> )
+        let var = self.read_identifier()?;
+        self.expect_keyword("in")?;
+        self.expect_char('(')?;
+        let start = self.parse_int_expr_inner(depth + 1)?;
+        self.skip_ws();
+        self.expect_char('.')?;
+        self.expect_char('.')?;
+        let end = self.parse_int_expr_inner(depth + 1)?;
+        self.expect_char(')')?;
+        self.expect_char(':')?;
+        self.expect_char('(')?;
+        let body = self.parse_or_expr_inner(depth + 1)?;
+        self.expect_char(')')?;
+        Ok(Condition::ForIntRange(
+            kind,
+            var,
+            Box::new(start),
+            Box::new(end),
+            Box::new(body),
+        ))
+    }
+
     fn parse_primary(&mut self) -> Result<Condition> {
         self.parse_primary_inner(0)
     }
@@ -668,6 +827,24 @@ impl<'a> Parser<'a> {
             ));
         }
         self.skip_ws();
+
+        // Integer comparison with arbitrary LHS shape: `(a & b) == c`,
+        // `@s[i] < n`, `math.entropy(0, filesize) > 7.0`, `pe.machine ==
+        // pe.MACHINE_I386`, ... Try the int-expression parse first; when no
+        // comparison operator follows, restore and continue as a boolean
+        // primary (covers `( cond )` and boolean keywords).
+        {
+            let saved = self.pos;
+            if let Ok(lhs) = self.parse_int_expr() {
+                self.skip_ws();
+                if let Some(op) = self.try_parse_comp_op() {
+                    if let Ok(rhs) = self.parse_int_expr() {
+                        return Ok(Condition::IntComp(op, Box::new(lhs), Box::new(rhs)));
+                    }
+                }
+            }
+            self.pos = saved;
+        }
 
         // Parenthesized expression
         if self.peek_char() == Some('(') {
@@ -684,6 +861,12 @@ impl<'a> Parser<'a> {
         }
         if self.try_keyword("false") {
             return Ok(Condition::Bool(false));
+        }
+
+        // for <quantifier> of (<set>) : ( <cond> )
+        // for <quantifier> <var> in (<e1>..<e2>) : ( <cond> )
+        if self.try_keyword("for") {
+            return self.parse_for_expr(depth);
         }
 
         // N of them / all of them / any of them
@@ -713,9 +896,9 @@ impl<'a> Parser<'a> {
             self.pos = saved;
         }
 
-        // String count: #s
+        // String count: #s (or bare `#` = current string of a `for of`)
         if self.peek_char() == Some('#') {
-            let id = self.read_count_identifier()?;
+            let id = self.read_current_or_count_identifier()?;
             self.skip_ws();
             // Check for comparison
             if let Some(op) = self.try_parse_comp_op() {
@@ -729,9 +912,9 @@ impl<'a> Parser<'a> {
             return Ok(Condition::StringCount(id));
         }
 
-        // String reference with optional `at` / `in`
+        // String reference with optional `at` / `in` / `contains` / `matches`
         if self.peek_char() == Some('$') {
-            let id = self.read_string_identifier()?;
+            let id = self.read_current_or_named_identifier()?;
             self.skip_ws();
             if self.try_keyword("at") {
                 self.skip_ws();
@@ -774,6 +957,11 @@ impl<'a> Parser<'a> {
                 let type_name = self.read_quoted_string()?;
                 return Ok(Condition::IsType(id, type_name));
             }
+            if self.try_keyword("matches") {
+                self.skip_ws();
+                let regex_src = self.read_regex_source()?;
+                return Ok(Condition::Matches(id, regex_src));
+            }
             return Ok(Condition::StringMatch(id));
         }
 
@@ -813,24 +1001,23 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        // pe.number_of_sections
+        // pe.imports("dll") / pe.imports("dll", "func") / pe.sections("name")
+        // / pe.<attribute> <cmp> <expr> — value forms go through int exprs.
         if self.remaining().starts_with("pe.") {
+            let saved = self.pos;
             self.advance(3);
-            if self.try_keyword("number_of_sections") {
-                self.skip_ws();
-                if let Some(op) = self.try_parse_comp_op() {
-                    let rhs = self.parse_int_expr()?;
-                    return Ok(Condition::PeNumberSections(op, Box::new(rhs)));
-                }
-                return Err(ParseError::Syntax(
-                    self.pos,
-                    "pe.number_of_sections must be used in comparison".into(),
-                ));
-            }
             if self.try_keyword("imports") {
                 self.skip_ws();
                 self.expect_char('(')?;
                 let dll_name = self.read_quoted_string()?;
+                self.skip_ws();
+                if self.peek_char() == Some(',') {
+                    self.advance(1);
+                    self.skip_ws();
+                    let func_name = self.read_quoted_string()?;
+                    self.expect_char(')')?;
+                    return Ok(Condition::PeImportsFunc(dll_name, func_name));
+                }
                 self.expect_char(')')?;
                 return Ok(Condition::PeImports(dll_name));
             }
@@ -841,13 +1028,22 @@ impl<'a> Parser<'a> {
                 self.expect_char(')')?;
                 return Ok(Condition::PeSections(sec_name));
             }
+            // Value attribute or constant: delegate to the int-expression
+            // parser (pe.machine, pe.timestamp, pe.MACHINE_I386, ...).
+            self.pos = saved;
+            let lhs = self.parse_int_expr()?;
+            self.skip_ws();
+            if let Some(op) = self.try_parse_comp_op() {
+                let rhs = self.parse_int_expr()?;
+                return Ok(Condition::IntComp(op, Box::new(lhs), Box::new(rhs)));
+            }
             return Err(ParseError::Syntax(
                 self.pos,
-                format!("unknown pe. property: {}", self.peek_token_preview()),
+                "pe.<attribute> must be used in comparison".into(),
             ));
         }
 
-        // math.hash(offset, length)
+        // math.hash(...) / math.entropy(...)
         if self.remaining().starts_with("math.") {
             self.advance(5);
             if self.try_keyword("hash") {
@@ -869,6 +1065,25 @@ impl<'a> Parser<'a> {
                     IntCompOp::Gt,
                     Box::new(lhs),
                     Box::new(IntExpr::Literal(0)),
+                ));
+            }
+            if self.try_keyword("entropy") {
+                self.skip_ws();
+                self.expect_char('(')?;
+                let offset_expr = self.parse_int_expr()?;
+                self.skip_ws();
+                self.expect_char(',')?;
+                let len_expr = self.parse_int_expr()?;
+                self.expect_char(')')?;
+                let lhs = IntExpr::Entropy(Box::new(offset_expr), Box::new(len_expr));
+                self.skip_ws();
+                if let Some(op) = self.try_parse_comp_op() {
+                    let rhs = self.parse_int_expr()?;
+                    return Ok(Condition::IntComp(op, Box::new(lhs), Box::new(rhs)));
+                }
+                return Err(ParseError::Syntax(
+                    self.pos,
+                    "math.entropy must be used in comparison".into(),
                 ));
             }
             return Err(ParseError::Syntax(
@@ -926,10 +1141,20 @@ impl<'a> Parser<'a> {
 
     /// Target of an `of` expression with `of` already consumed.
     fn parse_of_tail(&mut self, kind: OfKind) -> Result<Condition> {
+        let set = self.parse_of_set()?;
+        match set {
+            ForSet::Them => Ok(Condition::OfThem(kind)),
+            ForSet::List(ids) => Ok(Condition::OfSet(kind, ids)),
+        }
+    }
+
+    /// The set after `of`: `them` or `($a, $b*)`.
+    fn parse_of_set(&mut self) -> Result<ForSet> {
         self.skip_ws();
         if self.try_keyword("them") {
-            Ok(Condition::OfThem(kind))
-        } else if self.peek_char() == Some('(') {
+            return Ok(ForSet::Them);
+        }
+        if self.peek_char() == Some('(') {
             self.advance(1);
             let mut ids = Vec::new();
             loop {
@@ -938,19 +1163,25 @@ impl<'a> Parser<'a> {
                     self.advance(1);
                     break;
                 }
-                ids.push(self.read_string_identifier()?);
+                let mut id = self.read_string_identifier()?;
+                self.skip_ws();
+                // Wildcard suffix: `$a*` — prefix reference.
+                if self.peek_char() == Some('*') {
+                    self.advance(1);
+                    id.push('*');
+                }
+                ids.push(id);
                 self.skip_ws();
                 if self.peek_char() == Some(',') {
                     self.advance(1);
                 }
             }
-            Ok(Condition::OfSet(kind, ids))
-        } else {
-            Err(ParseError::Syntax(
-                self.pos,
-                "expected 'them' or '(' after 'of'".into(),
-            ))
+            return Ok(ForSet::List(ids));
         }
+        Err(ParseError::Syntax(
+            self.pos,
+            "expected 'them' or '(' after 'of'".into(),
+        ))
     }
 
     fn try_parse_comp_op(&mut self) -> Option<IntCompOp> {
@@ -983,6 +1214,44 @@ impl<'a> Parser<'a> {
         self.parse_int_expr_inner(0)
     }
 
+    /// The part after `pe.` inside an int expression: attribute or constant.
+    fn parse_pe_int_expr(&mut self) -> Result<IntExpr> {
+        if self.try_keyword("number_of_sections") {
+            return Ok(IntExpr::PeNumberOfSections);
+        }
+        if self.try_keyword("machine") {
+            return Ok(IntExpr::PeMachine);
+        }
+        if self.try_keyword("timestamp") {
+            return Ok(IntExpr::PeTimestamp);
+        }
+        if self.try_keyword("entry_point") {
+            return Ok(IntExpr::PeEntryPoint);
+        }
+        if self.try_keyword("subsystem") {
+            return Ok(IntExpr::PeSubsystem);
+        }
+        if self.try_keyword("characteristics") {
+            return Ok(IntExpr::PeCharacteristics);
+        }
+        if self.try_keyword("is_pe") {
+            self.skip_ws();
+            self.expect_char('(')?;
+            self.expect_char(')')?;
+            return Ok(IntExpr::PeIsPe);
+        }
+        // Symbolic constant: pe.MACHINE_I386, pe.SUBSYSTEM_WINDOWS_GUI,
+        // pe.DLL, ... (uppercase identifiers).
+        let name = self.read_identifier()?;
+        if name.chars().any(|c| c.is_ascii_lowercase()) {
+            return Err(ParseError::Syntax(
+                self.pos,
+                format!("unknown pe. attribute: {name}"),
+            ));
+        }
+        Ok(IntExpr::PeConst(name))
+    }
+
     fn parse_int_expr_inner(&mut self, depth: usize) -> Result<IntExpr> {
         const MAX_INT_DEPTH: usize = 128;
         if depth > MAX_INT_DEPTH {
@@ -1003,21 +1272,30 @@ impl<'a> Parser<'a> {
             return Ok(left);
         }
 
-        // String match offset: @s or @s[N] — early return
+        // String match offset: @s or @s[i] (1-based index) — early return.
+        // The id after `@` is the bare name (YARA style `@s`); a `$` prefix
+        // (`@$s`) and bare `$` (current string) are also accepted. All forms
+        // canonicalize to the `$name` match-table key.
         if self.peek_char() == Some('@') {
             self.advance(1);
-            let id = self.read_string_identifier()?;
+            self.skip_ws();
+            let id = if self.peek_char() == Some('$') {
+                self.read_current_or_named_identifier()?
+            } else {
+                format!("${}", self.read_identifier()?)
+            };
             self.skip_ws();
             if self.peek_char() == Some('[') {
                 self.advance(1);
-                let _index = self.read_usize()?;
+                let index = self.parse_int_expr_inner(depth + 1)?;
                 self.expect_char(']')?;
+                return Ok(IntExpr::MatchOffsetN(id, Box::new(index)));
             }
             return Ok(IntExpr::MatchOffset(id));
         }
 
         let mut left = if self.peek_char() == Some('#') {
-            let id = self.read_count_identifier()?;
+            let id = self.read_current_or_count_identifier()?;
             IntExpr::Count(id)
         } else if self.remaining().starts_with("filesize") {
             self.advance(8);
@@ -1027,6 +1305,17 @@ impl<'a> Parser<'a> {
             IntExpr::Entrypoint
         } else if self.try_keyword("offset") {
             IntExpr::Offset
+        } else if self.remaining().starts_with("pe.") {
+            self.advance(3);
+            self.parse_pe_int_expr()?
+        } else if self.remaining().starts_with("math.entropy(") {
+            self.advance(14);
+            let offset_expr = self.parse_int_expr_inner(depth + 1)?;
+            self.skip_ws();
+            self.expect_char(',')?;
+            let len_expr = self.parse_int_expr_inner(depth + 1)?;
+            self.expect_char(')')?;
+            IntExpr::Entropy(Box::new(offset_expr), Box::new(len_expr))
         } else if self.remaining().starts_with("uint8(") {
             self.advance(6);
             let offset = self.parse_int_expr_inner(depth + 1)?;
@@ -1070,25 +1359,59 @@ impl<'a> Parser<'a> {
             .map(|c| c.is_ascii_digit())
             .unwrap_or(false)
         {
+            // Integer or float literal. A '.' counts as a decimal point only
+            // when followed by a digit, so range syntax `0..100` is safe.
+            let saved = self.pos;
             let n = self.read_usize()?;
-            self.skip_ws();
             let rest = self.remaining();
-            if rest.starts_with("KB") || rest.starts_with("kb") {
-                self.advance(2);
-                IntExpr::Literal(n * 1024)
-            } else if rest.starts_with("MB") || rest.starts_with("mb") {
-                self.advance(2);
-                IntExpr::Literal(n * 1024 * 1024)
-            } else if rest.starts_with("GB") || rest.starts_with("gb") {
-                self.advance(2);
-                IntExpr::Literal(n * 1024 * 1024 * 1024)
+            if rest.starts_with('.')
+                && rest[1..]
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
+            {
+                self.pos = saved;
+                let end = self
+                    .remaining()
+                    .char_indices()
+                    .find(|(_, c)| !c.is_ascii_digit() && *c != '.')
+                    .map(|(i, _)| i)
+                    .unwrap_or(self.remaining().len());
+                let text = &self.remaining()[..end];
+                let val: f64 = text
+                    .parse()
+                    .map_err(|_| ParseError::Syntax(saved, "invalid float literal".into()))?;
+                self.advance(end);
+                IntExpr::Float(val)
             } else {
-                IntExpr::Literal(n)
+                self.skip_ws();
+                let rest = self.remaining();
+                if rest.starts_with("KB") || rest.starts_with("kb") {
+                    self.advance(2);
+                    IntExpr::Literal(n * 1024)
+                } else if rest.starts_with("MB") || rest.starts_with("mb") {
+                    self.advance(2);
+                    IntExpr::Literal(n * 1024 * 1024)
+                } else if rest.starts_with("GB") || rest.starts_with("gb") {
+                    self.advance(2);
+                    IntExpr::Literal(n * 1024 * 1024 * 1024)
+                } else {
+                    IntExpr::Literal(n)
+                }
             }
         } else if self.peek_char() == Some('-') {
             self.advance(1);
             let inner = self.parse_int_expr_inner(depth + 1)?;
             IntExpr::Sub(Box::new(IntExpr::Literal(0)), Box::new(inner))
+        } else if self
+            .peek_char()
+            .map(|c| c.is_alphabetic() || c == '_')
+            .unwrap_or(false)
+        {
+            // Loop variable reference (bound by an enclosing
+            // `for <var> in (...)`). Unknown names evaluate to 0.
+            IntExpr::Var(self.read_identifier()?)
         } else {
             return Err(ParseError::Syntax(
                 self.pos,
@@ -1140,6 +1463,10 @@ impl<'a> Parser<'a> {
                 self.advance(1);
                 let rhs = self.parse_int_expr_inner(depth + 1)?;
                 *left = IntExpr::Div(Box::new(left.clone()), Box::new(rhs));
+            } else if rest.starts_with('&') && !rest.starts_with("&&") {
+                self.advance(1);
+                let rhs = self.parse_int_expr_inner(depth + 1)?;
+                *left = IntExpr::BitAnd(Box::new(left.clone()), Box::new(rhs));
             } else {
                 break;
             }

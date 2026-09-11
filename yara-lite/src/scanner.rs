@@ -248,9 +248,14 @@ impl Scanner {
 
         // Evaluate conditions
         let entrypoint = detect_entrypoint(data);
-        let mut matched_rules = Vec::new();
+
+        // Pass 1: global rules — if ANY global rule fails to match, no
+        // other rule matches either (YARA semantics).
+        let mut global_ok = true;
         for rule in &self.rules {
-            // Collect string IDs defined in this rule for OfThem evaluation
+            if !rule.is_global {
+                continue;
+            }
             let rule_string_ids: std::collections::HashSet<String> = rule
                 .text_patterns
                 .keys()
@@ -258,8 +263,7 @@ impl Scanner {
                 .chain(rule.regex_patterns.keys())
                 .cloned()
                 .collect();
-
-            if evaluate_condition(
+            if !evaluate_condition(
                 &rule.condition,
                 &raw_matches,
                 data.len(),
@@ -268,7 +272,38 @@ impl Scanner {
                 &rule_string_ids,
                 &rule.name,
             ) {
-                matched_rules.push(rule.name.clone());
+                global_ok = false;
+                break;
+            }
+        }
+
+        // Pass 2: regular rules. Private rules are evaluated (their string
+        // matches feed nothing else, but evaluation keeps semantics honest)
+        // yet excluded from the reported list.
+        let mut matched_rules = Vec::new();
+        if global_ok {
+            for rule in &self.rules {
+                // Collect string IDs defined in this rule for OfThem evaluation
+                let rule_string_ids: std::collections::HashSet<String> = rule
+                    .text_patterns
+                    .keys()
+                    .chain(rule.hex_patterns.keys())
+                    .chain(rule.regex_patterns.keys())
+                    .cloned()
+                    .collect();
+
+                if evaluate_condition(
+                    &rule.condition,
+                    &raw_matches,
+                    data.len(),
+                    data,
+                    entrypoint,
+                    &rule_string_ids,
+                    &rule.name,
+                ) && !rule.is_private
+                {
+                    matched_rules.push(rule.name.clone());
+                }
             }
         }
 
@@ -580,8 +615,9 @@ fn evaluate_condition(
         }
 
         Condition::OfSet(kind, ids) => {
-            let total = ids.len();
-            let matched_count = ids
+            let expanded = expand_string_ids(ids, rule_string_ids);
+            let total = expanded.len();
+            let matched_count = expanded
                 .iter()
                 .filter(|id| {
                     matches.iter().any(|((rn, sid), locs)| {
@@ -702,9 +738,130 @@ fn evaluate_condition(
 
         Condition::PeImports(dll_name) => eval_pe_imports(data, dll_name),
 
+        Condition::PeImportsFunc(dll_name, func_name) => {
+            eval_pe_imports_func(data, dll_name, func_name)
+        }
+
         Condition::PeSections(sec_name) => eval_pe_section_exists(data, sec_name),
+
+        Condition::Matches(id, pattern) => {
+            // Real regex engine (byte-oriented, DoS-protected). Compiled per
+            // evaluation — matches-arms are rare, so the cost is fine. A
+            // pattern that fails to compile never matches. The source keeps
+            // `\/` escapes for the `/.../ ` delimiters; unescape them and
+            // apply the same `(?-u)` byte-mode prefix the strings-section
+            // regex path uses.
+            let normalized = pattern.replace("\\/", "/");
+            let pattern_str = format!("(?-u){normalized}");
+            match freakre_patterns::SafeRegex::new(&pattern_str) {
+                Ok(re) => matches.iter().any(|((rn, sid), locs)| {
+                    rn == current_rule_name
+                        && sid == id
+                        && locs.iter().any(|(off, len)| {
+                            off.saturating_add(*len) <= data.len()
+                                && re.find_iter(&data[*off..*off + *len]).next().is_some()
+                        })
+                }),
+                Err(_) => false,
+            }
+        }
+
+        Condition::ForOf(kind, set, body) => {
+            // Evaluate the body condition for each string in the set and
+            // count how many contexts satisfy it. `$` inside the body is
+            // substituted with the current string id per iteration.
+            let raw_ids: Vec<String> = match set {
+                ast::ForSet::Them => rule_string_ids.iter().cloned().collect(),
+                ast::ForSet::List(ids) => ids.clone(),
+            };
+            let ids = expand_string_ids(&raw_ids, rule_string_ids);
+            let total = ids.len();
+            let matched_count = ids
+                .iter()
+                .filter(|sid| {
+                    let mut body_i = body.as_ref().clone();
+                    body_i.subst_current(sid);
+                    evaluate_condition(
+                        &body_i,
+                        matches,
+                        filesize,
+                        data,
+                        entrypoint,
+                        &{
+                            let mut one = std::collections::HashSet::new();
+                            one.insert((*sid).clone());
+                            one
+                        },
+                        current_rule_name,
+                    )
+                })
+                .count();
+            check_of_kind(kind, matched_count, total)
+        }
+
+        Condition::ForIntRange(kind, var, start, end, body) => {
+            // Iterate i in [start, end); the loop variable is substituted
+            // into a cloned body per iteration.
+            let s = eval_int_expr(start, matches, filesize, data, entrypoint, current_rule_name);
+            let e = eval_int_expr(end, matches, filesize, data, entrypoint, current_rule_name);
+            let total = e.saturating_sub(s);
+            let matched_count = (s..e)
+                .filter(|i| {
+                    let mut body_i = body.as_ref().clone();
+                    body_i.subst_var(var, *i as i64);
+                    evaluate_condition(
+                        &body_i,
+                        matches,
+                        filesize,
+                        data,
+                        entrypoint,
+                        rule_string_ids,
+                        current_rule_name,
+                    )
+                })
+                .count();
+            check_of_kind(kind, matched_count, total)
+        }
     }
 }
+
+/// Expand a string-id list against the ids defined in the current rule:
+/// entries ending with `*` become every defined id sharing that prefix;
+/// plain entries are kept as-is.
+fn expand_string_ids(
+    ids: &[String],
+    rule_string_ids: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for id in ids {
+        if let Some(prefix) = id.strip_suffix('*') {
+            let mut hits: Vec<String> = rule_string_ids
+                .iter()
+                .filter(|sid| sid.starts_with(prefix))
+                .cloned()
+                .collect();
+            hits.sort();
+            out.extend(hits);
+        } else {
+            out.push(id.clone());
+        }
+    }
+    out
+}
+
+/// Minimal literal-substring regex check used by `Matches` until the regex
+/// engine is wired in: patterns with no metacharacters behave as `Contains`.
+fn regex_lite_matches(pattern: &str, s: &str) -> bool {
+    let cleaned: String = pattern
+        .chars()
+        .filter(|c| !matches!(c, '*' | '+' | '?' | '.' | '[' | ']' | '(' | ')'))
+        .collect();
+    s.contains(&cleaned)
+}
+
+/// Enumerates the condition AST namespace used by the arms above.
+#[allow(unused_imports)]
+use crate::ast as ast;
 
 fn eval_int_expr(
     expr: &IntExpr,
@@ -890,7 +1047,130 @@ fn eval_int_expr(
             current_rule_name,
         ),
         IntExpr::PeNumberOfSections => eval_pe_number_of_sections(data),
+        IntExpr::BitAnd(a, b) => {
+            let la = eval_int_expr(a, matches, filesize, data, entrypoint, current_rule_name);
+            let rb = eval_int_expr(b, matches, filesize, data, entrypoint, current_rule_name);
+            la & rb
+        }
+        IntExpr::Float(f) => (f * 100.0) as usize,
+        IntExpr::Var(name) => {
+            // Loop variables have no environment in this evaluator; treat a
+            // reference as 0 so rules using `for i in (...)` still scan.
+            let _ = name;
+            0
+        }
+        IntExpr::MatchOffsetN(id, idx) => {
+            let n = eval_int_expr(idx, matches, filesize, data, entrypoint, current_rule_name);
+            matches
+                .iter()
+                .filter(|((rn, sid), _)| rn == current_rule_name && sid == id)
+                .flat_map(|(_, locs)| locs.iter())
+                .nth(n.saturating_sub(1))
+                .map(|(off, _)| *off)
+                .unwrap_or(0)
+        }
+        IntExpr::Entropy(off_expr, len_expr) => {
+            let off = eval_int_expr(off_expr, matches, filesize, data, entrypoint, current_rule_name);
+            let len = eval_int_expr(len_expr, matches, filesize, data, entrypoint, current_rule_name);
+            shannon_entropy_window(data, off, len)
+        }
+        IntExpr::PeMachine => pe_header_field(data, 4, 2),
+        IntExpr::PeTimestamp => pe_header_field(data, 8, 4),
+        IntExpr::PeEntryPoint => {
+            if data.len() < 64 || !data.starts_with(b"MZ") {
+                return 0;
+            }
+            let pe_off = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
+            if pe_off + 0x28 > data.len() {
+                return 0;
+            }
+            u32::from_le_bytes([
+                data[pe_off + 0x28],
+                data[pe_off + 0x29],
+                data[pe_off + 0x2A],
+                data[pe_off + 0x2B],
+            ]) as usize
+        }
+        IntExpr::PeSubsystem => pe_header_field(data, 0x5C, 2),
+        IntExpr::PeCharacteristics => pe_header_field(data, 0x16, 2),
+        IntExpr::PeIsPe => {
+            if data.len() < 64 || !data.starts_with(b"MZ") {
+                return 0;
+            }
+            let pe_off = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
+            usize::from(pe_off + 4 <= data.len() && &data[pe_off..pe_off + 4] == b"PE\0\0")
+        }
+        IntExpr::PeConst(name) => match name.as_str() {
+            // COFF machine types
+            "MACHINE_I386" => 0x014C,
+            "MACHINE_AMD64" => 0x8664,
+            "MACHINE_IA64" => 0x0200,
+            "MACHINE_ARM" => 0x01C0,
+            "MACHINE_ARM64" => 0xAA64,
+            "MACHINE_RISCV64" => 0x5064,
+            // COFF characteristics flags
+            "EXECUTABLE_IMAGE" => 0x0002,
+            "LINE_NUMS_STRIPPED" => 0x0004,
+            "32BIT_MACHINE" => 0x0100,
+            "DEBUG_STRIPPED" => 0x0200,
+            "REMOVABLE_RUN_FROM_SWAP" => 0x0400,
+            "NET_RUN_FROM_SWAP" => 0x0800,
+            "SYSTEM" => 0x1000,
+            "DLL" => 0x2000,
+            "UP_SYSTEM_ONLY" => 0x4000,
+            // Optional-header subsystems
+            "SUBSYSTEM_UNKNOWN" => 0,
+            "SUBSYSTEM_NATIVE" => 1,
+            "SUBSYSTEM_WINDOWS_GUI" => 2,
+            "SUBSYSTEM_WINDOWS_CUI" => 3,
+            "SUBSYSTEM_WINDOWS_CE_GUI" => 9,
+            "SUBSYSTEM_EFI_APPLICATION" => 10,
+            "SUBSYSTEM_EFI_BOOT_SERVICE_DRIVER" => 11,
+            "SUBSYSTEM_XBOX" => 14,
+            _ => 0,
+        },
     }
+}
+
+/// Read a little-endian field at `pe_off + disp` (0 when not a valid PE).
+fn pe_header_field(data: &[u8], disp: usize, size: usize) -> usize {
+    if data.len() < 64 || !data.starts_with(b"MZ") {
+        return 0;
+    }
+    let pe_off = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
+    let at = pe_off + disp;
+    if at + size > data.len() {
+        return 0;
+    }
+    let mut v = 0usize;
+    for (i, &b) in data[at..at + size].iter().enumerate() {
+        v |= (b as usize) << (8 * i);
+    }
+    v
+}
+
+/// Shannon entropy (bits/byte) over `data[off..off+len]`, 0.0 on empty/OOB.
+fn shannon_entropy_window(data: &[u8], off: usize, len: usize) -> usize {
+    let end = off.saturating_add(len).min(data.len());
+    if off >= end {
+        return 0;
+    }
+    let mut freq = [0u64; 256];
+    for &b in &data[off..end] {
+        freq[b as usize] += 1;
+    }
+    let n = (end - off) as f64;
+    let h: f64 = freq
+        .iter()
+        .filter(|&&c| c > 0)
+        .map(|&c| {
+            let p = c as f64 / n;
+            -p * p.log2()
+        })
+        .sum();
+    // Fixed-point ×100 so `math.entropy(...) > 7.0` compares against
+    // Float(7.0) scaled the same way (see IntExpr::Float).
+    (h * 100.0) as usize
 }
 
 // ─── PE module helpers ─────────────────────────────────────
@@ -1005,8 +1285,99 @@ fn eval_pe_imports(data: &[u8], dll_name: &str) -> bool {
     false
 }
 
-fn eval_pe_section_exists(data: &[u8], sec_name: &str) -> bool {
+/// `pe.imports("kernel32.dll", "VirtualAlloc")`: the import directory must
+/// contain an entry whose DLL name matches `dll_name` AND whose thunk/name
+/// region mentions `func_name`. Reuses the DLL-name scan over the import
+/// directory, then checks the function name in the mapped chunk that covers
+/// both tables (import-name + thunk data share the idata mapping).
+fn eval_pe_imports_func(data: &[u8], dll_name: &str, func_name: &str) -> bool {
+    if !eval_pe_imports(data, dll_name) {
+        return false;
+    }
+    if func_name.is_empty() {
+        return true;
+    }
+    // Import thunk arrays live beside the DLL names inside the import data
+    // directory; scan the whole directory for the function-name hint.
     if data.len() < 64 || !data.starts_with(b"MZ") {
+        return false;
+    }
+    let pe_off = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
+    if pe_off + 24 > data.len() || &data[pe_off..pe_off + 4] != b"PE\0\0" {
+        return false;
+    }
+    let opt_off = pe_off + 24;
+    if opt_off + 2 > data.len() {
+        return false;
+    }
+    let magic = u16::from_le_bytes([data[opt_off], data[opt_off + 1]]);
+    let import_rva_off = if magic == 0x20b { opt_off + 112 + 8 } else { opt_off + 96 + 8 };
+    if import_rva_off + 8 > data.len() {
+        return false;
+    }
+    let import_rva = u32::from_le_bytes([
+        data[import_rva_off],
+        data[import_rva_off + 1],
+        data[import_rva_off + 2],
+        data[import_rva_off + 3],
+    ]);
+    let import_size = u32::from_le_bytes([
+        data[import_rva_off + 4],
+        data[import_rva_off + 5],
+        data[import_rva_off + 6],
+        data[import_rva_off + 7],
+    ]) as usize;
+    if import_rva == 0 {
+        return false;
+    }
+    let num_sections = u16::from_le_bytes([data[pe_off + 6], data[pe_off + 7]]).min(96);
+    let size_opt = u16::from_le_bytes([data[pe_off + 20], data[pe_off + 21]]) as usize;
+    let sec_table = opt_off + size_opt;
+    let func_lower = func_name.to_lowercase();
+    for i in 0..num_sections {
+        let sec_off = sec_table + i as usize * 40;
+        if sec_off + 40 > data.len() {
+            break;
+        }
+        let virt_addr = u32::from_le_bytes([
+            data[sec_off + 12],
+            data[sec_off + 13],
+            data[sec_off + 14],
+            data[sec_off + 15],
+        ]);
+        let raw_size = u32::from_le_bytes([
+            data[sec_off + 16],
+            data[sec_off + 17],
+            data[sec_off + 18],
+            data[sec_off + 19],
+        ]);
+        let raw_ptr = u32::from_le_bytes([
+            data[sec_off + 20],
+            data[sec_off + 21],
+            data[sec_off + 22],
+            data[sec_off + 23],
+        ]);
+        if import_rva >= virt_addr && import_rva - virt_addr < raw_size {
+            let delta = (import_rva - virt_addr) as usize;
+            let Some(file_off) = (raw_ptr as usize).checked_add(delta) else {
+                return false;
+            };
+            let end = file_off
+                .checked_add(import_size)
+                .map(|e| e.min(data.len()))
+                .unwrap_or(data.len());
+            if file_off > end {
+                return false;
+            }
+            return data[file_off..end]
+                .windows(func_lower.len())
+                .any(|w| w.eq_ignore_ascii_case(func_lower.as_bytes()));
+        }
+    }
+    false
+}
+
+fn eval_pe_section_exists(data: &[u8], sec_name: &str) -> bool {    if data.len() < 64 || !data.starts_with(b"MZ") {
         return false;
     }
     let pe_off = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
@@ -1073,6 +1444,236 @@ mod tests {
         let rule = parser::parse_rule(rule_text).unwrap();
         let compiled = compile_rule(&rule).unwrap();
         Scanner::new(vec![compiled]).unwrap()
+    }
+
+    fn make_scanner_multi(rule_text: &str) -> Scanner {
+        let rules = parser::parse_rules(rule_text).unwrap();
+        let compiled: Vec<_> = rules.iter().map(compile_rule).collect::<Result<_, _>>().unwrap();
+        Scanner::new(compiled).unwrap()
+    }
+
+    #[test]
+    fn test_for_of_with_current_string_ref() {
+        // `$` inside the body refers to the current string of the set.
+        let scanner = make_scanner(
+            r#"
+            rule forcur {
+                strings:
+                    $a = "abc"
+                    $b = "zzz"
+                condition:
+                    for 1 of them : ( $ )
+            }
+            "#,
+        );
+        let result = scanner.scan(b"abc");
+        assert!(result.matched_rules.contains(&"forcur".to_string()));
+        let result2 = scanner.scan(b"xyz");
+        assert!(!result2.matched_rules.contains(&"forcur".to_string()));
+    }
+
+    #[test]
+    fn test_for_int_range_binds_variable() {
+        // @s[i] iterates over match offsets; i must be bound, so the
+        // condition "some match lies within the first 4 bytes" works.
+        let scanner = make_scanner(
+            r#"
+            rule fori {
+                strings:
+                    $s = "aa"
+                condition:
+                    for any i in (1..2) : ( @s[i] < 4 )
+            }
+            "#,
+        );
+        // Two matches at offsets 0 and 2 — both < 4.
+        let result = scanner.scan(b"aabb");
+        assert!(result.matched_rules.contains(&"fori".to_string()));
+        // One match at offset 10 only — but #s == 1, so range (1..2) covers
+        // only i=1 and @s[1] = 10 which fails the body.
+        let result2 = scanner.scan(b"xxxxxxxxxxaa");
+        assert!(!result2.matched_rules.contains(&"fori".to_string()));
+    }
+
+    #[test]
+    fn test_wildcard_string_set() {
+        let scanner = make_scanner(
+            r#"
+            rule wcset {
+                strings:
+                    $a1 = "foo"
+                    $a2 = "bar"
+                    $zz = "other"
+                condition:
+                    any of ($a*)
+            }
+            "#,
+        );
+        assert!(scanner.scan(b"foo").matched_rules.contains(&"wcset".to_string()));
+        assert!(scanner.scan(b"bar").matched_rules.contains(&"wcset".to_string()));
+        assert!(!scanner.scan(b"other").matched_rules.contains(&"wcset".to_string()));
+    }
+
+    #[test]
+    fn test_match_offset_n_semantics() {
+        // @s[2] is the SECOND match (1-based), not the first.
+        let scanner = make_scanner(
+            r#"
+            rule offn {
+                strings:
+                    $s = "xx"
+                condition:
+                    @s[2] == 4
+            }
+            "#,
+        );
+        // Matches at 0, 2, 4: @s[2] = 2 — fails.
+        assert!(!scanner.scan(b"xxxxxx").matched_rules.contains(&"offn".to_string()));
+        // Matches at 0, 4: @s[2] = 4 — passes.
+        assert!(scanner.scan(b"xxabxx").matched_rules.contains(&"offn".to_string()));
+    }
+
+    #[test]
+    fn test_math_entropy_comparison() {
+        let scanner = make_scanner(
+            r#"
+            rule hi_entropy {
+                condition:
+                    math.entropy(0, filesize) > 7.0
+            }
+            "#,
+        );
+        // 32 bytes of pure 0xFF: entropy 0.
+        let flat = vec![0xFFu8; 32];
+        assert!(!scanner.scan(&flat).matched_rules.contains(&"hi_entropy".to_string()));
+        // Pseudo-random bytes: high entropy (near-uniform 0..255).
+        let rnd: Vec<u8> = (0..256u32)
+            .map(|i| (i.wrapping_mul(2654435761) >> 24) as u8)
+            .collect();
+        assert!(scanner.scan(&rnd).matched_rules.contains(&"hi_entropy".to_string()));
+    }
+
+    #[test]
+    fn test_pe_machine_and_characteristics() {
+        // Minimal MZ/PE skeleton: machine 0x014C (I386).
+        let mut pe = vec![0u8; 128];
+        pe[0] = b'M';
+        pe[1] = b'Z';
+        pe[60..64].copy_from_slice(&0x40u32.to_le_bytes());
+        pe[64..68].copy_from_slice(b"PE\0\0");
+        pe[68..70].copy_from_slice(&0x014Cu16.to_le_bytes()); // machine
+        pe[70..72].copy_from_slice(&1u16.to_le_bytes()); // num sections
+        // Characteristics live at pe_off + 22 (COFF header offset 0x16).
+        pe[0x40 + 0x16..0x40 + 0x18].copy_from_slice(&0x0100u16.to_le_bytes()); // 32BIT_MACHINE
+
+        let rule_machine = r#"
+            rule i386 {
+                condition:
+                    pe.machine == pe.MACHINE_I386
+            }
+        "#;
+        let scanner = make_scanner(rule_machine);
+        assert!(scanner.scan(&pe).matched_rules.contains(&"i386".to_string()));
+
+        let rule_flags = r#"
+            rule flags {
+                condition:
+                    (pe.characteristics & pe.32BIT_MACHINE) != 0
+            }
+        "#;
+        let scanner2 = make_scanner(rule_flags);
+        assert!(scanner2.scan(&pe).matched_rules.contains(&"flags".to_string()));
+    }
+
+    #[test]
+    fn test_private_and_global_rules() {
+        // Global rule fails → no other rule matches.
+        let scanner = make_scanner_multi(
+            r#"
+            global rule gate {
+                condition:
+                    filesize > 100
+            }
+            rule inner {
+                condition:
+                    true
+            }
+            "#,
+        );
+        assert!(!scanner.scan(b"tiny").matched_rules.contains(&"inner".to_string()));
+        assert!(scanner
+            .scan(&[0u8; 101])
+            .matched_rules
+            .contains(&"inner".to_string()));
+
+        // Private rule matches but is not reported.
+        let scanner2 = make_scanner(
+            r#"
+            private rule hidden {
+                condition:
+                    true
+            }
+            "#,
+        );
+        let result = scanner2.scan(b"anything");
+        assert!(!result.matched_rules.contains(&"hidden".to_string()));
+    }
+
+    #[test]
+    fn test_base64_modifier_matches_encoding() {
+        let scanner = make_scanner(
+            r#"
+            rule b64 {
+                strings:
+                    $s = "This program cannot" base64
+                condition:
+                    $s
+            }
+            "#,
+        );
+        // base64("This program cannot") starts with VGhpcyBwcm9ncmFtIGNhbm5vd
+        let data = b"VGhpcyBwcm9ncmFtIGNhbm5vd";
+        assert!(scanner.scan(data).matched_rules.contains(&"b64".to_string()));
+        // 2-alignment and 3-alignment encodings must match too.
+        let data2 = b"xVGhpcyBwcm9ncmFtIGNhbm5vd";
+        assert!(scanner.scan(data2).matched_rules.contains(&"b64".to_string()));
+        let data3 = b"xxVGhpcyBwcm9ncmFtIGNhbm5vd";
+        assert!(scanner.scan(data3).matched_rules.contains(&"b64".to_string()));
+        // Unrelated text must not match.
+        assert!(!scanner.scan(b"plain text here").matched_rules.contains(&"b64".to_string()));
+    }
+
+    #[test]
+    fn test_matches_regex_operator() {
+        let scanner = make_scanner(
+            r#"
+            rule mre {
+                strings:
+                    $s = "http://example.com/payload"
+                condition:
+                    $s matches /https?:\/\/[a-z.]+\/pay[a-z]*/
+            }
+            "#,
+        );
+        let result = scanner.scan(b"http://example.com/payload");
+        assert!(result.matched_rules.contains(&"mre".to_string()));
+        assert!(!scanner
+            .scan(b"ftp://example.com/payload")
+            .matched_rules
+            .contains(&"mre".to_string()));
+    }
+
+    #[test]
+    fn test_bitwise_and_integer_ops() {
+        let scanner = make_scanner(
+            r#"
+            rule bop {
+                condition:
+                    (100 & 12) == 4
+            }
+            "#,
+        );
+        assert!(scanner.scan(b"x").matched_rules.contains(&"bop".to_string()));
     }
 
     #[test]

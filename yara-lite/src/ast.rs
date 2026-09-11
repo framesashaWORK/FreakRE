@@ -7,6 +7,10 @@ pub struct Rule {
     pub tags: Vec<String>,
     pub strings: Vec<StringDef>,
     pub condition: Condition,
+    /// `private rule` — matches but is not reported in scan output.
+    pub is_private: bool,
+    /// `global rule` — must match for ANY other rule to match.
+    pub is_global: bool,
 }
 
 /// A string definition inside a rule.
@@ -69,6 +73,9 @@ pub struct Modifiers {
     pub fullword: bool,
     /// XOR modifier: match pattern XORed with any single-byte key (0-255).
     pub xor: bool,
+    /// Base64 modifier: match the pattern's base64 encodings (all three
+    /// alignments) instead of the raw bytes.
+    pub base64: bool,
     /// `at` modifier: pattern must match at this exact offset.
     pub at: Option<usize>,
     /// `in` modifier: pattern must match within this range.
@@ -115,8 +122,25 @@ pub enum Condition {
     PeNumberSections(IntCompOp, Box<IntExpr>),
     /// `pe.imports("kernel32.dll")`
     PeImports(String),
+    /// `pe.imports("kernel32.dll", "VirtualAlloc")` — dll AND function
+    PeImportsFunc(String, String),
     /// `pe.sections($sec_name)` — section exists
     PeSections(String),
+    /// `$s matches /regex/` — at least one match of $s satisfies the regex
+    Matches(String, String),
+    /// `for any of ($a*) : ( $ at 0 )` — quantified iteration over strings.
+    /// `$` inside the body refers to the current string.
+    ForOf(OfKind, ForSet, Box<Condition>),
+    /// `for any i in (1..#s) : ( @s[i] < 100 )` — quantified integer range.
+    ForIntRange(OfKind, String, Box<IntExpr>, Box<IntExpr>, Box<Condition>),
+}
+
+/// Target set of a `for ... of` expression.
+#[derive(Debug, Clone)]
+pub enum ForSet {
+    Them,
+    /// Explicit identifiers; entries may end with `*` for wildcard prefixes.
+    List(Vec<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -169,8 +193,32 @@ pub enum IntExpr {
     Sub(Box<IntExpr>, Box<IntExpr>),
     Mul(Box<IntExpr>, Box<IntExpr>),
     Div(Box<IntExpr>, Box<IntExpr>),
+    /// Bitwise AND: `pe.characteristics & pe.DLL`
+    BitAnd(Box<IntExpr>, Box<IntExpr>),
     /// Parenthesized
     Paren(Box<IntExpr>),
+    /// Floating-point literal (entropy thresholds: `> 7.0`)
+    Float(f64),
+    /// Loop variable reference inside `for ... i in (...)` bodies
+    Var(String),
+    /// `@s[i]` — offset of the i-th match (1-based), index is an expression
+    MatchOffsetN(String, Box<IntExpr>),
+    /// `math.entropy(offset, length)` — Shannon entropy, 0.0..8.0
+    Entropy(Box<IntExpr>, Box<IntExpr>),
+    /// `pe.machine` — COFF machine type
+    PeMachine,
+    /// `pe.timestamp` — COFF timestamp
+    PeTimestamp,
+    /// `pe.entry_point` — entry point RVA
+    PeEntryPoint,
+    /// `pe.subsystem` — optional-header subsystem
+    PeSubsystem,
+    /// `pe.characteristics` — COFF characteristics flags
+    PeCharacteristics,
+    /// `pe.is_pe()` — 1 when the buffer is a valid PE
+    PeIsPe,
+    /// `pe.MACHINE_I386` / `pe.SUBSYSTEM_WINDOWS_GUI` / `pe.DLL` constants
+    PeConst(String),
 }
 
 impl Condition {
@@ -183,6 +231,87 @@ impl Condition {
         out
     }
 
+    /// Substitute `Var(var)` with `val` inside every integer expression.
+    /// Used by `for <var> in (a..b)` evaluation: the body is cloned per
+    /// iteration and the loop variable is replaced by its current value.
+    pub fn subst_var(&mut self, var: &str, val: i64) {
+        match self {
+            Condition::And(a, b) | Condition::Or(a, b) => {
+                a.subst_var(var, val);
+                b.subst_var(var, val);
+            }
+            Condition::Not(c) => c.subst_var(var, val),
+            Condition::AtExpr(_, e) => subst_int(e, var, val),
+            Condition::InExpr(_, s, e) => {
+                subst_int(s, var, val);
+                subst_int(e, var, val);
+            }
+            Condition::IntComp(_, a, b) => {
+                subst_int(a, var, val);
+                subst_int(b, var, val);
+            }
+            Condition::PeNumberSections(_, rhs) => subst_int(rhs, var, val),
+            Condition::ForOf(_, _, body) => body.subst_var(var, val),
+            // A same-named inner loop shadows the outer binding: only
+            // substitute when the name differs.
+            Condition::ForIntRange(_, inner_var, start, end, body) if inner_var != var => {
+                subst_int(start, var, val);
+                subst_int(end, var, val);
+                body.subst_var(var, val);
+            }
+            _ => {}
+        }
+    }
+
+    /// Substitute the bare `$` (current-string reference of an enclosing
+    /// `for ... of`) with the concrete string identifier `sid`.
+    pub fn subst_current(&mut self, sid: &str) {
+        match self {
+            Condition::And(a, b) | Condition::Or(a, b) => {
+                a.subst_current(sid);
+                b.subst_current(sid);
+            }
+            Condition::Not(c) => c.subst_current(sid),
+            Condition::StringMatch(s) | Condition::StringCount(s) => {
+                if s == "$" {
+                    *s = sid.to_string();
+                }
+            }
+            Condition::At(s, _) | Condition::AtExpr(s, _) => {
+                if s == "$" {
+                    *s = sid.to_string();
+                }
+            }
+            Condition::In(s, _, _) | Condition::InExpr(s, _, _) => {
+                if s == "$" {
+                    *s = sid.to_string();
+                }
+            }
+            Condition::Contains(s, _) | Condition::IsType(s, _) | Condition::Eq(s, _) => {
+                if s == "$" {
+                    *s = sid.to_string();
+                }
+            }
+            Condition::Matches(s, _) => {
+                if s == "$" {
+                    *s = sid.to_string();
+                }
+            }
+            Condition::IntComp(_, a, b) => {
+                subst_int_current(a, sid);
+                subst_int_current(b, sid);
+            }
+            Condition::PeNumberSections(_, rhs) => subst_int_current(rhs, sid),
+            Condition::ForOf(_, _, body) => body.subst_current(sid),
+            Condition::ForIntRange(_, _, start, end, body) => {
+                subst_int_current(start, sid);
+                subst_int_current(end, sid);
+                body.subst_current(sid);
+            }
+            _ => {}
+        }
+    }
+
     fn collect_refs<'a>(&'a self, out: &mut Vec<&'a str>) {
         match self {
             Condition::And(a, b) | Condition::Or(a, b) => {
@@ -190,11 +319,32 @@ impl Condition {
                 b.collect_refs(out);
             }
             Condition::Not(c) => c.collect_refs(out),
-            Condition::StringMatch(s) | Condition::StringCount(s) => out.push(s.as_str()),
-            Condition::At(s, _) | Condition::AtExpr(s, _) => out.push(s.as_str()),
-            Condition::In(s, _, _) | Condition::InExpr(s, _, _) => out.push(s.as_str()),
+            Condition::StringMatch(s) | Condition::StringCount(s) => {
+                // `$` refers to the current string of an enclosing `for of`
+                // — not a rule-level definition.
+                if s != "$" {
+                    out.push(s.as_str());
+                }
+            }
+            Condition::At(s, _) | Condition::AtExpr(s, _) => {
+                if s != "$" {
+                    out.push(s.as_str());
+                }
+            }
+            Condition::In(s, _, _) | Condition::InExpr(s, _, _) => {
+                if s != "$" {
+                    out.push(s.as_str());
+                }
+            }
             Condition::Contains(s, _) | Condition::IsType(s, _) | Condition::Eq(s, _) => {
-                out.push(s.as_str())
+                if s != "$" {
+                    out.push(s.as_str());
+                }
+            }
+            Condition::Matches(s, _) => {
+                if s != "$" {
+                    out.push(s.as_str());
+                }
             }
             Condition::IntComp(_, a, b) => {
                 a.collect_string_refs(out);
@@ -202,8 +352,27 @@ impl Condition {
             }
             Condition::OfSet(_, ids) => {
                 for id in ids {
-                    out.push(id.as_str());
+                    // Wildcard entries ($a*) are prefix references checked
+                    // separately at compile time.
+                    if !id.ends_with('*') {
+                        out.push(id.as_str());
+                    }
                 }
+            }
+            Condition::ForOf(_, set, body) => {
+                if let ForSet::List(ids) = set {
+                    for id in ids {
+                        if !id.ends_with('*') {
+                            out.push(id.as_str());
+                        }
+                    }
+                }
+                body.collect_refs(out);
+            }
+            Condition::ForIntRange(_, _, start, end, body) => {
+                start.collect_string_refs(out);
+                end.collect_string_refs(out);
+                body.collect_refs(out);
             }
             Condition::PeNumberSections(_, rhs) => {
                 rhs.collect_string_refs(out);
@@ -213,11 +382,83 @@ impl Condition {
     }
 }
 
+/// Replace `Var(var)` with `Literal(val)` inside an integer expression tree.
+fn subst_int(e: &mut IntExpr, var: &str, val: i64) {
+    match e {
+        IntExpr::Var(name) if name == var => *e = IntExpr::Literal(val as usize),
+        IntExpr::Uint8(inner)
+        | IntExpr::Uint16(inner)
+        | IntExpr::Uint32(inner)
+        | IntExpr::Int8(inner)
+        | IntExpr::Int16(inner)
+        | IntExpr::Int32(inner)
+        | IntExpr::Paren(inner) => subst_int(inner, var, val),
+        IntExpr::MatchOffsetN(_, idx) => subst_int(idx, var, val),
+        IntExpr::MathHash(a, b) | IntExpr::Entropy(a, b) => {
+            subst_int(a, var, val);
+            subst_int(b, var, val);
+        }
+        IntExpr::Add(a, b)
+        | IntExpr::Sub(a, b)
+        | IntExpr::Mul(a, b)
+        | IntExpr::Div(a, b)
+        | IntExpr::BitAnd(a, b) => {
+            subst_int(a, var, val);
+            subst_int(b, var, val);
+        }
+        _ => {}
+    }
+}
+
+/// Replace `$` string references with the concrete current-string id.
+fn subst_int_current(e: &mut IntExpr, sid: &str) {
+    match e {
+        IntExpr::Count(id) | IntExpr::MatchOffset(id) | IntExpr::StringLength(id) => {
+            if id == "$" {
+                *id = sid.to_string();
+            }
+        }
+        IntExpr::MatchOffsetN(id, _) => {
+            if id == "$" {
+                *id = sid.to_string();
+            }
+        }
+        IntExpr::Uint8(inner)
+        | IntExpr::Uint16(inner)
+        | IntExpr::Uint32(inner)
+        | IntExpr::Int8(inner)
+        | IntExpr::Int16(inner)
+        | IntExpr::Int32(inner)
+        | IntExpr::Paren(inner) => subst_int_current(inner, sid),
+        IntExpr::MathHash(a, b) | IntExpr::Entropy(a, b) => {
+            subst_int_current(a, sid);
+            subst_int_current(b, sid);
+        }
+        IntExpr::Add(a, b)
+        | IntExpr::Sub(a, b)
+        | IntExpr::Mul(a, b)
+        | IntExpr::Div(a, b)
+        | IntExpr::BitAnd(a, b) => {
+            subst_int_current(a, sid);
+            subst_int_current(b, sid);
+        }
+        _ => {}
+    }
+}
+
 impl IntExpr {
     fn collect_string_refs<'a>(&'a self, out: &mut Vec<&'a str>) {
         match self {
             IntExpr::Count(id) | IntExpr::MatchOffset(id) | IntExpr::StringLength(id) => {
-                out.push(id.as_str())
+                if id != "$" {
+                    out.push(id.as_str());
+                }
+            }
+            IntExpr::MatchOffsetN(id, idx) => {
+                if id != "$" {
+                    out.push(id.as_str());
+                }
+                idx.collect_string_refs(out);
             }
             IntExpr::Uint8(inner) | IntExpr::Uint16(inner) | IntExpr::Uint32(inner) => {
                 inner.collect_string_refs(out)
@@ -225,12 +466,16 @@ impl IntExpr {
             IntExpr::Int8(inner) | IntExpr::Int16(inner) | IntExpr::Int32(inner) => {
                 inner.collect_string_refs(out)
             }
-            IntExpr::Add(a, b) | IntExpr::Sub(a, b) | IntExpr::Mul(a, b) | IntExpr::Div(a, b) => {
+            IntExpr::Add(a, b)
+            | IntExpr::Sub(a, b)
+            | IntExpr::Mul(a, b)
+            | IntExpr::Div(a, b)
+            | IntExpr::BitAnd(a, b) => {
                 a.collect_string_refs(out);
                 b.collect_string_refs(out);
             }
             IntExpr::Paren(inner) => inner.collect_string_refs(out),
-            IntExpr::MathHash(offset, len) => {
+            IntExpr::MathHash(offset, len) | IntExpr::Entropy(offset, len) => {
                 offset.collect_string_refs(out);
                 len.collect_string_refs(out);
             }
