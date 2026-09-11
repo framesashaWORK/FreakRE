@@ -89,7 +89,10 @@ pub fn decompile_pe_function(data: &[u8], address: Option<u64>) -> Result<Decomp
     )
     .ok_or_else(|| "detected function lies outside .text bounds".to_string())?;
 
-    let lifter = X86Lifter::new(pe.is_64bit);
+    let lifter = match pe_image_ctx(&pe, data) {
+        Some(img) => X86Lifter::new(pe.is_64bit).with_image(img),
+        None => X86Lifter::new(pe.is_64bit),
+    };
     let func_name = format!("sub_{:X}", func.start);
     let mut ir_func = lifter
         .lift_function(func_slice, func.start, &func_name)
@@ -148,7 +151,10 @@ pub fn decompile_pe_function_sized(
         size,
     )
     .ok_or("requested function lies outside .text bounds")?;
-    let lifter = X86Lifter::new(pe.is_64bit);
+    let lifter = match pe_image_ctx(&pe, data) {
+        Some(img) => X86Lifter::new(pe.is_64bit).with_image(img),
+        None => X86Lifter::new(pe.is_64bit),
+    };
     let func_name = format!("sub_{rel:X}");
     let mut ir_func = lifter
         .lift_function(func_slice, rel, &func_name)
@@ -211,7 +217,10 @@ pub fn decompile_pe_all_functions(data: &[u8]) -> Result<Vec<DecompiledFunction>
 
     let string_table = build_string_table(&pe, data);
     let windows = pe_data_windows(&pe, data);
-    let lifter = X86Lifter::new(pe.is_64bit);
+    let lifter = match pe_image_ctx(&pe, data) {
+        Some(img) => X86Lifter::new(pe.is_64bit).with_image(img),
+        None => X86Lifter::new(pe.is_64bit),
+    };
     let mut out = Vec::new();
     for func in &detected {
         let Some(func_slice) = crate::scanner::carve_func_slice(
@@ -286,6 +295,42 @@ fn pe_data_windows<'a>(pe: &pe_parser::PeFile, data: &'a [u8]) -> Vec<(u64, &'a 
             (!raw.is_empty()).then_some((s.virtual_address as u64, raw))
         })
         .collect()
+}
+
+/// Synthesize a section-aligned view of the PE at its image base so the
+/// x86 lifter can read jump tables (and other data) by virtual address.
+fn pe_image_ctx(pe: &pe_parser::PeFile, data: &[u8]) -> Option<freakre_ir::x86_lifter::ImageCtx> {
+    let mut end = 0u64;
+    let mut sections = Vec::new();
+    for s in &pe.sections {
+        let va = s.virtual_address as u64;
+        let sz = s.virtual_size.max(s.raw_data_size) as u64;
+        if sz == 0 {
+            continue;
+        }
+        sections.push((va, sz));
+        end = end.max(va + sz);
+    }
+    if sections.is_empty() || end == 0 {
+        return None;
+    }
+    let mut bytes = vec![0u8; end as usize];
+    for s in &pe.sections {
+        let raw = s.raw_data(data);
+        if raw.is_empty() {
+            continue;
+        }
+        let off = s.virtual_address as usize;
+        if off + raw.len() <= bytes.len() {
+            bytes[off..off + raw.len()].copy_from_slice(raw);
+        }
+    }
+    Some(freakre_ir::x86_lifter::ImageCtx::new(
+        sections,
+        pe.image_base,
+        bytes,
+    )
+    .in_coord_base(0))
 }
 
 /// Build a virtual-address → string table for the whole PE image.
