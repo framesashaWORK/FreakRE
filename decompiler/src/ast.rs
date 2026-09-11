@@ -15,6 +15,11 @@ pub struct AstFunction {
     /// `ast_to_c` only when `DecompilerConfig::annotate_addresses` is on.
     #[serde(default)]
     pub entry_address: u64,
+    /// Canonical register name per recovered parameter (`rcx` for `a1`, ...).
+    /// Register reads in the body render through this map so parameter
+    /// variables print as `a1`, `a2`, ... instead of register names.
+    #[serde(default)]
+    pub param_register_names: Vec<String>,
 }
 
 /// Function parameter
@@ -30,6 +35,105 @@ pub struct LocalVar {
     pub name: String,
     pub ty: Ty,
     pub is_used: bool,
+    /// Recovered struct layout for pointer-typed locals (offset → (name, width)).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<(u64, String, u8)>,
+}
+
+impl Stmt {
+    /// Visit every expression reachable from this statement (read-only).
+    pub fn for_each_expr<'a>(&'a self, f: &mut impl FnMut(&'a Expr)) {
+        match self {
+            Stmt::Assign { target, value } => {
+                target.for_each_subexpr(f);
+                value.for_each_subexpr(f);
+            }
+            Stmt::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                cond.for_each_subexpr(f);
+                for s in then_body {
+                    s.for_each_expr(f);
+                }
+                if let Some(eb) = else_body {
+                    for s in eb {
+                        s.for_each_expr(f);
+                    }
+                }
+            }
+            Stmt::While { cond, body } | Stmt::DoWhile { cond, body } => {
+                cond.for_each_subexpr(f);
+                for s in body {
+                    s.for_each_expr(f);
+                }
+            }
+            Stmt::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                if let Some(s) = init {
+                    s.for_each_expr(f);
+                }
+                if let Some(c) = cond {
+                    c.for_each_subexpr(f);
+                }
+                if let Some(s) = update {
+                    s.for_each_expr(f);
+                }
+                for s in body {
+                    s.for_each_expr(f);
+                }
+            }
+            Stmt::Switch {
+                expr,
+                cases,
+                default,
+            } => {
+                expr.for_each_subexpr(f);
+                for c in cases {
+                    c.value.for_each_subexpr(f);
+                    for s in &c.body {
+                        s.for_each_expr(f);
+                    }
+                }
+                if let Some(d) = default {
+                    for s in d {
+                        s.for_each_expr(f);
+                    }
+                }
+            }
+            Stmt::Return { value: Some(e) } => e.for_each_subexpr(f),
+            Stmt::Call { args, .. } => {
+                for a in args {
+                    a.for_each_subexpr(f);
+                }
+            }
+            Stmt::Expr(e) => e.for_each_subexpr(f),
+            Stmt::Block(stmts) => {
+                for s in stmts {
+                    s.for_each_expr(f);
+                }
+            }
+            Stmt::Decl { init: Some(e), .. } => e.for_each_subexpr(f),
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
+                for s in try_body {
+                    s.for_each_expr(f);
+                }
+                for s in catch_body {
+                    s.for_each_expr(f);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// A statement
@@ -159,6 +263,15 @@ pub enum Expr {
     /// Pointer dereference
     Deref(Box<Expr>),
 
+    /// Struct field access: `base.field_name`. Produced by the struct-field
+    /// recovery pass from `*(T*)(base + offset)` patterns.
+    Field {
+        base: Box<Expr>,
+        field: String,
+        /// Pointee type of the field (for casts/prints).
+        ty: Ty,
+    },
+
     /// Address-of
     AddrOf(Box<Expr>),
 
@@ -177,11 +290,46 @@ pub enum Expr {
 }
 
 impl Expr {
+    /// Visit every node of this expression tree (read-only), self last.
+    pub fn for_each_subexpr<'a>(&'a self, f: &mut impl FnMut(&'a Expr)) {
+        match self {
+            Expr::Binary { lhs, rhs, .. } => {
+                lhs.for_each_subexpr(f);
+                rhs.for_each_subexpr(f);
+            }
+            Expr::Unary { operand, .. }
+            | Expr::Deref(operand)
+            | Expr::AddrOf(operand)
+            | Expr::Sizeof(operand)
+            | Expr::Cast { expr: operand, .. } => operand.for_each_subexpr(f),
+            Expr::Call { args, .. } => {
+                for a in args {
+                    a.for_each_subexpr(f);
+                }
+            }
+            Expr::Index { base, index } => {
+                base.for_each_subexpr(f);
+                index.for_each_subexpr(f);
+            }
+            Expr::Member { base, .. } | Expr::Field { base, .. } => base.for_each_subexpr(f),
+            Expr::Ternary {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                cond.for_each_subexpr(f);
+                then_expr.for_each_subexpr(f);
+                else_expr.for_each_subexpr(f);
+            }
+            _ => {}
+        }
+        f(self);
+    }
+
     /// Rewrite this expression tree bottom-up: children first, then `self`.
     /// The closure sees every node exactly once, parents after children.
     pub fn rewrite_subexprs(&mut self, f: &mut impl FnMut(&mut Expr)) {
-        match self {
-            Expr::Binary { lhs, rhs, .. } => {
+        match self {            Expr::Binary { lhs, rhs, .. } => {
                 lhs.rewrite_subexprs(f);
                 rhs.rewrite_subexprs(f);
             }
@@ -189,6 +337,7 @@ impl Expr {
             | Expr::Deref(operand)
             | Expr::AddrOf(operand)
             | Expr::Sizeof(operand) => operand.rewrite_subexprs(f),
+            Expr::Field { base, .. } => base.rewrite_subexprs(f),
             Expr::Call { args, .. } => {
                 for a in args.iter_mut() {
                     a.rewrite_subexprs(f);
@@ -353,6 +502,7 @@ impl AstFunction {
             body: Vec::new(),
             locals: Vec::new(),
             entry_address: 0,
+            param_register_names: Vec::new(),
         }
     }
 

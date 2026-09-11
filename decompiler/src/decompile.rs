@@ -38,6 +38,11 @@ pub struct DecompilerConfig {
     /// Enabled by default for `decompile_program`.
     pub auto_interproc: bool,
     pub auto_call_names: bool,
+
+    /// Recover struct fields from `*(T*)(base + off)` accesses and render
+    /// them as `base->field_0xNN` (offset → field name in comments).
+    /// Enabled by default; requires at least 2 distinct offsets per base.
+    pub recover_struct_fields: bool,
 }
 
 impl Default for DecompilerConfig {
@@ -50,6 +55,7 @@ impl Default for DecompilerConfig {
             use_ssa: true,
             auto_interproc: true,
             auto_call_names: true,
+            recover_struct_fields: true,
         }
     }
 }
@@ -94,6 +100,7 @@ pub fn decompile_function_with_strings(
         &crate::call_naming::SignatureMap::default(),
         &crate::call_naming::AddrNameMap::default(),
         Some(strings),
+        None,
     )
 }
 
@@ -123,6 +130,7 @@ pub fn decompile_function_with_config(
         &crate::call_naming::SignatureMap::default(),
         &crate::call_naming::AddrNameMap::default(),
         None,
+        None,
     )
 }
 
@@ -132,6 +140,7 @@ fn decompile_function_inner(
     signatures: &crate::call_naming::SignatureMap,
     addr_names: &crate::call_naming::AddrNameMap,
     strings: Option<&crate::strings::StringTable>,
+    callees: Option<&crate::types::CalleeTypes>,
 ) -> Result<String, DecompileError> {
     validate_function_size(func)?;
 
@@ -166,6 +175,19 @@ fn decompile_function_inner(
             // branches (constant flag compares), folds conditional branches
             // and collapses single-value phis before structuring.
             let _sccp_stats = freakre_ir::sccp::sccp(&mut ssa);
+            // Second trivial-phi sweep: SCCP can make additional phis
+            // trivial (identical / single surviving input), and the fold
+            // now also covers single-input phis.
+            freakre_ir::ssa::remove_trivial_phis(&mut ssa);
+            // GVN: eliminate dominated pure recomputations (CSE with
+            // commutative unification) before they materialize as
+            // duplicated expressions in the AST.
+            let _gvn_stats = freakre_ir::ssa::ssa_gvn(&mut ssa);
+            // GVN can unify phi inputs, creating new trivial phis.
+            freakre_ir::ssa::remove_trivial_phis(&mut ssa);
+            // SSA-DCE: drop pure definitions left dead by SCCP folding,
+            // before they materialize as copies/expressions in lowered IR.
+            let _dce_stats = freakre_ir::ssa::ssa_dce(&mut ssa);
             // from_ssa can only fail on malformed SSA (never on to_ssa output);
             // on failure keep the pre-SSA IR exactly like the to_ssa-error path.
             if let Ok(lowered) = freakre_ir::ssa::from_ssa(&ssa) {
@@ -201,7 +223,7 @@ fn decompile_function_inner(
     crate::stack_vars::apply_recovered_names(&mut ast, &stack_var_names);
 
     // Phase 2: Type reconstruction (infer types from usage)
-    crate::types::reconstruct_types(&mut ast);
+    crate::types::reconstruct_types_with_callees(&mut ast, callees);
 
     // Phase 3: Expression simplification
     if config.simplify_expressions {
@@ -228,6 +250,13 @@ fn decompile_function_inner(
     // matching still sees the original integer arguments.
     if let Some(table) = strings {
         crate::strings::annotate_function(&mut ast, table);
+    }
+
+    // Phase 5.7: struct-field recovery — repeated `*(T*)(base + off)` shapes
+    // become `base->field_0xNN` once the same (base, offset, width) is seen
+    // at least twice (threshold keeps one-off casts untouched).
+    if config.recover_struct_fields {
+        crate::struct_fields::recover_struct_fields(&mut ast, 2);
     }
 
     // Phase 6: Convert AST to C pseudocode
@@ -291,6 +320,9 @@ pub fn decompile_program_with_config(
         crate::call_naming::AddrNameMap::default()
     };
     let signatures = crate::call_naming::SignatureMap::from_common_runtime();
+    let callees = analysis
+        .as_ref()
+        .map(crate::types::callee_types_from_program);
 
     let mut results = Vec::new();
     for func in &program.functions {
@@ -311,8 +343,14 @@ pub fn decompile_program_with_config(
                 }
             }
         }
-        let c_code =
-            decompile_function_inner(&enriched, config, &signatures, &addr_names, None)?;
+        let c_code = decompile_function_inner(
+            &enriched,
+            config,
+            &signatures,
+            &addr_names,
+            None,
+            callees.as_ref(),
+        )?;
         results.push((func.name.clone(), c_code));
     }
     Ok(results)
@@ -381,6 +419,13 @@ pub fn decompile_exports_with_diagnostics(
         crate::call_naming::AddrNameMap::default()
     };
     let signatures = crate::call_naming::SignatureMap::from_common_runtime();
+    let callees = if config.auto_interproc {
+        Some(crate::types::callee_types_from_program(
+            &crate::interproc::analyze_program(program),
+        ))
+    } else {
+        None
+    };
 
     let mut exports: Vec<_> = program.exports.iter().collect();
     exports.sort_by_key(|(address, _)| **address);
@@ -414,7 +459,14 @@ pub fn decompile_exports_with_diagnostics(
                 }
             }
         }
-        match decompile_function_inner(&enriched, config, &signatures, &addr_names, None) {
+        match decompile_function_inner(
+            &enriched,
+            config,
+            &signatures,
+            &addr_names,
+            None,
+            callees.as_ref(),
+        ) {
             Ok(code) => results.push((export_name.clone(), code)),
             Err(e) => diagnostics.push(DecompileDiagnostic {
                 export_name: export_name.clone(),

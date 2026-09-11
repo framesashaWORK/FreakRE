@@ -137,6 +137,122 @@ impl<'a> ControlFlowStructurer<'a> {
         }
     }
 
+    /// Decide whether a `goto` to the already-emitted `block_id` can be
+    /// replaced by duplicating the block's (few) instructions inline.
+    ///
+    /// Duplicating a block at its own goto site is semantically equivalent:
+    /// `goto B` transfers control to already-emitted code, and everything
+    /// after the goto in this arm is unreachable, so re-running B's body
+    /// here executes the same instructions in the same order. It is only
+    /// worth it when B is tiny and has a *forward* way out (an unvisited
+    /// successor or a return) — a pure back-edge re-entry would reproduce
+    /// the jump it is trying to remove.
+    ///
+    /// Guards:
+    /// - at most one duplicate per block (stored in `ctx.duplicated`), so
+    ///   re-entering the block again still falls back to `goto`;
+    /// - never duplicate structural headers (loop/switch/try) or blocks
+    ///   that already carry a goto label — a second emission would emit a
+    ///   duplicate C label or bypass the dedicated structurers;
+    /// - `inline_now` grants the region loop a single re-processing pass
+    ///   of the visited block (consumed by the visited check).
+    fn try_inline_visited_block(&self, block_id: BlockId, ctx: &mut StructContext) -> bool {
+        if ctx.duplicated.contains(&block_id) {
+            return false;
+        }
+        if self.loop_by_header.contains_key(&block_id)
+            || self.switch_at(block_id).is_some()
+            || self.try_catch_at(block_id).is_some()
+        {
+            return false;
+        }
+        if self.goto_targets.borrow().contains(&block_id) {
+            return false;
+        }
+        let Some(block) = self.func.block(block_id) else {
+            return false;
+        };
+        let non_term = block.insts.iter().filter(|i| !i.is_terminator()).count();
+        if non_term == 0 || non_term > 2 {
+            return false;
+        }
+        let forward_exit = match block.terminator() {
+            Some(IrInst::Return { .. }) => true,
+            Some(IrInst::Branch { target }) => {
+                // An unvisited successor, or a visited shared epilogue we
+                // can tail-duplicate (`try_emit_tail_return`): both let the
+                // duplicate resolve without a goto.
+                !ctx.visited.contains(target) || self.is_tail_return_candidate(*target, ctx)
+            }
+            Some(IrInst::CBranch {
+                target_true,
+                target_false,
+                ..
+            }) => !ctx.visited.contains(target_true) || !ctx.visited.contains(target_false),
+            _ => false,
+        };
+        if !forward_exit {
+            return false;
+        }
+        ctx.duplicated.insert(block_id);
+        ctx.inline_now.insert(block_id);
+        true
+    }
+
+    /// Whether `block_id` is an already-emitted block whose only job is to
+    /// return (optionally after <=2 instructions) and which may therefore be
+    /// re-emitted at a goto site as `...; return e;`.
+    fn is_tail_return_candidate(&self, block_id: BlockId, ctx: &StructContext) -> bool {
+        if ctx.duplicated.contains(&block_id) {
+            return false;
+        }
+        if self.loop_by_header.contains_key(&block_id)
+            || self.switch_at(block_id).is_some()
+            || self.try_catch_at(block_id).is_some()
+        {
+            return false;
+        }
+        if self.goto_targets.borrow().contains(&block_id) {
+            return false;
+        }
+        let Some(block) = self.func.block(block_id) else {
+            return false;
+        };
+        if !matches!(block.terminator(), Some(IrInst::Return { .. })) {
+            return false;
+        }
+        block.insts.iter().filter(|i| !i.is_terminator()).count() <= 2
+    }
+
+    /// Tail-duplicate a visited return block at the current goto site:
+    /// emit its <=2 instructions and its `return`. Returns `true` when the
+    /// duplication happened (the caller must stop the region loop).
+    fn try_emit_tail_return(
+        &self,
+        stmts: &mut Vec<Stmt>,
+        block_id: BlockId,
+        converter: &mut IrToAstConverter,
+        ctx: &mut StructContext,
+    ) -> bool {
+        if !self.is_tail_return_candidate(block_id, ctx) {
+            return false;
+        }
+        let Some(block) = self.func.block(block_id) else {
+            return false;
+        };
+        ctx.duplicated.insert(block_id);
+        for inst in &block.insts {
+            if !inst.is_terminator() {
+                stmts.extend(converter.convert_inst(inst));
+            }
+        }
+        if let Some(IrInst::Return { value }) = block.terminator() {
+            let ret_value = value.as_ref().map(|v| converter.convert_value_to_expr(v));
+            stmts.push(Stmt::Return { value: ret_value });
+        }
+        true
+    }
+
     fn structure(&self, converter: &mut IrToAstConverter) -> Vec<Stmt> {
         // Pass 1: discover every backward/visited jump target. A `goto` to a
         // block is only recognised after that block has already been emitted,
@@ -195,8 +311,8 @@ impl<'a> ControlFlowStructurer<'a> {
                 break;
             }
 
-            // Already visited in this region? в†’ break/continue/goto
-            if ctx.visited.contains(&block_id) {
+            // Already visited in this region? в†’ continue / break / inline / goto
+            if ctx.visited.contains(&block_id) && !ctx.inline_now.remove(&block_id) {
                 let header_continue = enclosing_loop_idx
                     .map(|loop_idx| {
                         let li = &self.loops[loop_idx];
@@ -208,9 +324,34 @@ impl<'a> ControlFlowStructurer<'a> {
                 if header_continue {
                     stmts.push(Stmt::Continue);
                 } else {
-                    // Backward jump to an already-emitted block: emit a `goto`
-                    // whose target label is prepended when that block was
-                    // emitted (see `maybe_emit_label`), keeping the C valid.
+                    if let Some(loop_idx) = enclosing_loop_idx {
+                        // A jump to the natural exit of the innermost
+                        // enclosing loop is a `break`: after the loop, the
+                        // continuation resumes exactly at that block, so
+                        // the semantics match.
+                        if self.loop_exit_block(loop_idx) == Some(block_id) {
+                            stmts.push(Stmt::Break);
+                            break;
+                        }
+                    }
+                    if self.try_inline_visited_block(block_id, ctx) {
+                        // Small already-emitted block with a forward way
+                        // out: duplicate its <=2 instructions here instead
+                        // of a goto.
+                        current = Some(block_id);
+                        continue;
+                    }
+                    if self.try_emit_tail_return(&mut stmts, block_id, converter, ctx) {
+                        // Visited block that just returns: re-emit its
+                        // (few) instructions plus the return instead of a
+                        // goto — the classic tail-duplication of shared
+                        // epilogues (IDA does the same).
+                        break;
+                    }
+                    // Backward jump to an already-emitted block: emit a
+                    // `goto` whose target label is prepended when that block
+                    // was emitted (see `maybe_emit_label`), keeping the C
+                    // valid.
                     self.emit_goto(&mut stmts, block_id);
                 }
                 break;
@@ -1340,6 +1481,14 @@ struct StructContext {
     /// structuring a break arm; the continuation must emit only the
     /// terminator (e.g. the shared loop-exit block's `return`).
     insts_emitted: HashSet<BlockId>,
+    /// Blocks already duplicated at a goto site (see
+    /// `try_inline_visited_block`): each block is inlined at most once, so
+    /// re-entering it again still falls back to `goto`.
+    duplicated: HashSet<BlockId>,
+    /// One-shot permission for the region loop to re-process an
+    /// already-visited block: consumed by the visited check right after the
+    /// inlining decision, so the duplicate emission cannot loop.
+    inline_now: HashSet<BlockId>,
 }
 
 /// Whether `block` may be expanded during a scoped search (`None` = unscoped).
@@ -1986,8 +2135,90 @@ mod tests {
             locals: vec![],
             body: stmts.to_vec(),
             return_type: freakre_ir::Ty::Void,
+            param_register_names: vec![],
         };
         crate::ast_to_c::ast_to_c(&func)
+    }
+
+    #[test]
+    fn test_visited_goto_inlines_small_block() {
+        // Irreducible diamond: entry branches to A and B; both A and B
+        // branch to X and Y. Structuring the B arm re-reaches Y, which the
+        // A arm already emitted — the classic `goto Y` fallback. Y is tiny
+        // (one add) with a forward exit (END unvisited), so it must be
+        // duplicated inline instead of emitting a goto.
+        let mut func = IrFunction::new("t_inline", 0x1000);
+        let c = Value::var(0, Ty::Bool);
+        let a = Value::var(1, Ty::Bool);
+        let b = Value::var(2, Ty::Bool);
+        let va = func.add_block("A");
+        let vb = func.add_block("B");
+        let vx = func.add_block("X");
+        let vy = func.add_block("Y");
+        let end = func.add_block("END");
+        let v = Value::reg("v", Ty::i32());
+
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: c,
+                target_true: va,
+                target_false: vb,
+            },
+        );
+        func.push_inst(
+            va,
+            IrInst::CBranch {
+                cond: a,
+                target_true: vx,
+                target_false: vy,
+            },
+        );
+        func.push_inst(
+            vb,
+            IrInst::CBranch {
+                cond: b,
+                target_true: vx,
+                target_false: vy,
+            },
+        );
+        let one = func.alloc_var(Ty::i32());
+        let _ = one;
+        func.push_inst(
+            vx,
+            IrInst::Binary {
+                dst: v.clone(),
+                op: OpCode::Add,
+                lhs: v.clone(),
+                rhs: Value::int(1),
+            },
+        );
+        func.push_inst(vx, IrInst::Branch { target: end });
+        func.push_inst(
+            vy,
+            IrInst::Binary {
+                dst: v.clone(),
+                op: OpCode::Add,
+                lhs: v.clone(),
+                rhs: Value::int(2),
+            },
+        );
+        func.push_inst(vy, IrInst::Branch { target: end });
+        func.push_inst(end, IrInst::Return { value: Some(v) });
+        func.build_cfg();
+
+        let mut converter = IrToAstConverter::new(&func);
+        let stmts = structure_control_flow(&func, &mut converter);
+        let text = stmt_text(&stmts);
+        assert!(
+            !text.contains("goto "),
+            "small visited block must be inlined, not goto'd:\n{}",
+            text
+        );
+        // The Y body (v + 2) must appear twice: once in the A arm and once
+        // as the duplicated inline copy in the B arm.
+        let plus2 = text.matches("+= 0x2").count();
+        assert!(plus2 >= 2, "expected duplicated Y body:\n{}", text);
     }
 
     #[test]

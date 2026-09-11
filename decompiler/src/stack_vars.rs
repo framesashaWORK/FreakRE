@@ -90,7 +90,9 @@ pub type StackVarNames = HashMap<u32, RecoveredStackVar>;
 pub fn recover_stack_vars(func: &mut IrFunction) -> StackVarNames {
     let plan = match plan_recovery(func) {
         Some(plan) => plan,
-        None => return StackVarNames::new(),
+        None => {
+            return StackVarNames::new();
+        }
     };
 
     // Guard against hand-built functions whose var ids bypass `alloc_var`:
@@ -172,6 +174,7 @@ pub fn apply_recovered_names(func: &mut crate::ast::AstFunction, names: &StackVa
                 name: var.name.clone(),
                 ty: var.ty.clone(),
                 is_used: true,
+                fields: Vec::new(),
             });
         }
     }
@@ -215,17 +218,11 @@ struct RecoveryPlan {
 /// refused entirely.
 fn plan_recovery(func: &IrFunction) -> Option<RecoveryPlan> {
     let mut def_counts: HashMap<u32, usize> = HashMap::new();
-    let mut refs: HashMap<u32, usize> = HashMap::new();
 
     for block in &func.blocks {
         for inst in &block.insts {
             if let Some(Value::Var { id, .. }) = inst.dst() {
                 *def_counts.entry(*id).or_insert(0) += 1;
-            }
-            for src in inst.sources() {
-                if let Value::Var { id, .. } = src {
-                    *refs.entry(*id).or_insert(0) += 1;
-                }
             }
         }
     }
@@ -239,11 +236,44 @@ fn plan_recovery(func: &IrFunction) -> Option<RecoveryPlan> {
                     inst_defs.insert(*id, inst);
                 }
             }
-            // rsp may only appear where this pass understands it: as the
-            // base of address computations, inside canonical updates, or
-            // as the address of a Load/Store. Any other read (frame
-            // aliases like `rbp = rsp`, comparisons, passing rsp to a
-            // call) aborts recovery.
+        }
+    }
+
+    // Consumer index (for the flag-side-effect exclusion below).
+    let mut consumers: HashMap<u32, Vec<&IrInst>> = HashMap::new();
+    for block in &func.blocks {
+        for inst in &block.insts {
+            for src in inst.sources() {
+                if let Value::Var { id, .. } = src {
+                    consumers.entry(*id).or_default().push(inst);
+                }
+            }
+        }
+    }
+
+    // Reference counts, EXCLUDING flag-side-effect uses: the lifter derives
+    // `flag_zf/sf/cf/of` from stack arithmetic results, so a stack-update
+    // temp like `v = rsp - 0x38` carries extra reads that never let the
+    // pointer escape. Those must not break the single-use chains below.
+    let mut refs: HashMap<u32, usize> = HashMap::new();
+    for block in &func.blocks {
+        for inst in &block.insts {
+            if is_flag_logic_use(inst, &consumers, 8) {
+                continue;
+            }
+            for src in inst.sources() {
+                if let Value::Var { id, .. } = src {
+                    *refs.entry(*id).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    // rsp may only appear where this pass understands it: as the base of
+    // address computations, inside canonical updates, or as the address of
+    // a Load/Store. Any other read (frame aliases like `rbp = rsp`,
+    // passing rsp to a call) aborts recovery.
+    for block in &func.blocks {
+        for inst in &block.insts {
             if uses_rsp_unsafely(inst) {
                 return None;
             }
@@ -267,7 +297,9 @@ fn plan_recovery(func: &IrFunction) -> Option<RecoveryPlan> {
         };
         for (ii, inst) in block.insts.iter().enumerate() {
             match step_of(inst, &inst_defs, &refs) {
-                Step::Unsafe => return None,
+                Step::Unsafe => {
+                    return None;
+                }
                 Step::Update(k) => {
                     delta += k;
                     continue;
@@ -290,13 +322,17 @@ fn plan_recovery(func: &IrFunction) -> Option<RecoveryPlan> {
                     (Some(&lit), Some(&def_delta)) if def_delta == delta => {
                         (lit + delta, Some(*id))
                     }
-                    (Some(_), Some(_)) => return None,
+                    (Some(_), Some(_)) => {
+                        return None;
+                    }
                     _ => continue,
                 },
                 _ => continue,
             };
             match slots.get(&offset) {
-                Some(s) if *s != size => return None,
+                Some(s) if *s != size => {
+                    return None;
+                }
                 Some(_) => {}
                 None => {
                     slots.insert(offset, size);
@@ -359,6 +395,30 @@ fn uses_rsp_unsafely(inst: &IrInst) -> bool {
     match inst {
         IrInst::Load { .. } => false,
         IrInst::Store { value, .. } => is_stack_reg(value),
+        // Canonical stack-pointer update (`rsp = tmp`); `step_of` decides
+        // whether the shape is one it can track.
+        IrInst::Unary {
+            op: OpCode::Copy,
+            dst,
+            ..
+        } if is_stack_reg(dst) => false,
+        // Comparisons only read the value; the boolean result cannot alias
+        // the frame. Flag side effects of stack arithmetic reach rsp this
+        // way (`flag_sf = rsp <s 0`, and the overflow-formula temps).
+        IrInst::Binary {
+            op:
+                OpCode::Eq
+                | OpCode::Ne
+                | OpCode::LtS
+                | OpCode::LeS
+                | OpCode::GtS
+                | OpCode::GeS
+                | OpCode::LtU
+                | OpCode::LeU
+                | OpCode::GtU
+                | OpCode::GeU,
+            ..
+        } => false,
         IrInst::Binary {
             op: OpCode::Add | OpCode::Sub,
             ..
@@ -449,6 +509,30 @@ fn step_of(inst: &IrInst, defs: &HashMap<u32, &IrInst>, refs: &HashMap<u32, usiz
 /// Maximum length of a `rsp ± const` definition chain we follow.
 const CHAIN_DEPTH: u32 = 4;
 
+/// True when every transitive consumer of the vars read by `inst` ends in a
+/// flag-register definition. Such uses are the lifter's flag side effects —
+/// e.g. `add rsp, k` deriving `flag_zf`/`flag_pf` from the result temp — and
+/// cannot make a derived pointer escape. The consumer walk is depth-bounded
+/// and only accepts temps whose entire downstream terminates in flags.
+fn is_flag_logic_use(
+    inst: &IrInst,
+    consumers: &HashMap<u32, Vec<&IrInst>>,
+    depth: u32,
+) -> bool {
+    match inst.dst() {
+        // Direct flag write: terminal.
+        Some(Value::Register { name, .. }) if name.starts_with("flag_") => true,
+        // Temp: recurse into its consumers.
+        Some(Value::Var { id, .. }) if depth > 0 => match consumers.get(id) {
+            None => true,
+            Some(cons) => cons
+                .iter()
+                .all(|c| is_flag_logic_use(c, consumers, depth - 1)),
+        },
+        _ => false,
+    }
+}
+
 /// Resolve `value` to a constant offset from `rsp` through pure add/sub
 /// chains. Every intermediate temp must be single-use so the derived
 /// pointer value cannot escape into unrelated computations.
@@ -516,7 +600,9 @@ fn entry_deltas(
         let mut delta = deltas[bi]?;
         for inst in &func.blocks[bi].insts {
             match step_of(inst, defs, refs) {
-                Step::Unsafe => return None,
+                Step::Unsafe => {
+                    return None;
+                }
                 Step::Update(k) => delta += k,
                 Step::Other => {}
             }
@@ -989,6 +1075,151 @@ mod tests {
         func
     }
 
+    /// An `add rsp, k`-style epilogue as the lifter materializes it: the
+    /// result temp feeds `rsp = Copy(tmp)` AND the flag side effects
+    /// (zf/sf/cf from the result, plus the of/popcount temp cluster). The
+    /// flag uses must not break the single-use chain of the update temp.
+    fn add_epilogue_with_flags_func() -> IrFunction {
+        let mut func = IrFunction::new("epi", 0x2000);
+        let rsp = Value::reg("rsp", Ty::i64());
+        let b = func.entry_block;
+
+        // prologue: v1 = rsp - 0x38 (sub keeps flags from operands)
+        let v1 = func.alloc_var(Ty::i64());
+        func.push_inst(
+            b,
+            IrInst::Binary {
+                dst: v1.clone(),
+                op: OpCode::Sub,
+                lhs: rsp.clone(),
+                rhs: Value::Const(0x38),
+            },
+        );
+        func.push_inst(
+            b,
+            IrInst::Unary {
+                dst: rsp.clone(),
+                op: OpCode::Copy,
+                src: v1.clone(),
+            },
+        );
+
+        // spill/reload through a slot at [rsp+0x20]
+        let a1 = func.alloc_var(Ty::i64());
+        func.push_inst(
+            b,
+            IrInst::Binary {
+                dst: a1.clone(),
+                op: OpCode::Add,
+                lhs: rsp.clone(),
+                rhs: Value::Const(0x20),
+            },
+        );
+        let reg = Value::reg("eax", Ty::i32());
+        func.push_inst(
+            b,
+            IrInst::Store {
+                addr: a1,
+                value: reg,
+                size: 4,
+            },
+        );
+
+        // epilogue: v2 = rsp + 0x38; rsp = Copy(v2); flags from v2
+        let v2 = func.alloc_var(Ty::i64());
+        func.push_inst(
+            b,
+            IrInst::Binary {
+                dst: v2.clone(),
+                op: OpCode::Add,
+                lhs: rsp.clone(),
+                rhs: Value::Const(0x38),
+            },
+        );
+        let zf = Value::reg("flag_zf", Ty::Bool);
+        let sf = Value::reg("flag_sf", Ty::Bool);
+        let cf = Value::reg("flag_cf", Ty::Bool);
+        let of = Value::reg("flag_of", Ty::Bool);
+        func.push_inst(
+            b,
+            IrInst::Binary {
+                dst: zf,
+                op: OpCode::Eq,
+                lhs: v2.clone(),
+                rhs: Value::Const(0),
+            },
+        );
+        func.push_inst(
+            b,
+            IrInst::Binary {
+                dst: sf,
+                op: OpCode::LtS,
+                lhs: v2.clone(),
+                rhs: Value::Const(0),
+            },
+        );
+        func.push_inst(
+            b,
+            IrInst::Binary {
+                dst: cf,
+                op: OpCode::LtU,
+                lhs: v2.clone(),
+                rhs: rsp.clone(),
+            },
+        );
+        // of cluster: neg = v2 <s 0; sign_flips = Ne(neg, neg_a)…; of = And
+        let neg = func.alloc_var(Ty::Bool);
+        func.push_inst(
+            b,
+            IrInst::Binary {
+                dst: neg.clone(),
+                op: OpCode::LtS,
+                lhs: v2.clone(),
+                rhs: Value::Const(0),
+            },
+        );
+        let flips = func.alloc_var(Ty::Bool);
+        func.push_inst(
+            b,
+            IrInst::Binary {
+                dst: flips.clone(),
+                op: OpCode::Ne,
+                lhs: neg.clone(),
+                rhs: neg.clone(),
+            },
+        );
+        func.push_inst(
+            b,
+            IrInst::Binary {
+                dst: of,
+                op: OpCode::And,
+                lhs: flips,
+                rhs: neg,
+            },
+        );
+        func.push_inst(
+            b,
+            IrInst::Unary {
+                dst: rsp,
+                op: OpCode::Copy,
+                src: v2,
+            },
+        );
+        func.push_inst(b, IrInst::Return { value: None });
+        func
+    }
+
+    #[test]
+    fn test_add_epilogue_flags_do_not_block_recovery() {
+        let mut func = add_epilogue_with_flags_func();
+        let names = recover_stack_vars(&mut func);
+        assert!(!names.is_empty(), "flag side effects must not abort recovery");
+
+        // The slot access should be replaced by a recovered stack var.
+        let (_, stores, _) = counts(&func);
+        assert_eq!(stores, 0, "spill store must be gone after recovery");
+    }
+
     fn counts(func: &IrFunction) -> (usize, usize, usize) {
         let mut loads = 0;
         let mut stores = 0;
@@ -1172,7 +1403,8 @@ mod tests {
         let mut ast = crate::ir_to_ast::ir_to_ast(&func);
         crate::stack_vars::apply_recovered_names(&mut ast, &names);
         let c = crate::ast_to_c::ast_to_c(&ast);
-        assert!(c.contains("qword_30 = rcx"), "{}", c);
+        // rcx is now recognized as parameter a1 and rendered as such.
+        assert!(c.contains("qword_30 = a1"), "{}", c);
     }
 
     /// Two paths reaching one block with different rsp deltas must abort.

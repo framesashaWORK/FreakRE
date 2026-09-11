@@ -167,7 +167,7 @@ pub fn apply_call_naming_with(
 /// Recover the address encoded in a synthetic callee name produced by the
 /// lifters / lowering (`func_HEX`, `func_0xHEX`, `func_0XHEX` — hex digits
 /// case-insensitive). Returns `None` for anything else.
-fn parse_synthetic_addr(callee: &str) -> Option<u64> {
+pub fn parse_synthetic_addr(callee: &str) -> Option<u64> {
     let rest = if let Some(r) = callee.strip_prefix("func_0x") {
         r
     } else if let Some(r) = callee.strip_prefix("func_0X") {
@@ -374,7 +374,9 @@ fn rewrite_expr(expr: &mut Expr, signatures: &SignatureMap, addr_names: &AddrNam
             rewrite_expr(base, signatures, addr_names);
             rewrite_expr(index, signatures, addr_names);
         }
-        Expr::Member { base, .. } => rewrite_expr(base, signatures, addr_names),
+        Expr::Member { base, .. } | Expr::Field { base, .. } => {
+            rewrite_expr(base, signatures, addr_names)
+        }
         Expr::Ternary {
             cond,
             then_expr,
@@ -623,6 +625,7 @@ mod tests {
             body: Vec::new(),
             locals: Vec::<LocalVar>::new(),
             entry_address: 0,
+            param_register_names: Vec::new(),
         }
     }
 
@@ -726,7 +729,7 @@ mod tests {
         ast.locals.push(LocalVar {
             name: "v0".into(),
             ty: freakre_ir::Ty::i32(),
-            is_used: true,
+            is_used: true, fields: Vec::new(),
         });
         ast.body.push(Stmt::Assign {
             target: var("v0"),

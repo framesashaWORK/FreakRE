@@ -22,6 +22,9 @@ pub struct FunctionSummary {
     pub calling_convention: CallingConvention,
     /// Number of parameters detected
     pub param_count: usize,
+    /// Per-parameter types (best effort; `Ty::Unknown` when unresolved).
+    /// Length matches `param_count` when recovery succeeded.
+    pub param_types: Vec<Ty>,
     /// Return type (if inferred)
     pub return_type: Option<Ty>,
     /// Whether this function may throw / raise exceptions
@@ -95,11 +98,20 @@ pub fn analyze_function(func: &IrFunction) -> FunctionSummary {
     let reads = find_global_reads(func);
     let writes = find_global_writes(func);
 
+    // Per-parameter types come from the params recovery pass (registers /
+    // stack slots read before overwrite, usage-typed).
+    let is_64bit = matches!(cc, CallingConvention::Win64 | CallingConvention::SystemV);
+    let param_types: Vec<Ty> = crate::params::recover_params(func, is_64bit)
+        .iter()
+        .map(|p| p.ty.clone())
+        .collect();
+
     FunctionSummary {
         name: func.name.clone(),
         address: func.entry_address,
         calling_convention: cc,
         param_count,
+        param_types,
         return_type,
         may_throw,
         inline_candidate: false, // Set later in detect_inline_candidates

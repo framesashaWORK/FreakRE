@@ -110,6 +110,18 @@ impl CEmitter {
             self.var_types
                 .entry(local.name.clone())
                 .or_insert_with(|| local.ty.clone());
+            // Pointer-typed locals with a recovered layout get a Ptr(Struct)
+            // type so `emit_mem_access` prints `base->field_0xNN`.
+            if !local.fields.is_empty() {
+                let fields: Vec<(String, Ty)> = local
+                    .fields
+                    .iter()
+                    .map(|(_, name, w)| (name.clone(), width_ty(*w)))
+                    .collect();
+                self.var_types
+                    .entry(local.name.clone())
+                    .or_insert(Ty::Ptr(Box::new(Ty::Struct(fields))));
+            }
         }
 
         // Function signature
@@ -539,6 +551,29 @@ impl CEmitter {
     /// additional indent is emitted for the chain tail. An empty `else` arm
     /// is dropped entirely.
     fn emit_if_chain(&mut self, cond: &Expr, then_body: &[Stmt], else_body: Option<&[Stmt]>) {
+        // Empty then + non-empty plain else → invert the condition once and
+        // print the else body as the then body (`if (c) {} else { X }` reads
+        // worse than `if (!c) { X }`).
+        if then_body.is_empty() {
+            match else_body {
+                Some(eb) if !eb.is_empty() && !matches!(eb, [Stmt::If { .. }]) => {
+                    let negated = crate::patterns::negate_cond(cond.clone());
+                    self.output.push_str("if (");
+                    self.emit_cond(&negated);
+                    self.output.push_str(") {\n");
+                    self.indent += 1;
+                    for s in eb {
+                        self.emit_stmt(s);
+                    }
+                    self.indent -= 1;
+                    self.emit_indent();
+                    self.output.push('}');
+                    self.output.push('\n');
+                    return;
+                }
+                _ => {}
+            }
+        }
         self.output.push_str("if (");
         self.emit_cond(cond);
         self.output.push_str(") {\n");
@@ -743,6 +778,21 @@ impl CEmitter {
                 self.output.push_str(field);
             }
 
+            Expr::Field { base, field, .. } => {
+                // `base->field`: parens when the base is a non-var expression.
+                let needs_parens = !matches!(base.as_ref(), Expr::Var(_));
+                if needs_parens {
+                    self.output.push('(');
+                    self.emit_expr(base, 0);
+                    self.output.push(')');
+                } else {
+                    self.emit_expr(base, 0);
+                }
+                self.output.push_str("->");
+                let field = self.ident(field);
+                self.output.push_str(&field);
+            }
+
             Expr::Deref(expr) => {
                 // Memory access through base±constant: print a named struct
                 // field when the base's recovered struct layout resolves the
@@ -932,7 +982,15 @@ impl CEmitter {
     }
 }
 
-/// Resolve a byte offset to a field name in a recovered layout. Recovered
+/// C type for a recovered field of `width` bytes.
+fn width_ty(width: u8) -> Ty {
+    match width {
+        1 => Ty::UInt(8),
+        2 => Ty::UInt(16),
+        8 => Ty::UInt(64),
+        _ => Ty::UInt(32),
+    }
+}/// Resolve a byte offset to a field name in a recovered layout. Recovered
 /// fields are named `field_0x<HEX>`; offsets are read from the names so no
 /// side table is needed. First match wins (deterministic).
 fn field_at_offset(fields: &[(String, Ty)], offset: u64) -> Option<&str> {
@@ -1077,7 +1135,7 @@ mod tests {
         func.locals.push(LocalVar {
             name: "v0".to_string(),
             ty: Ty::i32(),
-            is_used: true,
+            is_used: true, fields: Vec::new(),
         });
         func.body.push(Stmt::Assign {
             target: Expr::Var("v0".to_string()),
@@ -1143,17 +1201,17 @@ mod tests {
         func.locals.push(LocalVar {
             name: "0bad".to_string(),
             ty: Ty::i32(),
-            is_used: true,
+            is_used: true, fields: Vec::new(),
         });
         func.locals.push(LocalVar {
             name: "a-b".to_string(),
             ty: Ty::i32(),
-            is_used: true,
+            is_used: true, fields: Vec::new(),
         });
         func.locals.push(LocalVar {
             name: "a_b".to_string(),
             ty: Ty::i32(),
-            is_used: true,
+            is_used: true, fields: Vec::new(),
         });
         func.body.push(Stmt::Decl {
             name: "0bad".to_string(),
@@ -1254,7 +1312,7 @@ mod tests {
         func.locals.push(LocalVar {
             name: "x".to_string(),
             ty: Ty::i32(),
-            is_used: true,
+            is_used: true, fields: Vec::new(),
         });
         func.body.push(Stmt::Assign {
             target: Expr::Var("x".to_string()),
@@ -1273,12 +1331,12 @@ mod tests {
         func.locals.push(LocalVar {
             name: "x".to_string(),
             ty: Ty::i32(),
-            is_used: true,
+            is_used: true, fields: Vec::new(),
         });
         func.locals.push(LocalVar {
             name: "y".to_string(),
             ty: Ty::i64(),
-            is_used: true,
+            is_used: true, fields: Vec::new(),
         });
         func.body.push(Stmt::Assign {
             target: Expr::Var("y".to_string()),
@@ -1494,7 +1552,7 @@ mod tests {
         func.locals.push(LocalVar {
             name: "s".to_string(),
             ty: Ty::Ptr(Box::new(Ty::Struct(struct_fields))),
-            is_used: true,
+            is_used: true, fields: Vec::new(),
         });
         // Resolved offset → named field.
         func.body.push(Stmt::Assign {

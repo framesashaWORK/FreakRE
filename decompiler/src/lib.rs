@@ -28,10 +28,12 @@ pub mod fold_flags;
 pub mod ident;
 pub mod interproc;
 pub mod ir_to_ast;
+pub mod params;
 pub mod patterns;
 pub mod simplify;
 pub mod stack_vars;
 pub mod strings;
+pub mod struct_fields;
 pub mod structuring;
 pub mod types;
 

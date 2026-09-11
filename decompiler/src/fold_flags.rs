@@ -12,6 +12,7 @@ enum FlagBits {
     Zf,
     Cf,
     Sf,
+    Of,
 }
 
 fn classify_flag(name: &str) -> Option<FlagBits> {
@@ -19,6 +20,7 @@ fn classify_flag(name: &str) -> Option<FlagBits> {
         "flag_zf" => Some(FlagBits::Zf),
         "flag_cf" => Some(FlagBits::Cf),
         "flag_sf" => Some(FlagBits::Sf),
+        "flag_of" => Some(FlagBits::Of),
         _ => None,
     }
 }
@@ -74,6 +76,10 @@ fn collect_flag_defs(func: &IrFunction) -> HashMap<String, Vec<FlagDefSite>> {
                     Some(FlagBits::Zf) => *def_op == OpCode::Eq,
                     Some(FlagBits::Cf) => *def_op == OpCode::LtU,
                     Some(FlagBits::Sf) => *def_op == OpCode::LtS,
+                    // OF definitions are overflow formulas (add-style); the
+                    // lifter does not emit a reducible CMP/SUB form, so the
+                    // SF/OF pair fold relies on the SF def alone.
+                    Some(FlagBits::Of) => false,
                     None => false,
                 };
                 if consistent && is_atom(lhs) && is_atom(rhs) {
@@ -122,6 +128,94 @@ fn rpo_ranks(func: &IrFunction) -> HashMap<freakre_ir::BlockId, usize> {
         .collect()
 }
 
+/// Shape of a signed SF/OF pair condition (`jl`/`jge`/`jle`/`jg`) after a
+/// CMP/SUB, mapped to the equivalent single signed comparison.
+#[derive(Clone, Copy)]
+enum SfOfKind {
+    /// SF != OF  (jl)  → LtS
+    Lt,
+    /// SF == OF  (jge) → GeS
+    Ge,
+    /// ZF || SF != OF  (jle) → LeS
+    Le,
+    /// !ZF && SF == OF  (jg) → GtS
+    Gt,
+}
+
+fn sf_of_semantic(kind: SfOfKind) -> OpCode {
+    match kind {
+        SfOfKind::Lt => OpCode::LtS,
+        SfOfKind::Ge => OpCode::GeS,
+        SfOfKind::Le => OpCode::LeS,
+        SfOfKind::Gt => OpCode::GtS,
+    }
+}
+
+/// Recognize the direct SF/OF flag-pair shape: `vN = (flag_sf OP flag_of)`.
+/// Returns the pair condition kind and whether ZF participates.
+fn match_sf_of_direct(inst: &IrInst) -> Option<(u32, SfOfKind)> {
+    let IrInst::Binary { dst: Value::Var { id, .. }, op, lhs, rhs } = inst else {
+        return None;
+    };
+    let (a, b) = match (lhs, rhs) {
+        (Value::Register { name: a, .. }, Value::Register { name: b, .. }) => (a, b),
+        _ => return None,
+    };
+    let sf_of_order = matches!(
+        (classify_flag(a), classify_flag(b)),
+        (Some(FlagBits::Sf), Some(FlagBits::Of)) | (Some(FlagBits::Of), Some(FlagBits::Sf))
+    );
+    if !sf_of_order {
+        return None;
+    }
+    let kind = match op {
+        OpCode::Ne => SfOfKind::Lt,
+        OpCode::Eq => SfOfKind::Ge,
+        _ => return None,
+    };
+    Some((*id, kind))
+}
+
+/// Recognize the combined signed shapes:
+/// `vN = Or((zf == 1), (sf != of))`  → jle
+/// `vN = And((zf != 1), (sf == of))` → jg
+/// Returns `(dst, zf_var, pair_var)`; the semantic kind is derived by the
+/// caller from the Or/And op and the ZF bit.
+fn match_sf_of_combined(inst: &IrInst) -> Option<(u32, u32, u32)> {
+    let IrInst::Binary { dst: Value::Var { id, .. }, op, lhs, rhs } = inst else {
+        return None;
+    };
+    let (va, vb) = match (lhs, rhs) {
+        (Value::Var { id: a, .. }, Value::Var { id: b, .. }) => (*a, *b),
+        _ => return None,
+    };
+    match op {
+        OpCode::Or | OpCode::And => {}
+        _ => return None,
+    };
+    Some((*id, va, vb))
+}
+
+/// True when `def` is an ADD-style SF definition (`flag_sf = (result <s 0)`
+/// where `result` was just written by an `add` in the same block): the
+/// SF/OF pair there does NOT reduce to one signed comparison.
+fn sf_def_is_add_style(func: &IrFunction, def: &FlagDefSite) -> bool {
+    let def_lhs_id = match &def.lhs {
+        Value::Var { id, .. } => *id,
+        _ => return false,
+    };
+    let Some(block) = func.blocks.iter().find(|b| b.id == def.block) else {
+        return false;
+    };
+    block.insts[..def.idx].iter().rev().any(|prev| {
+        matches!(
+            prev,
+            IrInst::Binary { dst, op: OpCode::Add, .. }
+            if matches!(dst, Value::Var { id, .. } if *id == def_lhs_id)
+        )
+    })
+}
+
 /// Choose the flag definition that applies at a given use site: among the
 /// definitions dominating the use, the latest one wins (by reverse-postorder
 /// rank of the defining block, then by position within a shared block).
@@ -137,8 +231,7 @@ fn resolve_flag_def(
     use_idx: usize,
     ranks: &HashMap<freakre_ir::BlockId, usize>,
     idom: &HashMap<freakre_ir::BlockId, freakre_ir::BlockId>,
-) -> Option<FlagDefSite> {
-    ranks.get(&use_block)?;
+) -> Option<FlagDefSite> {    ranks.get(&use_block)?;
     let mut best: Option<&FlagDefSite> = None;
     for d in defs {
         let dominates_use = if d.block == use_block {
@@ -168,6 +261,29 @@ fn resolve_flag_def(
         return Some(defs[0].clone());
     }
     None
+}
+
+/// Resolve the `flag_sf` definition that a SF/OF pair condition consumes,
+/// requiring a CMP/SUB-style def (`flag_sf = (a <s b)`, both atoms). The
+/// pair only reduces to a signed comparison in that case; ADD-style defs
+/// (`flag_sf = (result <s 0)`) are rejected.
+fn resolve_sf_def_for_pair(
+    func: &IrFunction,
+    flag_defs: &HashMap<String, Vec<FlagDefSite>>,
+    use_block: freakre_ir::BlockId,
+    use_idx: usize,
+    ranks: &HashMap<freakre_ir::BlockId, usize>,
+    idom: &HashMap<freakre_ir::BlockId, freakre_ir::BlockId>,
+) -> Option<FlagDefSite> {
+    let defs = flag_defs.get("flag_sf")?;
+    let def = resolve_flag_def(defs, use_block, use_idx, ranks, idom)?;
+    if !matches!(def.op, OpCode::LtS) {
+        return None;
+    }
+    if sf_def_is_add_style(func, &def) {
+        return None;
+    }
+    Some(def)
 }
 
 /// Decompose `vN = (flag_x OP 0|1)` (either operand order — the lifter may
@@ -375,6 +491,72 @@ pub fn fold_flag_comparisons(func: &mut IrFunction) -> usize {
                         rhs: def.rhs,
                     },
                 ));
+                continue;
+            }
+
+            // ── Signed SF/OF pair (`jl`/`jge`/`jle`/`jg` after CMP/SUB) ──
+            // The lifter emits `Ne(flag_sf, flag_of)` (jl), `Eq(..)` (jge),
+            // `Or((zf==1), Ne(sf,of))` (jle), `And((zf!=1), Eq(sf,of))` (jg).
+            // After a CMP/SUB, SF == LtS(a, b), so each shape reduces to one
+            // signed comparison of the original CMP operands.
+            let pair_plan = (|| {
+                // Direct shape first: vN = (flag_sf OP flag_of).
+                if let Some((dst_id, kind)) = match_sf_of_direct(&func.blocks[bi].insts[ii]) {
+                    if var_def_counts.get(&dst_id).copied().unwrap_or(0) != 1 {
+                        return None;
+                    }
+                    let def = resolve_sf_def_for_pair(func, &flag_defs, bid, ii, &ranks, &idom)?;
+                    return Some((
+                        bi,
+                        ii,
+                        IrInst::Binary {
+                            dst: Value::var(dst_id, Ty::Bool),
+                            op: sf_of_semantic(kind),
+                            lhs: def.lhs,
+                            rhs: def.rhs,
+                        },
+                    ));
+                }
+                // Combined shape: vN = Or/And(zf_cond, pair_cond) where
+                // pair_cond's own def is the direct SF/OF shape.
+                let (dst_id, va, vb) = match_sf_of_combined(&func.blocks[bi].insts[ii])?;
+                if var_def_counts.get(&dst_id).copied().unwrap_or(0) != 1 {
+                    return None;
+                }
+                let zf_ok = |vid: u32| -> bool {
+                    var_sites.get(&vid).and_then(|&(x, y)| {
+                        match_flag_cond(&func.blocks[x].insts[y])
+                    }).map(|(_, _, flag, _)| classify_flag(&flag) == Some(FlagBits::Zf))
+                      .unwrap_or(false)
+                };
+                let (zf_var, pair_var) =
+                    if zf_ok(va) { (va, vb) } else if zf_ok(vb) { (vb, va) } else { return None; };
+                if var_def_counts.get(&pair_var).copied().unwrap_or(0) != 1 {
+                    return None;
+                }
+                // Or → jle (ZF set); And → jg (ZF clear). The pair side of
+                // jle is Ne (lt), of jg is Eq (ge): consistent with the ops.
+                let want_set = matches!(func.blocks[bi].insts[ii], IrInst::Binary { op: OpCode::Or, .. });
+                let zf_site = var_sites.get(&zf_var).copied().unwrap();
+                let (_, _, _, zf_bit) = match_flag_cond(&func.blocks[zf_site.0].insts[zf_site.1])?;
+                if want_set != (zf_bit == 1) {
+                    return None;
+                }
+                let kind = if want_set { SfOfKind::Le } else { SfOfKind::Gt };
+                let def = resolve_sf_def_for_pair(func, &flag_defs, bid, ii, &ranks, &idom)?;
+                Some((
+                    bi,
+                    ii,
+                    IrInst::Binary {
+                        dst: Value::var(dst_id, Ty::Bool),
+                        op: sf_of_semantic(kind),
+                        lhs: def.lhs,
+                        rhs: def.rhs,
+                    },
+                ))
+            })();
+            if let Some(plan) = pair_plan {
+                plans.push(plan);
                 continue;
             }
 
@@ -1489,5 +1671,178 @@ mod tests {
             "adc carry must be a folded SSA var, not flag_cf: {:?}",
             adc
         );
+    }
+}
+
+#[cfg(test)]
+mod sf_of_tests {
+    use super::*;
+
+    /// `cmp eax, 5; jl target` — the jl condition is `Ne(flag_sf, flag_of)`;
+    /// after a CMP the SF def is `flag_sf = (eax <s 5)`, so the pair must
+    /// fold into `LtS(eax, 5)`.
+    #[test]
+    fn test_sf_of_pair_folds_to_signed_cmp() {
+        let mut func = IrFunction::new("t", 0x1000);
+        let eax = Value::reg("eax", Ty::i32());
+        let t0 = func.alloc_var(Ty::Bool);
+        let _t1 = func.alloc_var(Ty::Bool);
+        let sf = Value::reg("flag_sf", Ty::i64());
+        let of = Value::reg("flag_of", Ty::i64());
+        let bb1 = func.add_block("bb1");
+        let bb2 = func.add_block("bb2");
+
+        // flag_sf = (eax <s 5) — CMP-style def.
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: sf.clone(),
+                op: OpCode::LtS,
+                lhs: eax.clone(),
+                rhs: Value::Const(5),
+            },
+        );
+        // flag_of = 0 (CMP clears OF).
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: of.clone(),
+                op: OpCode::Copy,
+                lhs: Value::Const(0),
+                rhs: Value::Const(0),
+            },
+        );
+        // t0 = (flag_sf != flag_of) — the `jl` condition.
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: t0.clone(),
+                op: OpCode::Ne,
+                lhs: sf.clone(),
+                rhs: of.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: t0.clone(),
+                target_true: bb1,
+                target_false: bb2,
+            },
+        );
+        func.push_inst(bb1, IrInst::Return { value: None });
+        func.push_inst(bb2, IrInst::Return { value: None });
+
+        let folded = fold_flag_comparisons(&mut func);
+        assert!(folded > 0, "jl pair must fold");
+        eliminate_dead_flag_defs(&mut func);
+
+        let b = &func.blocks[func.entry_block.0 as usize];
+        let has_lts = b.insts.iter().any(|inst| match inst {
+            IrInst::Binary { op: OpCode::LtS, lhs, rhs, .. } => {
+                *lhs == eax && matches!(rhs, Value::Const(5))
+            }
+            _ => false,
+        });
+        assert!(has_lts, "expected LtS(eax, 5) after fold");
+        let no_flag = !b
+            .insts
+            .iter()
+            .any(|inst| inst.dst().iter().any(|d| matches!(d, Value::Register { name, .. } if name.starts_with("flag_"))));
+        assert!(no_flag, "flag registers must be gone");
+    }
+
+    /// `jle` — `Or((zf == 1), Ne(sf, of))` must fold into `LeS(a, b)`.
+    #[test]
+    fn test_sf_of_jle_combined_folds() {
+        let mut func = IrFunction::new("t", 0x1000);
+        let eax = Value::reg("eax", Ty::i32());
+        let zf = Value::reg("flag_zf", Ty::i64());
+        let sf = Value::reg("flag_sf", Ty::i64());
+        let of = Value::reg("flag_of", Ty::i64());
+        let tzf = func.alloc_var(Ty::Bool);
+        let tpair = func.alloc_var(Ty::Bool);
+        let t0 = func.alloc_var(Ty::Bool);
+        let bb1 = func.add_block("bb1");
+        let bb2 = func.add_block("bb2");
+
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: zf.clone(),
+                op: OpCode::Eq,
+                lhs: eax.clone(),
+                rhs: Value::Const(5),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: sf.clone(),
+                op: OpCode::LtS,
+                lhs: eax.clone(),
+                rhs: Value::Const(5),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: of.clone(),
+                op: OpCode::Copy,
+                lhs: Value::Const(0),
+                rhs: Value::Const(0),
+            },
+        );
+        // tzf = (flag_zf == 1)
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: tzf.clone(),
+                op: OpCode::Eq,
+                lhs: zf.clone(),
+                rhs: Value::Const(1),
+            },
+        );
+        // tpair = (flag_sf != flag_of)
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: tpair.clone(),
+                op: OpCode::Ne,
+                lhs: sf.clone(),
+                rhs: of.clone(),
+            },
+        );
+        // t0 = tzf | tpair — the `jle` condition.
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: t0.clone(),
+                op: OpCode::Or,
+                lhs: tzf.clone(),
+                rhs: tpair.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::CBranch {
+                cond: t0.clone(),
+                target_true: bb1,
+                target_false: bb2,
+            },
+        );
+        func.push_inst(bb1, IrInst::Return { value: None });
+        func.push_inst(bb2, IrInst::Return { value: None });
+
+        let folded = fold_flag_comparisons(&mut func);
+        assert!(folded > 0, "jle combined must fold");
+
+        let b = &func.blocks[func.entry_block.0 as usize];
+        let has_les = b.insts.iter().any(|inst| matches!(
+            inst,
+            IrInst::Binary { op: OpCode::LeS, lhs, rhs, .. }
+                if *lhs == eax && matches!(rhs, Value::Const(5))
+        ));
+        assert!(has_les, "expected LeS(eax, 5) after fold");
     }
 }

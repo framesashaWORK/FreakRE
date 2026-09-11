@@ -65,10 +65,12 @@ fn e2e_cmp_signedness_in_c() {
     let jl_code: [u8; 12] = [
         0x83, 0xF8, 0x05, 0x7C, 0x06, 0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3, 0xC3,
     ];
+    // jl targets a bare `ret`, so the mov arm is the not-less side; the
+    // comparison must stay signed (no uint64 widening cast).
     let ir = lift(&jl_code, 0x1000, "sb", true).expect("lifter failed");
     let c = decompile_function(&ir).expect("decompile failed");
     assert!(
-        !c.contains("(uint64_t)") && c.contains("<"),
+        !c.contains("(uint64_t)") && c.contains("eax >= 0x5"),
         "signed comparison must stay plain:\n{}",
         c
     );
@@ -165,4 +167,18 @@ fn e2e_repo_sample_shellcode_if_present() {
             }
         }
     }
+}
+
+/// Callee reading rcx and rdx (x64): the decompiler must recover the
+/// two-argument signature `f(a1, a2)` and render register reads as a1/a2.
+#[test]
+fn e2e_params_recovered() {
+    // mov eax, ecx / add eax, edx / ret
+    let code: [u8; 7] = [0x89, 0xC8, 0x01, 0xD0, 0x90, 0x90, 0xC3];
+    let ir = lift(&code, 0x2000, "addup", true).expect("lifter failed");
+    let c = decompile_function(&ir).expect("decompiler failed");
+    println!("---- callee C ----\n{}", c);
+
+    assert!(c.contains("addup(int32_t a1, int32_t a2)"), "params not in signature:\n{}", c);
+    assert!(c.contains("a1") && c.contains("a2"), "params not used in body:\n{}", c);
 }

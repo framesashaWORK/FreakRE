@@ -31,6 +31,10 @@ pub struct IrToAstConverter<'a> {
     func: &'a IrFunction,
     var_names: HashMap<Value, String>,
     var_counter: u32,
+    /// (slot index, alias) of recovered parameters: every alias spelling
+    /// renders as `a{slot+1}` (the IR may carry `ecx` where the canonical
+    /// slot is `rcx`).
+    param_regs: Vec<(usize, &'a str)>,
 }
 
 impl<'a> IrToAstConverter<'a> {
@@ -39,12 +43,43 @@ impl<'a> IrToAstConverter<'a> {
             func,
             var_names: HashMap::new(),
             var_counter: 0,
+            param_regs: Vec::new(),
         }
+    }
+
+    /// Index of `name` in the recovered parameter registers, if any.
+    fn param_reg_index(&self, name: &str) -> Option<usize> {
+        self.param_regs.iter().find(|(_, a)| *a == name).map(|(s, _)| *s)
+    }
+
+    /// Pointer-width guess: x64 lifter models registers with 64-bit types.
+    fn is_64bit_arch(&self) -> bool {
+        self.func.blocks.iter().any(|b| {
+            b.insts.iter().any(|i| {
+                i.dst().is_some_and(|d| {
+                    matches!(d, Value::Register { ty: Ty::Int(64) | Ty::UInt(64), .. })
+                })
+            })
+        })
     }
 
     fn convert(&mut self) -> AstFunction {
         let mut ast_func = AstFunction::new(&self.func.name);
         ast_func.entry_address = self.func.entry_address;
+
+        // Recovered parameters: signature + a1..aN rendering of register reads.
+        // Architecture comes from the lifter through the function name prefix
+        // is unreliable; use the pointer width recorded on the IR (blocks
+        // carry 64-bit register types on x64).
+        let is_64 = self.is_64bit_arch();
+        let recovered = crate::params::recover_params(self.func, is_64);
+        crate::params::apply_params(&mut ast_func, &recovered);
+        // Every alias spelling renders as a{slot+1}: the IR may carry `ecx`
+        // where the canonical slot is `rcx`.
+        self.param_regs = recovered
+            .iter()
+            .flat_map(|p| p.aliases.iter().map(move |a| (p.slot, *a)))
+            .collect();
 
         // Структурировать контрольный поток.
         // Вызывающий (decompile.rs) обязан передать phi-free IR;
@@ -79,6 +114,7 @@ impl<'a> IrToAstConverter<'a> {
                             name: format!("v{}", id),
                             ty: ty.clone(),
                             is_used: true,
+                            fields: Vec::new(),
                         });
                     }
                 }
@@ -92,6 +128,7 @@ impl<'a> IrToAstConverter<'a> {
                                 name: name.clone(),
                                 ty: ty.clone(),
                                 is_used: true,
+                            fields: Vec::new(),
                             });
                         }
                     }
@@ -108,6 +145,7 @@ impl<'a> IrToAstConverter<'a> {
                             name: format!("v{}", id),
                             ty: ty.clone(),
                             is_used: true,
+                            fields: Vec::new(),
                         });
                     }
                 }
@@ -124,7 +162,13 @@ impl<'a> IrToAstConverter<'a> {
         }
         let name = match value {
             Value::Var { id, .. } => format!("v{}", id),
-            Value::Register { name, .. } => name.clone(),
+            Value::Register { name, .. } => {
+                // Recovered parameter registers render as `a1..aN`.
+                if let Some(idx) = self.param_reg_index(name) {
+                    return format!("a{}", idx + 1);
+                }
+                name.clone()
+            }
             Value::Symbol(sym) => sym.clone(),
             _ => {
                 let name = format!("tmp{}", self.var_counter);

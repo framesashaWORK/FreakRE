@@ -56,7 +56,7 @@ fn param_typing_from_propagation() {
     func.locals.push(LocalVar {
         name: "count".to_string(),
         ty: Ty::Unknown,
-        is_used: true,
+        is_used: true, fields: Vec::new(),
     });
     func.body.push(Stmt::Return {
         value: Some(decompiler::ast::Expr::Var("count".to_string())),
@@ -220,12 +220,12 @@ fn cast_hygiene_drops_redundant_keeps_width_change() {
     func.locals.push(LocalVar {
         name: "x".to_string(),
         ty: Ty::i32(),
-        is_used: true,
+        is_used: true, fields: Vec::new(),
     });
     func.locals.push(LocalVar {
         name: "y".to_string(),
         ty: Ty::i64(),
-        is_used: true,
+        is_used: true, fields: Vec::new(),
     });
     use decompiler::ast::{BinOp, Expr};
     // Same-width cast on assignment → dropped.

@@ -41,7 +41,8 @@ fn expr_is_var_eq(a: &Expr, b: &Expr) -> bool {
 /// Negate a condition without a double negation or a `!(...)` wrapper when
 /// the operator itself has an inverse: `a < b` → `a >= b`, `!c` → `c`.
 /// Anything else is wrapped in `!`.
-fn negate_cond(cond: Expr) -> Expr {
+/// Negate a condition: invert comparands when possible, else wrap in `!`.
+pub(crate) fn negate_cond(cond: Expr) -> Expr {
     match cond {
         Expr::Unary {
             op: UnOp::LogNot,

@@ -24,14 +24,17 @@ pub struct SimplifyStats {
     pub unreachable_dropped: usize,
     pub continue_trimmed: usize,
     pub void_returns_trimmed: usize,
+    pub dead_locals_removed: usize,
+    pub self_assigns_removed: usize,
 }
 
 impl SimplifyStats {
     pub fn tally(&self) -> String {
         format!(
-            "conditions_merged_and={} conditions_merged_or={} ternaries_collapsed={} \
+             "conditions_merged_and={} conditions_merged_or={} ternaries_collapsed={} \
              gotos_removed={} labels_inlined={} unused_labels_removed={} unreachable_dropped={} \
-             continue_trimmed={} void_returns_trimmed={}",
+             continue_trimmed={} void_returns_trimmed={} dead_locals_removed={} \
+             self_assigns_removed={}",
             self.conditions_merged_and,
             self.conditions_merged_or,
             self.ternaries_collapsed,
@@ -40,7 +43,9 @@ impl SimplifyStats {
             self.unused_labels_removed,
             self.unreachable_dropped,
             self.continue_trimmed,
-            self.void_returns_trimmed
+            self.void_returns_trimmed,
+            self.dead_locals_removed,
+            self.self_assigns_removed
         )
     }
 }
@@ -92,6 +97,10 @@ pub fn simplify_function_with_stats(func: &mut AstFunction) -> SimplifyStats {
         trim_trailing_void_return(&mut func.body, &mut stats);
     }
 
+    // Pass 5d: dead-local cleanup — drop self-assignments (`x = x`) and
+    // local declarations never read anywhere in the body.
+    remove_dead_locals(func, &mut stats);
+
     // Pass 6: Final cleanup — copy propagation may turn `rsp = v12` copies
     // into plain `rsp = rsp - 8` adjustments, and pattern transforms may
     // surface further dead flag assignments.
@@ -102,6 +111,84 @@ pub fn simplify_function_with_stats(func: &mut AstFunction) -> SimplifyStats {
 }
 
 // в”Ђв”Ђв”Ђ Prologue / Epilogue Noise Removal в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
+/// Pass 5d: drop self-assignments (`x = x`) and local declarations whose
+/// name is never read anywhere in the body. Parameters are exempt (they are
+/// part of the signature, not `locals`).
+fn remove_dead_locals(func: &mut AstFunction, stats: &mut SimplifyStats) {
+    let param_names: HashSet<String> =
+        func.params.iter().map(|p| p.name.clone()).collect();
+
+    // (a) self-assignments
+    let mut self_assigns = 0usize;
+    remove_self_assigns(&mut func.body, &mut self_assigns);
+    stats.self_assigns_removed += self_assigns;
+
+    // (b) collect every name referenced anywhere, retain only locals in use
+    let mut used: HashSet<String> = HashSet::new();
+    for s in &func.body {
+        s.for_each_expr(&mut |e: &crate::ast::Expr| {
+            if let crate::ast::Expr::Var(name) = e {
+                used.insert(name.clone());
+            }
+        });
+    }
+    let before = func.locals.len();
+    func.locals
+        .retain(|l| param_names.contains(&l.name) || used.contains(&l.name));
+    stats.dead_locals_removed += before - func.locals.len();
+}
+
+/// Recursively remove `x = x` statements (both sides the same plain Var).
+fn remove_self_assigns(stmts: &mut Vec<Stmt>, count: &mut usize) {
+    let before = stmts.len();
+    stmts.retain(|s| {
+        !matches!(
+            s,
+            Stmt::Assign {
+                target: crate::ast::Expr::Var(t),
+                value: crate::ast::Expr::Var(v),
+            } if t == v
+        )
+    });
+    *count += before - stmts.len();
+    for s in stmts.iter_mut() {
+        match s {
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                remove_self_assigns(then_body, count);
+                if let Some(eb) = else_body {
+                    remove_self_assigns(eb, count);
+                }
+            }
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+                remove_self_assigns(body, count)
+            }
+            Stmt::For { body, .. } => remove_self_assigns(body, count),
+            Stmt::Switch { cases, default, .. } => {
+                for c in cases {
+                    remove_self_assigns(&mut c.body, count);
+                }
+                if let Some(d) = default {
+                    remove_self_assigns(d, count);
+                }
+            }
+            Stmt::Block(b) => remove_self_assigns(b, count),
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
+                remove_self_assigns(try_body, count);
+                remove_self_assigns(catch_body, count);
+            }
+            _ => {}
+        }
+    }
+}
 
 fn is_stack_reg(name: &str) -> bool {
     name == "rsp" || name == "esp"
@@ -1267,6 +1354,7 @@ fn is_pure_leaf_expr(expr: &Expr) -> bool {
         Expr::AddrOf(e) | Expr::Sizeof(e) => is_pure_leaf_expr(e),
         Expr::Call { .. }
         | Expr::Deref(_)
+        | Expr::Field { .. }
         | Expr::Index { .. }
         | Expr::Member { .. }
         | Expr::Ternary { .. } => false,
@@ -1300,7 +1388,7 @@ fn substitute_vars_expr(expr: &mut Expr, defs: &HashMap<String, Expr>) {
             substitute_vars_expr(base, defs);
             substitute_vars_expr(index, defs);
         }
-        Expr::Member { base, .. } => {
+        Expr::Member { base, .. } | Expr::Field { base, .. } => {
             substitute_vars_expr(base, defs);
         }
         Expr::Deref(e) | Expr::AddrOf(e) | Expr::Sizeof(e) => {
@@ -1969,6 +2057,80 @@ fn fuse_memory_updates_level(stmts: &mut Vec<Stmt>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use freakre_ir::Ty;
+
+    #[test]
+    fn test_dead_locals_removed() {
+        // local `dead` is declared but never referenced → dropped;
+        // `used` is read → kept; params are never in locals anyway.
+        let mut func = AstFunction {
+            name: "t".into(),
+            entry_address: 0,
+            params: vec![],
+            locals: vec![
+                LocalVar { name: "used".into(), ty: Ty::Int(32), is_used: true, fields: Vec::new() },
+                LocalVar { name: "dead".into(), ty: Ty::Int(32), is_used: true, fields: Vec::new() },
+            ],
+            body: vec![
+                Stmt::Assign { target: Expr::Var("used".into()), value: Expr::IntLit(1) },
+                Stmt::Assign { target: Expr::Var("eax".into()), value: Expr::Var("used".into()) },
+            ],
+            return_type: Ty::Void,
+            param_register_names: Vec::new(),
+        };
+        let mut stats = SimplifyStats::default();
+        remove_dead_locals(&mut func, &mut stats);
+        assert_eq!(stats.dead_locals_removed, 1);
+        assert_eq!(func.locals.len(), 1);
+        assert_eq!(func.locals[0].name, "used");
+    }
+
+    #[test]
+    fn test_self_assign_removed() {
+        let mut func = AstFunction {
+            name: "t".into(),
+            entry_address: 0,
+            params: vec![],
+            locals: vec![],
+            body: vec![
+                Stmt::Assign { target: Expr::Var("v".into()), value: Expr::Var("v".into()) },
+                Stmt::Assign { target: Expr::Var("v".into()), value: Expr::IntLit(2) },
+            ],
+            return_type: Ty::Void,
+            param_register_names: Vec::new(),
+        };
+        let mut stats = SimplifyStats::default();
+        remove_dead_locals(&mut func, &mut stats);
+        assert_eq!(stats.self_assigns_removed, 1);
+        assert_eq!(func.body.len(), 1);
+    }
+
+    #[test]
+    fn test_self_assign_removed_nested() {
+        let mut func = AstFunction {
+            name: "t".into(),
+            entry_address: 0,
+            params: vec![],
+            locals: vec![],
+            body: vec![Stmt::If {
+                cond: Expr::BoolLit(true),
+                then_body: vec![Stmt::Assign {
+                    target: Expr::Var("x".into()),
+                    value: Expr::Var("x".into()),
+                }],
+                else_body: None,
+            }],
+            return_type: Ty::Void,
+            param_register_names: Vec::new(),
+        };
+        let mut stats = SimplifyStats::default();
+        remove_dead_locals(&mut func, &mut stats);
+        assert_eq!(stats.self_assigns_removed, 1);
+        match &func.body[0] {
+            Stmt::If { then_body, .. } => assert!(then_body.is_empty()),
+            other => panic!("unexpected stmt: {other:?}"),
+        }
+    }
 
     #[test]
     fn test_trim_trailing_continue_and_void_return() {
@@ -1993,6 +2155,7 @@ mod tests {
                 ],
             }],
             return_type: freakre_ir::Ty::Void,
+            param_register_names: vec![],
         };
         let stats = simplify_function_with_stats(&mut func);
         assert_eq!(stats.continue_trimmed, 1, "{}", stats.tally());
@@ -2013,6 +2176,7 @@ mod tests {
                 Stmt::Return { value: None },
             ],
             return_type: freakre_ir::Ty::Void,
+            param_register_names: vec![],
         };
         let stats2 = simplify_function_with_stats(&mut func2);
         assert_eq!(stats2.void_returns_trimmed, 1, "{}", stats2.tally());
@@ -2034,6 +2198,7 @@ mod tests {
                 },
             ],
             return_type: freakre_ir::Ty::i64(),
+            param_register_names: vec![],
         };
         let _ = simplify_function_with_stats(&mut func3);
         assert_eq!(func3.body.len(), 2);

@@ -9,7 +9,7 @@
 use crate::ast::*;
 use freakre_ir::{IrFunction, Ty, Value};
 use freakre_type_propagation::TypePropagator;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Inferred variable types keyed by AST-level variable name
 /// (`v{id}` for SSA temporaries, register names otherwise).
@@ -104,8 +104,33 @@ fn ast_local_name(value: &Value) -> Option<String> {
 }
 
 /// Run type reconstruction on an AST function (in-place).
+/// Callee signature hints keyed by function address, built from interproc
+/// summaries. Lets the type engine constrain call arguments and results.
+pub type CalleeTypes = HashMap<u64, (Vec<Ty>, Option<Ty>)>;
+
+/// Build the callee-type map from program-wide interproc analysis.
+pub fn callee_types_from_program(
+    analysis: &crate::interproc::ProgramAnalysis,
+) -> CalleeTypes {
+    let mut map: CalleeTypes = HashMap::new();
+    for summary in analysis.summaries.values() {
+        map.insert(
+            summary.address,
+            (summary.param_types.clone(), summary.return_type.clone()),
+        );
+    }
+    map
+}
+
+/// Reconstruct variable types for a decompiled function (no call hints).
 pub fn reconstruct_types(func: &mut AstFunction) {
-    let mut engine = TypeEngine::new();
+    reconstruct_types_with_callees(func, None);
+}
+
+/// Reconstruct variable types for a decompiled function, additionally
+/// constraining call arguments/results from interprocedural summaries.
+pub fn reconstruct_types_with_callees(func: &mut AstFunction, callees: Option<&CalleeTypes>) {
+    let mut engine = TypeEngine::with_callees(callees.cloned());
 
     // Phase 0: Seed with everything already known (lifter annotations plus
     // propagation-backed upgrades applied by `ir_to_ast`), so constraint
@@ -135,29 +160,60 @@ pub fn reconstruct_types(func: &mut AstFunction) {
     // Phase 3: Recover structures from offset patterns
     let structs = engine.recover_structures();
 
-    // Phase 4: Apply inferred types back to locals. Never clobber a concrete
-    // declaration: fill unresolved ones, and let pointers win over scalars
-    // (a variable dereferenced somewhere is a pointer regardless of what an
-    // integer annotation claimed). Same-kind width guesses from literals do
-    // not overwrite lifter/propagation facts.
-    for local in func.locals.iter_mut() {
-        if let Some(inferred) = engine.get_type(&local.name) {
-            if inferred == &Ty::Unknown || inferred == &local.ty {
-                continue;
+    // Phase 4: Apply inferred types back to locals AND parameters. Never
+    // clobber a concrete declaration: fill unresolved ones, and let pointers
+    // win over scalars (a variable dereferenced somewhere is a pointer
+    // regardless of what an integer annotation claimed). Same-kind width
+    // guesses from literals do not overwrite lifter/propagation facts.
+    let apply_upgrade = |slot: &mut Ty, current: &Ty, inferred: Option<&Ty>| {
+        if let Some(inferred) = inferred {
+            if inferred == &Ty::Unknown || inferred == current {
+                return;
             }
-            let upgrade = matches!(local.ty, Ty::Unknown | Ty::Void)
-                || (!local.ty.is_pointer() && inferred.is_pointer());
+            let upgrade = matches!(*current, Ty::Unknown | Ty::Void)
+                || (!current.is_pointer() && inferred.is_pointer());
             if upgrade {
-                local.ty = inferred.clone();
+                *slot = inferred.clone();
+            }
+        }
+    };
+    for local in func.locals.iter_mut() {
+        let inferred = engine.get_type(&local.name).cloned();
+        let current = local.ty.clone();
+        let force = engine.ret_pinned.contains(&local.name)
+            && !current.is_pointer()
+            && inferred.as_ref().is_some_and(|t| !t.is_pointer() && *t != current);
+        apply_upgrade(&mut local.ty, &current, inferred.as_ref());
+        if force {
+            if let Some(t) = engine.get_type(&local.name) {
+                local.ty = t.clone();
+            }
+        }
+    }
+    for param in func.params.iter_mut() {
+        let inferred = engine.get_type(&param.name).cloned();
+        let current = param.ty.clone();
+        let force = engine.ret_pinned.contains(&param.name)
+            && !current.is_pointer()
+            && inferred.as_ref().is_some_and(|t| !t.is_pointer() && *t != current);
+        apply_upgrade(&mut param.ty, &current, inferred.as_ref());
+        if force {
+            if let Some(t) = engine.get_type(&param.name) {
+                param.ty = t.clone();
             }
         }
     }
 
-    // Phase 5: Update struct types in locals
+    // Phase 5: Update struct types in locals and matching params
     for (var_name, struct_ty) in &structs {
         for local in func.locals.iter_mut() {
             if &local.name == var_name {
                 local.ty = Ty::Ptr(Box::new(struct_ty.clone()));
+            }
+        }
+        for param in func.params.iter_mut() {
+            if &param.name == var_name {
+                param.ty = Ty::Ptr(Box::new(struct_ty.clone()));
             }
         }
     }
@@ -175,6 +231,8 @@ enum TypeConstraint {
     StructAccess(String, u64, Ty),
     /// Two variables must have the same type
     Equal(String, String),
+    /// Variable is used in a signed (true) or unsigned (false) context
+    Signedness(String, bool),
     /// Variable is used as integer
     Integer(String),
     /// Variable is used as boolean
@@ -192,6 +250,27 @@ struct TypeEngine {
     /// that received the loaded value }. Field types are resolved from the
     /// receiver's solved type in `recover_structures`.
     struct_accesses: HashMap<String, BTreeMap<u64, String>>,
+    /// Callee signature hints by address (interproc), when available
+    callees: Option<CalleeTypes>,
+    /// Variables whose type is authoritative from a callee's return type —
+    /// the apply phase may narrow these even between scalar widths.
+    ret_pinned: HashSet<String>,
+}
+
+/// Scalar type loaded/stored through a casted deref expression
+/// `*(T*)(p)`: the pointee's type, pointer casts counting as Int(width).
+fn pointee_scalar_ty(deref_inner: &Expr) -> Option<Ty> {
+    let Expr::Cast { ty, .. } = deref_inner else {
+        return None;
+    };
+    let Ty::Ptr(pointee) = ty else {
+        return None;
+    };
+    Some(match pointee.as_ref() {
+        Ty::Int(w) => Ty::Int(*w),
+        Ty::UInt(w) => Ty::UInt(*w),
+        other => Ty::Int(other.size_bits().unwrap_or(32)),
+    })
 }
 
 impl TypeEngine {
@@ -200,6 +279,18 @@ impl TypeEngine {
             var_types: HashMap::new(),
             constraints: Vec::new(),
             struct_accesses: HashMap::new(),
+            callees: None,
+            ret_pinned: HashSet::new(),
+        }
+    }
+
+    fn with_callees(callees: Option<CalleeTypes>) -> Self {
+        TypeEngine {
+            var_types: HashMap::new(),
+            constraints: Vec::new(),
+            struct_accesses: HashMap::new(),
+            callees,
+            ret_pinned: HashSet::new(),
         }
     }
 
@@ -336,13 +427,31 @@ impl TypeEngine {
                     }
                 }
 
-                // Comparison ops → integer constraint on operands, bool result
+                // Comparison ops → integer constraint on operands, bool result.
+                // The comparison kind also pins operand signedness: plain
+                // Lt/Le/Gt/Ge are signed, the U-suffixed forms are unsigned.
                 if matches!(
                     op,
-                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+                    BinOp::Eq
+                        | BinOp::Ne
+                        | BinOp::Lt
+                        | BinOp::Le
+                        | BinOp::Gt
+                        | BinOp::Ge
+                        | BinOp::LtU
+                        | BinOp::LeU
+                        | BinOp::GtU
+                        | BinOp::GeU
                 ) {
-                    if let Some(name) = expr_var_name(lhs) {
-                        self.add_constraint(TypeConstraint::Integer(name));
+                    let signed = !matches!(
+                        op,
+                        BinOp::LtU | BinOp::LeU | BinOp::GtU | BinOp::GeU
+                    );
+                    for operand in [lhs, rhs] {
+                        if let Some(name) = expr_var_name(operand) {
+                            self.add_constraint(TypeConstraint::Integer(name.clone()));
+                            self.add_constraint(TypeConstraint::Signedness(name, signed));
+                        }
                     }
                 }
 
@@ -402,7 +511,27 @@ impl TypeEngine {
                 }
                 self.collect_from_expr(inner);
             }
-            Expr::Call { args, .. } => {
+            Expr::Call { func: callee, args } => {
+                // Interproc hints: argument i must accept the callee's
+                // recovered parameter type i.
+                if let Some(callees) = self.callees.as_ref() {
+                    if let Some(addr) = crate::call_naming::parse_synthetic_addr(callee) {
+                        let mut hints: Vec<(String, Ty)> = Vec::new();
+                        if let Some((params, _)) = callees.get(&addr) {
+                            for (a, ty) in args.iter().zip(params.iter()) {
+                                if ty == &Ty::Unknown {
+                                    continue;
+                                }
+                                if let Some(name) = expr_var_name(a) {
+                                    hints.push((name, ty.clone()));
+                                }
+                            }
+                        }
+                        for (name, ty) in hints {
+                            self.add_constraint(TypeConstraint::Exact(name, ty));
+                        }
+                    }
+                }
                 for a in args {
                     self.collect_from_expr(a);
                 }
@@ -438,6 +567,55 @@ impl TypeEngine {
                     name.clone(),
                     Ty::Ptr(Box::new(Ty::u8())),
                 ));
+            }
+        }
+
+        // A cast on the RHS pins the target's type exactly.
+        if let Expr::Var(name) = target {
+            match value {
+                Expr::Cast { ty, .. } => {
+                    self.add_constraint(TypeConstraint::Exact(name.clone(), ty.clone()));
+                }
+                // `v = *(T*)(p)` — the loaded width/signedness is the
+                // pointee's; plain pointer casts yield Int of that width.
+                Expr::Deref(inner) => {
+                    if let Some(loaded) = pointee_scalar_ty(inner) {
+                        self.add_constraint(TypeConstraint::Exact(name.clone(), loaded));
+                    }
+                }
+                // Copies tie the two variables together.
+                Expr::Var(src) if src != name => {
+                    self.add_constraint(TypeConstraint::Equal(name.clone(), src.clone()));
+                }
+                _ => {}
+            }
+        }
+
+        // Storing a variable through a typed pointer pins the stored value:
+        // `*(int32_t*)(p) = v` → v is Int(32).
+        if let Expr::Deref(addr_expr) = target {
+            if let Some(stored) = pointee_scalar_ty(addr_expr) {
+                if let Expr::Var(name) = value {
+                    self.add_constraint(TypeConstraint::Exact(name.clone(), stored));
+                }
+            }
+        }
+
+        // Calls returning a value pin the target to the callee's return type.
+        if let (Expr::Var(name), Expr::Call { func: callee, .. }) = (target, value) {
+            let mut ret_hint: Option<Ty> = None;
+            if let Some(callees) = self.callees.as_ref() {
+                if let Some(addr) = crate::call_naming::parse_synthetic_addr(callee) {
+                    if let Some((_, Some(ret))) = callees.get(&addr) {
+                        if ret != &Ty::Unknown {
+                            ret_hint = Some(ret.clone());
+                        }
+                    }
+                }
+            }
+            if let Some(ret) = ret_hint {
+                self.ret_pinned.insert(name.clone());
+                self.add_constraint(TypeConstraint::Exact(name.clone(), ret));
             }
         }
 
@@ -486,6 +664,16 @@ impl TypeEngine {
             for constraint in self.constraints.clone() {
                 match constraint {
                     TypeConstraint::Exact(name, ty) => {
+                        // A call-return pin is authoritative: the seeded
+                        // declaration (from the IR var width) must not win.
+                        if self.ret_pinned.contains(&name) {
+                            let entry = self.var_types.entry(name).or_insert(Ty::Unknown);
+                            if *entry != ty && !entry.is_pointer() {
+                                *entry = ty;
+                                changed = true;
+                            }
+                            continue;
+                        }
                         let entry = self.var_types.entry(name).or_insert(Ty::Unknown);
                         if (*entry == Ty::Unknown || unify_types(entry, &ty)) && *entry != ty {
                             *entry = ty;
@@ -518,6 +706,24 @@ impl TypeEngine {
                         } else if !entry.is_pointer() {
                             // Widen to pointer
                             *entry = Ty::Ptr(Box::new(entry.clone()));
+                            changed = true;
+                        }
+                    }
+                    TypeConstraint::Signedness(name, signed) => {
+                        let entry = self.var_types.entry(name).or_insert(Ty::Unknown);
+                        let (width, cur_signed) = match entry {
+                            Ty::Int(w) => (*w, true),
+                            Ty::UInt(w) => (*w, false),
+                            Ty::Unknown => {
+                                *entry = if signed { Ty::Int(32) } else { Ty::UInt(32) };
+                                changed = true;
+                                return;
+                            }
+                            // Non-scalar types keep their kind.
+                            _ => return,
+                        };
+                        if cur_signed != signed {
+                            *entry = if signed { Ty::Int(width) } else { Ty::UInt(width) };
                             changed = true;
                         }
                     }
@@ -697,6 +903,80 @@ impl ExprTypeHelper for Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use freakre_ir::{IrFunction, IrInst, OpCode, Ty, Value};
+
+    #[test]
+    fn test_interproc_types_flow_through_calls() {
+        use crate::decompile::decompile_program;
+        use freakre_ir::IrProgram;
+
+        // Callee at 0x2000: reads ecx/edx (Win64 arg regs), returns eax.
+        let mut callee = IrFunction::new("func_2000", 0x2000);
+        let b = callee.add_block("entry");
+        callee.push_inst(
+            b,
+            IrInst::Binary {
+                dst: Value::reg("eax", Ty::i32()),
+                op: OpCode::Add,
+                lhs: Value::reg("ecx", Ty::i32()),
+                rhs: Value::reg("edx", Ty::i32()),
+            },
+        );
+        callee.push_inst(
+            b,
+            IrInst::Return {
+                value: Some(Value::reg("eax", Ty::i32())),
+            },
+        );
+        callee.entry_block = b;
+
+        // Caller at 0x1000: `v = func_2000(5, 7); return v;` — the call
+        // result var is declared 64-bit; the interproc hint must narrow it.
+        let mut caller = IrFunction::new("caller_1000", 0x1000);
+        let b = caller.add_block("entry");
+        let vret = caller.alloc_var(Ty::i64());
+        caller.push_inst(
+            b,
+            IrInst::Call {
+                dst: Some(vret.clone()),
+                target: Value::Const(0x2000),
+                args: vec![Value::Const(5), Value::Const(7)],
+            },
+        );
+        caller.push_inst(
+            b,
+            IrInst::Return {
+                value: Some(vret),
+            },
+        );
+        caller.entry_block = b;
+
+        let program = IrProgram {
+            functions: vec![caller, callee],
+            globals: Default::default(),
+            imports: Default::default(),
+            exports: Default::default(),
+            metadata: Default::default(),
+        };
+        let results = decompile_program(&program).expect("decompile_program failed");
+        let caller_c = results
+            .iter()
+            .find(|(name, _)| name == "caller_1000")
+            .map(|(_, c)| c.clone())
+            .expect("caller missing");
+        assert!(
+            caller_c.contains("func_2000"),
+            "call not present:\n{}",
+            caller_c
+        );
+        // The function signature may keep its inferred return width; the
+        // call-result LOCAL must be narrowed to int32_t by the callee hint.
+        assert!(
+            !caller_c.contains("int64_t v0;") && caller_c.contains("int32_t v0;"),
+            "return-value var should be narrowed to int32_t by the callee hint:\n{}",
+            caller_c
+        );
+    }
 
     #[test]
     fn test_infer_int_type() {
