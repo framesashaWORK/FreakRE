@@ -47,11 +47,16 @@ Without Capstone, the `capstone-ffi` crate gracefully falls back to the internal
 ```
 freakre-desktop  (egui native app,   pkg: freakre-desktop)
 freakre          (CLI binary,         pkg: freakre-scanner)
+freakre-server   (HTTP API on :8080,  pkg: freakre-server)
 │
 ├── freakre-scanner     ← Orchestrator with weighted signal correlation
 ├── pe-parser           ← PE32/PE32+ parser with malware anomaly detection
 ├── elf-parser          ← ELF32/ELF64 parser with security warnings
 ├── macho-parser        ← Mach-O parser with load command analysis
+├── coff-parser         ← COFF object/parse support
+├── dex-parser          ← Android DEX parser
+├── wasm-parser         ← WebAssembly module parser
+├── pdf-analyzer / dotnet-analyzer / pyc-parser / firmware-analyzer / memdump-analyzer / dll-analyzer
 ├── entropy-rs          ← Shannon entropy + sliding window analysis
 ├── str-extract         ← ASCII/UTF-16 string extraction with byte offsets
 ├── import-analyzer     ← Import table analysis with 8+ detection categories
@@ -60,14 +65,15 @@ freakre          (CLI binary,         pkg: freakre-scanner)
 ├── shellcode-analyzer  ← Shellcode detection + API hash resolution
 ├── xrefs               ← Cross-reference database for strings and imports
 ├── cfg-builder         ← Control Flow Graph construction + anomaly detection
-├── func-sigs           ← Function signature matching + compiler identification
 ├── func-finder         ← Function boundary detection (recursive descent + patterns)
+├── func-sigs           ← FLIRT-style signature matching + .fsig/.fbd databases + malware family engine
 ├── capstone-ffi        ← Capstone disassembly bindings with fallback LDE
-├── freakre-ir          ← Intermediate representation with SSA + x86/ARM lifters
-├── freakre-dataflow    ← Live variables, reaching definitions, use-def chains
-├── freakre-type-propagation ← Type inference and constraint propagation
+├── freakre-ir          ← IR with SSA + SCCP; x86/x64, ARM, DEX, PPC lifters
+├── emulator-x86        ← x86/x64 emulation engine (decryption traces, call resolution)
+├── dataflow            ← Live variables, reaching definitions, use-def chains (pkg: dataflow)
+├── type-propagation    ← Type inference and constraint propagation (pkg: freakre-type-propagation)
 ├── type-system         ← Type database, layout computation, builtin types
-├── freakre-decompiler  ← IR → AST → C decompilation pipeline
+├── decompiler          ← IR → AST → C decompilation pipeline (pkg: decompiler)
 ├── diffing             ← Binary diffing engine
 ├── project-db          ← Sled-backed project database with undo/redo + bookmarks
 ├── scripting           ← Rhai scripting engine integration
@@ -143,13 +149,27 @@ Native egui application with sidebar navigation, hex viewer, disassembler, CFG g
 | Module | Description |
 |--------|------------|
 | `capstone-ffi` | Capstone disassembly FFI with graceful fallback to built-in length-disassembler |
-| `freakre-ir` | Platform-independent IR with SSA form; x86/x64 and ARM lifters |
-| `freakre-dataflow` | Live variable analysis, reaching definitions, use-def chain construction |
-| `freakre-type-propagation` | Constraint-based type inference across IR |
+| `freakre-ir` | Platform-independent IR with SSA + SCCP constant propagation; x86/x64, ARM, DEX and PPC lifters; jump-table/switch recovery |
+| `emulator-x86` | x86/x64 emulation: decryption traces, indirect-call resolution for the decompiler |
+| `dataflow` | Live variable analysis, reaching definitions, use-def chain construction |
+| `type-propagation` | Constraint-based type inference across IR |
 | `type-system` | Type database with layout computation and builtin type definitions |
-| `freakre-decompiler` | IR → AST → C decompilation with control flow structuring |
+| `decompiler` | IR → AST → C with CFG structuring, SCCP, param/struct-field recovery, cross-function type propagation, string literals, jump-table switches |
 | `cfg-builder` | Control flow graph construction with unreachable code and branching anomaly detection |
 | `xrefs` | Cross-reference database mapping strings and imports to code locations |
+
+### Signature Databases
+
+`func-sigs` ships a FLIRT-style signature pipeline with a custom binary format:
+
+- **.fsig** — text signature base (6/7-field lines, optional semantic tags)
+- **.fbd** — memory-mapped binary overlay with a prebuilt hash-index ladder (oct/quint/triple/pair/single); loads 1.2M signatures in ~0.1s vs ~4s for text parsing
+- **Family engine** — separate malware-family signatures (icedid, magniber, ...) auto-loaded as `malware-families.fbd`
+- **Tiers** — `low` / `basic` / `freak` signature tiers selectable via `--sigs-tier` in the CLI and the desktop UI settings
+
+### HTTP API
+
+`freakre-server` exposes the scanner on `:8080`, including `/api/decompile` (function decompilation with emulation-assisted indirect-call resolution, recovered parameters, typed locals and string literals).
 
 ### Project Management & Extensibility
 
