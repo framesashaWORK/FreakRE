@@ -224,6 +224,7 @@ fn decompile_function_inner(
 
     // Phase 2: Type reconstruction (infer types from usage)
     crate::types::reconstruct_types_with_callees(&mut ast, callees);
+    crate::simplify::ensure_declared_temps(&mut ast);
 
     // Phase 3: Expression simplification
     if config.simplify_expressions {

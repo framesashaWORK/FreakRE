@@ -4,7 +4,7 @@
 //! copy propagation, and condition merging to produce cleaner pseudocode.
 
 use crate::ast::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Run all simplification passes on an AST function (in-place).
 pub fn simplify_function(func: &mut AstFunction) {
@@ -2682,4 +2682,45 @@ mod lognot_pipeline_probe {
         fuse_memory_updates(&mut body);
         assert_eq!(body.len(), 4, "fusion must not drop externally-used temps");
     }
+}
+
+/// Safety net for malformed input: any `vN` temporary referenced in the
+/// AST but never declared (its defining instruction was dropped along a
+/// dangling block) gets a scalar declaration, so the emitted C always
+/// compiles. Returns how many declarations were added.
+pub fn ensure_declared_temps(func: &mut AstFunction) -> usize {
+    fn is_vtemp(name: &str) -> bool {
+        let bytes = name.as_bytes();
+        bytes.len() > 1
+            && bytes[0] == b'v'
+            && bytes[1..].iter().all(|b| b.is_ascii_digit())
+    }
+
+    let mut declared: BTreeSet<String> = func
+        .locals
+        .iter()
+        .filter(|l| is_vtemp(&l.name))
+        .map(|l| l.name.clone())
+        .collect();
+    let mut used: BTreeSet<String> = BTreeSet::new();
+    for stmt in &func.body {
+        stmt.for_each_expr(&mut |e| {
+            if let Expr::Var(name) = e {
+                if is_vtemp(name) {
+                    used.insert(name.clone());
+                }
+            }
+        });
+    }
+    let missing: Vec<String> = used.difference(&declared).cloned().collect();
+    for name in &missing {
+        func.locals.push(LocalVar {
+            name: name.clone(),
+            ty: freakre_ir::Ty::Int(64),
+            is_used: true,
+            fields: Vec::new(),
+        });
+        declared.insert(name.clone());
+    }
+    missing.len()
 }
