@@ -80,7 +80,7 @@ pub fn resolve_indirect_calls_with_data(
             if !seen.insert(b) {
                 continue;
             }
-            if let Some(block) = func.blocks.get(b.0 as usize) {
+            if func.blocks.get(b.0 as usize).is_some() {
                 for s in func.successors(b) {
                     stack.push(s);
                 }
