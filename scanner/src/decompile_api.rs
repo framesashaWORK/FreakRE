@@ -63,8 +63,11 @@ pub fn decompile_pe_function(data: &[u8], address: Option<u64>) -> Result<Decomp
     }
 
     // Prefer the function containing the requested address; fall back to the
-    // largest detected function.
-    let chosen = address.and_then(|a| {
+    // largest detected function. The detected start addresses are section-
+    // relative (`code_base` = section VA), so translate the image-absolute
+    // caller address into that space.
+    let rel_addr = address.map(|a| a.saturating_sub(pe.image_base));
+    let chosen = rel_addr.and_then(|a| {
         detected
             .iter()
             .find(|f| f.start <= a && a < f.start + f.size as u64)
@@ -88,9 +91,15 @@ pub fn decompile_pe_function(data: &[u8], address: Option<u64>) -> Result<Decomp
 
     let lifter = X86Lifter::new(pe.is_64bit);
     let func_name = format!("sub_{:X}", func.start);
-    let ir_func = lifter
+    let mut ir_func = lifter
         .lift_function(func_slice, func.start, &func_name)
         .map_err(|e| format!("IR lift failed: {e}"))?;
+    resolve_indirect_calls_emu(
+        &mut ir_func,
+        code_region,
+        sec.virtual_address as u64,
+        func.start,
+    );
 
     let string_table = build_string_table(&pe, data);
     let c_code = decompiler::decompile_function_with_strings(&ir_func, &string_table)
@@ -102,6 +111,157 @@ pub fn decompile_pe_function(data: &[u8], address: Option<u64>) -> Result<Decomp
         size: func.size as u64,
         c_code,
     })
+}
+
+/// Decompile ONE function with an explicit byte size, bypassing the
+/// detection-based size guess. For callers that know exact boundaries
+/// (e.g. from a linker map file): the slice `[address, address+size)`
+/// is lifted and decompiled as-is.
+pub fn decompile_pe_function_sized(
+    data: &[u8],
+    address: u64,
+    size: usize,
+) -> Result<DecompiledFunction, String> {
+    let pe = pe_parser::PeFile::parse(data)
+        .map_err(|e| format!("not a parseable PE image: {e}"))?;
+    let text_section = pe.sections.iter().find(|s| {
+        let name = s.name_string();
+        name == ".text" || name == "CODE"
+    });
+    let Some(sec) = text_section else {
+        return Err("no .text/CODE section found".to_string());
+    };
+    let code_region = sec.raw_data(data);
+    if code_region.is_empty() {
+        return Err(".text section has no raw data".to_string());
+    }
+
+    use freakre_ir::x86_lifter::X86Lifter;
+    use freakre_ir::Lifter;
+
+    let rel = address.saturating_sub(pe.image_base);
+    let func_slice = crate::scanner::carve_func_slice(
+        code_region,
+        sec.virtual_address as u64,
+        rel,
+        size,
+    )
+    .ok_or("requested function lies outside .text bounds")?;
+    let lifter = X86Lifter::new(pe.is_64bit);
+    let func_name = format!("sub_{rel:X}");
+    let mut ir_func = lifter
+        .lift_function(func_slice, rel, &func_name)
+        .map_err(|e| format!("IR lift failed: {e}"))?;
+    resolve_indirect_calls_emu(&mut ir_func, code_region, sec.virtual_address as u64, rel);
+    let string_table = build_string_table(&pe, data);
+    let c_code = decompiler::decompile_function_with_strings(&ir_func, &string_table)
+        .map_err(|e| format!("decompilation failed: {e}"))?;
+    Ok(DecompiledFunction {
+        address: rel,
+        name: func_name,
+        size: size as u64,
+        c_code,
+    })
+}
+
+/// Decompile EVERY detected function in the PE's `.text` section.
+///
+/// Bench harness entry point: runs func-finder over the whole `.text`,
+/// lifts and decompiles each detected function independently. Functions
+/// whose lift/decompile fails are skipped (reported through
+/// `DecompiledFunction::size == 0` never happens — failures are simply
+/// absent from the result, counted by the caller via the original count).
+pub fn decompile_pe_all_functions(data: &[u8]) -> Result<Vec<DecompiledFunction>, String> {
+    let pe = pe_parser::PeFile::parse(data)
+        .map_err(|e| format!("not a parseable PE image: {e}"))?;
+
+    let text_section = pe.sections.iter().find(|s| {
+        let name = s.name_string();
+        name == ".text" || name == "CODE"
+    });
+    let Some(sec) = text_section else {
+        return Err("no .text/CODE section found".to_string());
+    };
+    let code_region = sec.raw_data(data);
+    if code_region.is_empty() {
+        return Err(".text section has no raw data".to_string());
+    }
+
+    use func_finder::{Architecture, FunctionFinder};
+    use freakre_ir::x86_lifter::X86Lifter;
+    use freakre_ir::Lifter;
+
+    let arch = if pe.is_64bit {
+        Architecture::X86_64
+    } else {
+        Architecture::X86
+    };
+    let finder = FunctionFinder::new(arch).with_code_base(sec.virtual_address as u64);
+    let entry_va = pe.image_base + pe.entry_point as u64;
+    let detected = finder
+        .find_all(code_region, &[entry_va])
+        .map_err(|e| format!("function detection failed: {e}"))?;
+
+    let string_table = build_string_table(&pe, data);
+    let lifter = X86Lifter::new(pe.is_64bit);
+    let mut out = Vec::new();
+    for func in &detected {
+        let Some(func_slice) = crate::scanner::carve_func_slice(
+            code_region,
+            sec.virtual_address as u64,
+            func.start,
+            func.size,
+        ) else {
+            continue;
+        };
+        let func_name = format!("sub_{:X}", func.start);
+        let Ok(mut ir_func) = lifter.lift_function(func_slice, func.start, &func_name) else {
+            continue;
+        };
+        resolve_indirect_calls_emu(
+            &mut ir_func,
+            code_region,
+            sec.virtual_address as u64,
+            func.start,
+        );
+        if let Ok(c_code) =
+            decompiler::decompile_function_with_strings(&ir_func, &string_table)
+        {
+            out.push(DecompiledFunction {
+                address: func.start,
+                name: func_name,
+                size: func.size as u64,
+                c_code,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Emulation-assisted indirect-call resolution.
+///
+/// One bounded emulation run over the `.text` view; opaque `call reg`
+/// targets that land inside the section become concrete references the
+/// decompiler can name. Any doubt (never executed, polymorphic, out of
+/// section) leaves the call untouched.
+fn resolve_indirect_calls_emu(
+    ir_func: &mut freakre_ir::IrFunction,
+    code_region: &[u8],
+    section_va: u64,
+    func_base: u64,
+) {
+    use emulator_x86::emu_resolve;
+    const EMU_BUDGET_STEPS: u64 = 20_000;
+    let resolved = emu_resolve::resolve_indirect_calls(
+        ir_func,
+        code_region,
+        section_va,
+        func_base,
+        EMU_BUDGET_STEPS,
+    );
+    if !resolved.is_empty() {
+        emu_resolve::apply_resolved_calls(ir_func, func_base, &resolved);
+    }
 }
 
 /// Build a virtual-address → string table for the whole PE image.

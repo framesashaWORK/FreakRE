@@ -65,11 +65,19 @@ struct Cli {
     /// Verbose mode — show detailed analysis info
     #[arg(short, long)]
     verbose: bool,
+
+    /// Signature-base tier: low (~1.2M, fast), basic (~2.7M, default),
+    /// freak (all ~2.9M, max recall)
+    #[arg(long, default_value = "basic", value_parser = ["low", "basic", "freak"])]
+    sigs_tier: String,
 }
 
 fn main() {
     let cli = Cli::parse();
     let scan_start = Instant::now();
+
+    // Tier must be set before the first overlay load (Scanner::new / build_scanner).
+    std::env::set_var("FREAKRE_SIGS_TIER", &cli.sigs_tier);
 
     // Configure thread pool
     if cli.threads > 0 {
@@ -89,9 +97,10 @@ fn main() {
     };
     if !cli.quiet {
         eprintln!(
-            "FLIRT signatures: {} embedded + {} harvested overlay",
+            "FLIRT signatures: {} embedded + {} harvested overlay (tier: {})",
             func_sigs::db_signature_count() - func_sigs::overlay_signature_count(),
-            func_sigs::overlay_signature_count()
+            func_sigs::overlay_signature_count(),
+            cli.sigs_tier
         );
     }
 

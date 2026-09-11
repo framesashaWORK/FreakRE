@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["cli"]
-decompiler = ["dep:freakre-ir", "dep:decompiler"]
+decompiler = ["dep:freakre-ir", "dep:emulator-x86", "dep:decompiler"]
 cli = ["dep:clap", "dep:rayon", "dep:walkdir", "dep:colored", "dep:serde_json"]
 [dependencies]
 serde = { workspace = true }
@@ -42,6 +42,7 @@ func-sigs = { path = "../func-sigs" }
 ml-detection = { path = "../ml-detection" }
 freakre-x86 = { path = "../freakre-x86" }
 freakre-ir = { path = "../freakre-ir", optional = true }
+emulator-x86 = { path = "../emulator-x86", optional = true }
 decompiler = { path = "../decompiler", optional = true }
 script-analyzer = { path = "../script-analyzer" }
 pdf-analyzer = { path = "../pdf-analyzer" }
@@ -56,6 +57,14 @@ freakre-hash = { path = "../freakre-hash" }
 freakre-config = { path = "../freakre-config" }
 
 
+
+[[bin]]
+name = "freakre-scanner"
+required-features = ["cli"]
+
+[[bin]]
+name = "decomp_bench"
+required-features = ["decompiler"]
 
 [[bench]]
 name = "scan_bench"
