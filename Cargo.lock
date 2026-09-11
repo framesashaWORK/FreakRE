@@ -1785,6 +1785,7 @@ dependencies = [
  "dll-analyzer",
  "dotnet-analyzer",
  "elf-parser",
+ "emulator-x86",
  "entropy-rs",
  "firmware-analyzer",
  "flat-binary",
