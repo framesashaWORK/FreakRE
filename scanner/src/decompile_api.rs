@@ -221,34 +221,54 @@ pub fn decompile_pe_all_functions(data: &[u8]) -> Result<Vec<DecompiledFunction>
         Some(img) => X86Lifter::new(pe.is_64bit).with_image(img),
         None => X86Lifter::new(pe.is_64bit),
     };
+    let mut detected: Vec<_> = detected;
+    detected.sort_by_key(|f| f.start);
+    let sec_end = sec.virtual_address as u64 + code_region.len() as u64;
+    // Extend each function's lift window to the next detected start: jump
+    // tables terminate detection early (indirect jmp reads as a terminator),
+    // while the switch case bodies live past that point and must be inside
+    // the slice for table recovery to lift them.
+    let extended: Vec<(u64, usize)> = detected
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let next = detected
+                .get(i + 1)
+                .map(|n| n.start)
+                .unwrap_or(sec_end);
+            let sz = ((next - f.start) as usize).max(f.size);
+            (f.start, sz.min(code_region.len()))
+        })
+        .collect();
     let mut out = Vec::new();
-    for func in &detected {
+    for (i, func) in detected.iter().enumerate() {
+        let (fstart, fsize) = extended[i];
         let Some(func_slice) = crate::scanner::carve_func_slice(
             code_region,
             sec.virtual_address as u64,
-            func.start,
-            func.size,
+            fstart,
+            fsize,
         ) else {
             continue;
         };
-        let func_name = format!("sub_{:X}", func.start);
-        let Ok(mut ir_func) = lifter.lift_function(func_slice, func.start, &func_name) else {
+        let func_name = format!("sub_{fstart:X}");
+        let Ok(mut ir_func) = lifter.lift_function(func_slice, fstart, &func_name) else {
             continue;
         };
         resolve_indirect_calls_emu(
             &mut ir_func,
             code_region,
             sec.virtual_address as u64,
-            func.start,
+            fstart,
             &windows,
         );
         if let Ok(c_code) =
             decompiler::decompile_function_with_strings(&ir_func, &string_table)
         {
             out.push(DecompiledFunction {
-                address: func.start,
+                address: fstart,
                 name: func_name,
-                size: func.size as u64,
+                size: fsize as u64,
                 c_code,
             });
         }
