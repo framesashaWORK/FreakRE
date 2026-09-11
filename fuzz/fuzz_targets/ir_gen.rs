@@ -57,11 +57,44 @@ pub fn run_contract(func: &freakre_ir::IrFunction, seed: &Seed) -> Result<String
             if c2 != c {
                 return Err(format!("non-deterministic decompile (seed {seed:?})"));
             }
+            // Every temporary `vN` referenced in the emitted C must have a
+            // declaration; an undeclared temp means a naming/rewrite leak
+            // (params, struct fields, strings, or type narrowing lost it).
+            let mut declared: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
+            for line in c.lines() {
+                let l = line.trim();
+                if let Some(rest) = l.strip_suffix(';') {
+                    if let Some(name) = rest.rsplit([' ', '*']).next() {
+                        if name.starts_with('v')
+                            && name[1..].bytes().all(|b| b.is_ascii_digit())
+                            && !name[1..].is_empty()
+                        {
+                            declared.insert(name);
+                        }
+                    }
+                }
+            }
+            for tok in c.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')) {
+                if tok.len() > 1
+                    && tok.starts_with('v')
+                    && tok[1..].bytes().all(|b| b.is_ascii_digit())
+                    && !declared.contains(tok)
+                {
+                    return Err(format!(
+                        "undeclared temp '{tok}' in emitted C (seed {seed:?})"
+                    ));
+                }
+            }
             Ok(c)
         }
         // Expected failure paths (limits, malformed IR) are not violations.
         Err(e) => Err(format!("rejected: {e}")),
     }
+}
+
+pub fn reproduce_c(func: &freakre_ir::IrFunction) -> Result<String, String> {
+    decompiler::decompile_function(func).map_err(|e| e.to_string())
 }
 
 /// Interpret `data` as a random IR function.

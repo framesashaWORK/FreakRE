@@ -80,6 +80,11 @@ fn main() {
                 } else {
                     eprintln!("VIOLATION in case '{name}': {v}");
                     eprintln!("seed: {seed:?}, body: {data:?}");
+                    eprintln!("---- C ----");
+                    // Best effort: dump the emitted C for triage.
+                    if let Ok(c) = ir_gen::reproduce_c(&func) {
+                        eprintln!("{c}");
+                    }
                     std::process::exit(1);
                 }
             }
