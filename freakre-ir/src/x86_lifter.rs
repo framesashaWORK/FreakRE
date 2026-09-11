@@ -1608,17 +1608,44 @@ impl X86Lifter {
                 Some(IrInst::IndirectBranch { target }) => target.clone(),
                 _ => return false,
             };
+            // `jmp reg` may carry the loaded value through a Copy temp
+            // (`v6 = Load(...); reg = Copy(v6)`); follow those links.
+            let mut cur = target.clone();
             let mut found: Option<(Value, u32)> = None;
-            for inst in &blk.insts {
-                if let IrInst::Load { dst, addr, size } = inst {
-                    if *dst == target {
-                        found = Some((addr.clone(), *size));
+            for _ in 0..4 {
+                let mut hit: Option<(Value, u32)> = None;
+                for inst in &blk.insts {
+                    match inst {
+                        IrInst::Load { dst, addr, size } if *dst == cur => {
+                            hit = Some((addr.clone(), *size));
+                        }
+                        IrInst::Unary {
+                            op: OpCode::Copy,
+                            dst,
+                            src,
+                        } if *dst == cur => {
+                            cur = src.clone();
+                        }
+                        _ => {}
                     }
+                }
+                if hit.is_some() {
+                    found = hit;
+                    break;
+                }
+                if cur == target {
+                    break;
                 }
             }
             match found {
-                Some(v) => v,
-                None => return false,
+                Some(v) => {
+                    for i in &blk.insts {
+                        }
+                    v
+                }
+                None => {
+                    return false;
+                }
             }
         };
 
@@ -1640,26 +1667,61 @@ impl X86Lifter {
             return false;
         }
 
-        // 4. Read + validate entries.
-        let mut targets: Vec<u64> = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let Some(raw) = image.read_ptr(table_va.wrapping_add(i * scale), scale) else {
-                return false;
-            };
-            // Table contents hold absolute VAs; convert them into the
-            // lifter's coordinate space for extent validation.
-            let va = if self.is_64bit {
-                raw.wrapping_sub(image.image_base)
-                    .wrapping_add(image.coord_base)
-            } else {
-                base_address.wrapping_add(raw)
-            };
-            // Case targets must fall inside the function's code slice.
-            let hi = base_address + code.len() as u64;
-            if !(base_address..hi).contains(&va) {
-                return false;
+        // 4. Read + validate entries. Three entry encodings occur in the
+        // wild: (a) absolute VAs (direct `jmp [tbl + idx*8]` tables),
+        // (b) 32-bit offsets from the table base, (c) image-relative RVAs
+        // (`__ImageBase + entry` two-level MSVC form). The whole table must
+        // validate under one encoding.
+        let hi = base_address + code.len() as u64;
+        #[derive(Clone, Copy, PartialEq)]
+        enum Enc {
+            AbsVa,
+            TableRel,
+            Rva,
+        }
+        let convert = |raw: u64, enc: Enc| -> u64 {
+            match enc {
+                Enc::AbsVa => {
+                    if self.is_64bit {
+                        raw.wrapping_sub(image.image_base)
+                            .wrapping_add(image.coord_base)
+                    } else {
+                        base_address.wrapping_add(raw)
+                    }
+                }
+                Enc::TableRel => table_va.wrapping_add(raw),
+                Enc::Rva => raw.wrapping_add(image.coord_base),
             }
-            targets.push(va);
+        };
+        let encodings: &[Enc] = if self.is_64bit {
+            &[Enc::AbsVa, Enc::TableRel, Enc::Rva]
+        } else {
+            &[Enc::AbsVa, Enc::TableRel]
+        };
+        let mut targets: Vec<u64> = Vec::new();
+        for &enc in encodings {
+            let mut cand = Vec::with_capacity(count as usize);
+            let mut ok = true;
+            for i in 0..count {
+                let Some(raw) = image.read_ptr(table_va.wrapping_add(i * scale), scale) else {
+                    return false;
+                };
+                let va = convert(raw, enc);
+                // Case targets must fall inside the function's code slice.
+                if (base_address..hi).contains(&va) && va != table_va {
+                    cand.push(va);
+                } else {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                targets = cand;
+                break;
+            }
+        }
+        if targets.is_empty() {
+            return false;
         }
         if targets.iter().all(|&t| t == targets[0]) {
             return false; // degenerate single-target table
@@ -1687,7 +1749,7 @@ impl X86Lifter {
                 Ok(b) => {
                     by_va.insert(va, b);
                 }
-                Err(_) => {
+                Err(e) => {
                     func.blocks.retain(|b| !created.contains(&b.id));
                     for &cv in &created {
                         starts.retain(|_, v| *v != cv);
@@ -3097,6 +3159,15 @@ fn parse_jt_addr(
     site: BlockId,
     load_addr: &Value,
 ) -> Option<(u64, Value, u64)> {
+    parse_jt_addr_d(func, site, load_addr, 3)
+}
+
+fn parse_jt_addr_d(
+    func: &IrFunction,
+    site: BlockId,
+    load_addr: &Value,
+    depth: u32,
+) -> Option<(u64, Value, u64)> {
     let blk = func.block(site)?;
     let def = last_def_in_block(blk, load_addr)?;
     match def {
@@ -3114,8 +3185,26 @@ fn parse_jt_addr(
                     }
                 }
             }
+            // Composed address (`lea rdx,[0]; v4=idx*4; v5=rdx+v4;
+            // v6=v5+tbl`): one side is a constant, the other a recursive
+            // address expression.
+            if depth > 0 {
+                for (cx, sub) in [(rhs, lhs), (lhs, rhs)] {
+                    if let Value::Const(c) = cx {
+                        if let Some((base, ix, s)) =
+                            parse_jt_addr_d(func, site, sub, depth - 1)
+                        {
+                            return Some((base.wrapping_add(*c as u64), ix, s));
+                        }
+                    }
+                }
+            }
             None
         }
+        // Two-level tables (`mov eax,[tbl+idx*4]; jmp rax` modelled as an
+        // outer load through the loaded register): descend into the inner
+        // load's address expression.
+        IrInst::Load { addr, .. } if depth > 0 => parse_jt_addr_d(func, site, addr, depth - 1),
         _ => None,
     }
 }
@@ -3150,6 +3239,9 @@ fn jt_const_of(func: &IrFunction, site: BlockId, v: &Value) -> Option<u64> {
         _ => {
             let mut cur = v.clone();
             for _ in 0..3 {
+                if let Value::Const(c) = cur {
+                    return Some(c as u64);
+                }
                 match find_def_upto(func, &cur, site) {
                     Some(IrInst::Unary {
                         op: OpCode::Copy,
@@ -3269,7 +3361,7 @@ fn find_bounds_count(
                         ..
                     } = inst
                     {
-                        if jt_index_matches(func, pid, lhs, index, is_64bit) {
+                        if jt_index_matches(func, site, lhs, index, is_64bit) {
                             if let Value::Const(n) = rhs {
                                 if *n >= 0 && (*n as u64) < 4096 {
                                     // ja: idx ≤ N → N+1 entries; jae: idx < N → N entries.
@@ -3327,6 +3419,8 @@ fn jt_index_matches(
         }
     }
     // index defined (before the dispatch) as Sext/Copy of a, or the reverse.
+    // Defs are searched up to the DISPATCH block: the widening copy often
+    // sits after the cmp (block split at the jcc).
     if let Some(IrInst::Unary {
         op: OpCode::Sext | OpCode::Copy,
         src,
