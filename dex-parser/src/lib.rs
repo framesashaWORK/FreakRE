@@ -615,6 +615,129 @@ pub fn is_dex(data: &[u8]) -> bool {
     data.len() >= 8 && &data[0..4] == b"dex\n"
 }
 
+/// A method reference from a `class_data_item` (uleb128-encoded list).
+#[derive(Debug, Clone)]
+pub struct EncodedMethod {
+    /// Absolute index into `method_ids`.
+    pub method_idx: u32,
+    /// Access flags (ACC_STATIC etc.).
+    pub access_flags: u32,
+    /// File offset of the method's `code_item` (0 = abstract/native, no code).
+    pub code_off: u32,
+}
+
+/// A parsed `code_item`: the dalvik bytecode of one method.
+#[derive(Debug, Clone)]
+pub struct CodeItem {
+    pub registers_size: u16,
+    pub ins_size: u16,
+    pub outs_size: u16,
+    /// Instruction stream as 16-bit code units (little-endian in the file).
+    pub insns: Vec<u16>,
+}
+
+/// Read one uleb128 value from `data[*offset]`, advancing the cursor.
+fn uleb128_at(data: &[u8], offset: &mut usize) -> Result<u32, DexError> {
+    read_uleb128(data, offset)
+}
+
+/// Parse the method list of a `class_data_item` at `class_data_offset`.
+///
+/// Layout: uleb128 static_fields, instance-fields, direct-methods,
+/// virtual-methods counts, then the field lists (4 uleb128s each), then the
+/// method lists (method_idx_diff, access_flags, code_off). Field lists are
+/// skipped; method indices are reconstructed from the diffs.
+pub fn parse_class_methods(
+    data: &[u8],
+    class_data_offset: u32,
+) -> Result<Vec<EncodedMethod>, DexError> {
+    let mut off = class_data_offset as usize;
+    if off == 0 || off >= data.len() {
+        return Ok(Vec::new());
+    }
+    let _static_fields = uleb128_at(data, &mut off)?;
+    let _instance_fields = uleb128_at(data, &mut off)?;
+    let direct_methods = uleb128_at(data, &mut off)?;
+    let virtual_methods = uleb128_at(data, &mut off)?;
+    // Skip the field lists: 4 uleb128 values per entry.
+    for _ in 0..(_static_fields + _instance_fields) {
+        for _ in 0..4 {
+            uleb128_at(data, &mut off)?;
+        }
+    }
+    let mut methods = Vec::new();
+    for pass in 0..2 {
+        let count = if pass == 0 {
+            direct_methods
+        } else {
+            virtual_methods
+        };
+        let mut idx: u32 = 0;
+        for _ in 0..count {
+            let diff = uleb128_at(data, &mut off)?;
+            idx = idx.wrapping_add(diff);
+            let access_flags = uleb128_at(data, &mut off)?;
+            let code_off = uleb128_at(data, &mut off)?;
+            methods.push(EncodedMethod {
+                method_idx: idx,
+                access_flags,
+                code_off,
+            });
+        }
+    }
+    Ok(methods)
+}
+
+/// Parse a `code_item` at file offset `code_off`.
+pub fn parse_code_item(data: &[u8], code_off: u32) -> Result<CodeItem, DexError> {
+    let mut off = code_off as usize;
+    if off == 0 {
+        return Err(DexError::TruncatedData);
+    }
+    let registers_size = read_u16_le(data, off).ok_or(DexError::TruncatedData)?;
+    let ins_size = read_u16_le(data, off + 2).ok_or(DexError::TruncatedData)?;
+    let outs_size = read_u16_le(data, off + 4).ok_or(DexError::TruncatedData)?;
+    let tries_size = read_u16_le(data, off + 6).ok_or(DexError::TruncatedData)?;
+    let _debug_info_off = read_u32_le(data, off + 8).ok_or(DexError::TruncatedData)?;
+    let insns_size = read_u32_le(data, off + 12).ok_or(DexError::TruncatedData)? as usize;
+    off += 16;
+    if insns_size > (data.len().saturating_sub(off)) / 2 {
+        return Err(DexError::TruncatedData);
+    }
+    let mut insns = Vec::with_capacity(insns_size);
+    for i in 0..insns_size {
+        insns.push(read_u16_le(data, off + i * 2).ok_or(DexError::TruncatedData)?);
+    }
+    // tries/padding follow the insns; not needed for lifting.
+    let _ = tries_size;
+    Ok(CodeItem {
+        registers_size,
+        ins_size,
+        outs_size,
+        insns,
+    })
+}
+
+impl DexFile {
+    /// All methods (with code offsets) declared by `class_def`.
+    pub fn class_methods(
+        &self,
+        data: &[u8],
+        class_def: &ClassDef,
+    ) -> Result<Vec<EncodedMethod>, DexError> {
+        parse_class_methods(data, class_def.class_data_offset)
+    }
+
+    /// The bytecode of `method`, or `None` when it has no code item.
+    pub fn method_code(&self, data: &[u8], method: &EncodedMethod) -> Option<CodeItem> {
+        if method.code_off == 0 {
+            return None;
+        }
+        parse_code_item(data, method.code_off).ok()
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

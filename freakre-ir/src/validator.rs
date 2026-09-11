@@ -84,6 +84,24 @@ pub fn validate_function(func: &IrFunction) -> Result<(), Vec<ValidationError>> 
                         )));
                     }
                 }
+                IrInst::Switch { cases, default, .. } => {
+                    for (v, t) in cases {
+                        if !block_ids.contains(t) {
+                            errors.push(ValidationError(format!(
+                                "{} Switch case {} target {} does not exist",
+                                block.id, v, t
+                            )));
+                        }
+                    }
+                    if let Some(d) = default {
+                        if !block_ids.contains(d) {
+                            errors.push(ValidationError(format!(
+                                "{} Switch default target {} does not exist",
+                                block.id, d
+                            )));
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -151,6 +169,13 @@ pub fn validate_function(func: &IrFunction) -> Result<(), Vec<ValidationError>> 
                         target_false,
                         ..
                     }) => vec![*target_true, *target_false],
+                    Some(IrInst::Switch { cases, default, .. }) => {
+                        let mut v: Vec<BlockId> = cases.iter().map(|(_, t)| *t).collect();
+                        if let Some(d) = default {
+                            v.push(*d);
+                        }
+                        v
+                    }
                     _ => block.successors.clone(),
                 };
                 for s in succs {
@@ -174,17 +199,6 @@ pub fn validate_function(func: &IrFunction) -> Result<(), Vec<ValidationError>> 
             )));
         }
     }
-
-    // 5. next_var_id / next_block_id should be > max used
-    let _max_var = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.insts.iter())
-        .filter_map(|i| i.dst())
-        .filter_map(|v| v.var_id())
-        .max()
-        .unwrap_or(0);
-    // next_var_id is private, so we check via total_instructions heuristic? Skip.
 
     if errors.is_empty() {
         Ok(())
@@ -278,5 +292,41 @@ mod tests {
         f.blocks[0].insts.push(IrInst::Nop);
         let err = validate_function(&f).unwrap_err();
         assert!(err.iter().any(|e| e.0.contains("not last instruction")));
+    }
+
+    #[test]
+    fn test_switch_target_validated() {
+        let mut f = IrFunction::new("sw_bad", 0x1000);
+        let idx = f.alloc_var(Ty::i32());
+        f.push_inst(
+            f.entry_block,
+            IrInst::Switch {
+                index: idx,
+                cases: vec![(0, BlockId(42)), (1, BlockId(43))],
+                default: Some(BlockId(44)),
+            },
+        );
+        let err = validate_function(&f).unwrap_err();
+        assert!(err.iter().any(|e| e.0.contains("Switch case 0 target bb42 does not exist")));
+        assert!(err.iter().any(|e| e.0.contains("Switch default target bb44 does not exist")));
+    }
+
+    #[test]
+    fn test_switch_target_ok() {
+        let mut f = IrFunction::new("sw_ok", 0x1000);
+        let idx = f.alloc_var(Ty::i32());
+        let c0 = f.add_block("c0");
+        let c1 = f.add_block("c1");
+        let d = f.add_block("dflt");
+        f.push_inst(
+            f.entry_block,
+            IrInst::Switch {
+                index: idx,
+                cases: vec![(0, c0), (1, c1)],
+                default: Some(d),
+            },
+        );
+        f.build_cfg();
+        assert!(validate_function(&f).is_ok());
     }
 }

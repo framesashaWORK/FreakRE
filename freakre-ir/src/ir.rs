@@ -2,7 +2,7 @@
 
 use crate::types::Ty;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ─── Values ──────────────────────────────────────────────────────────
 
@@ -993,36 +993,46 @@ impl IrFunction {
     /// produced past terminators, replaced code regions). Only edges from the
     /// terminator graph count, so this is exactly the set [`crate::ssa`]'s
     /// conversion would reject.
+    ///
+    /// Reachability and remapping go through `block_index`, never
+    /// `BlockId(usize)` vector indexing: deserialized functions may carry
+    /// sparse ids (0, 5, 7), which would otherwise panic or remap to wrong
+    /// blocks.
     pub fn prune_unreachable(&mut self) {
         let entry = self.entry_block;
-        let mut reach = vec![false; self.blocks.len()];
+        let mut reachable: HashSet<BlockId> = HashSet::new();
         let mut stack = vec![entry];
         while let Some(b) = stack.pop() {
-            let i = b.0 as usize;
-            if i >= reach.len() || reach[i] {
+            if !reachable.insert(b) {
                 continue;
             }
-            reach[i] = true;
             for s in self.successors(b) {
                 stack.push(s);
             }
         }
+        self.blocks.retain(|b| reachable.contains(&b.id));
         // Retaining shifts vector positions, so every surviving BlockId gets
         // a new dense id; remap terminators (Branch/CBranch/Switch targets)
         // and the entry, then rebuild the derived graph state.
-        self.blocks.retain(|b| reach[b.id.0 as usize]);
-        let mut remap: Vec<Option<BlockId>> = vec![None; self.blocks.len() + reach.len()];
-        for (next, b) in (0_u32..).zip(self.blocks.iter()) {
-            let old = b.id.0 as usize;
-            if old < remap.len() {
-                remap[old] = Some(BlockId(next));
-            }
-        }
+        let remap: HashMap<BlockId, BlockId> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.id, BlockId(i as u32)))
+            .collect();
         let map_bid = |id: BlockId| -> BlockId {
-            remap.get(id.0 as usize).copied().flatten().unwrap_or(id)
+            remap.get(&id).copied().unwrap_or(id)
         };
         for b in self.blocks.iter_mut() {
             b.id = map_bid(b.id);
+            b.predecessors = std::mem::take(&mut b.predecessors)
+                .into_iter()
+                .map(map_bid)
+                .collect();
+            b.successors = std::mem::take(&mut b.successors)
+                .into_iter()
+                .map(map_bid)
+                .collect();
             for inst in b.insts.iter_mut() {
                 match inst {
                     IrInst::Branch { target } => *target = map_bid(*target),
@@ -1040,12 +1050,23 @@ impl IrFunction {
                         }
                         *default = default.map(map_bid);
                     }
+                    IrInst::Phi { incoming, .. } => {
+                        // Drop inputs coming from pruned predecessors — a
+                        // stale phi input would fail out-of-SSA with
+                        // `UnknownBlock` later — then remap the survivors.
+                        // `remap` keys stay at the pre-prune ids for the
+                        // whole loop, so both steps see old ids.
+                        incoming.retain(|(pred, _)| remap.contains_key(pred));
+                        for (pred, _) in incoming.iter_mut() {
+                            *pred = map_bid(*pred);
+                        }
+                    }
                     _ => {}
                 }
             }
         }
-        if let Some(ne) = remap.get(entry.0 as usize).copied().flatten() {
-            self.entry_block = ne;
+        if let Some(ne) = remap.get(&entry) {
+            self.entry_block = *ne;
         }
         self.rebuild_index();
         // Recompute preds/succs so they reference surviving blocks only.
@@ -1147,6 +1168,103 @@ impl IrProgram {
 impl Default for IrProgram {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::*;
+
+    /// Deserialized functions can carry sparse BlockIds (0, 5, 7 …).
+    /// `prune_unreachable` must survive them: reachability via the block
+    /// index, dense renumbering via a map — never `BlockId(usize)` vector
+    /// indexing (which panics or misremaps on sparse ids).
+    #[test]
+    fn prune_unreachable_survives_sparse_block_ids() {
+        let json = r#"{
+            "name": "sparse",
+            "entry_address": 0,
+            "blocks": [
+                {"id": 0, "label": "entry", "insts": [
+                    {"Branch": {"target": 7}}
+                ], "source_range": null, "predecessors": [], "successors": []},
+                {"id": 5, "label": "junk", "insts": [
+                    {"Return": {"value": null}}
+                ], "source_range": null, "predecessors": [], "successors": []},
+                {"id": 7, "label": "live", "insts": [
+                    {"Return": {"value": null}}
+                ], "source_range": null, "predecessors": [], "successors": []}
+            ],
+            "entry_block": 0,
+            "next_var_id": 0,
+            "next_block_id": 8,
+            "metadata": {
+                "calling_convention": null,
+                "is_thunk": false,
+                "is_import": false,
+                "param_types": [],
+                "return_type": null,
+                "stack_frame_size": null,
+                "compiler": null
+            }
+        }"#;
+        let mut func: IrFunction = serde_json::from_str(json).expect("deserialize sparse fn");
+        assert_eq!(func.blocks.len(), 3, "sparse ids 0/5/7");
+        func.prune_unreachable();
+        assert_eq!(func.blocks.len(), 2, "junk block bb5 pruned");
+        // Dense renumbering: blocks now have ids 0 and 1.
+        let ids: Vec<u32> = func.blocks.iter().map(|b| b.id.0).collect();
+        assert_eq!(ids, vec![0, 1]);
+        // Entry Branch was remapped to the survivor's new id.
+        let entry = func.block(func.entry_block).unwrap();
+        assert!(matches!(
+            entry.terminator(),
+            Some(IrInst::Branch { target }) if *target == BlockId(1)
+        ));
+        assert!(func.blocks.iter().all(|b| b.predecessors.len() <= 1));
+    }
+
+    /// Phi predecessors must be remapped along with terminators, and inputs
+    /// from pruned blocks dropped, otherwise out-of-SSA later fails with
+    /// `UnknownBlock`.
+    #[test]
+    fn prune_unreachable_remaps_phi_preds() {
+        let mut f = IrFunction::new("phi_remap", 0x1000);
+        let x = Value::reg("x", Ty::i64());
+        let dead = f.add_block("dead");
+        let live = f.add_block("live");
+        let merge = f.add_block("merge");
+        // Entry reaches only `live`; `dead` has no inbound terminator edge.
+        f.push_inst(f.entry_block, IrInst::Branch { target: live });
+        f.push_inst(live, IrInst::Branch { target: merge });
+        f.push_inst(dead, IrInst::Branch { target: merge });
+        let m = Value::reg("m", Ty::i64());
+        f.push_inst(
+            merge,
+            IrInst::Phi {
+                dst: m,
+                incoming: vec![(live, x.clone()), (dead, x)],
+            },
+        );
+        f.push_inst(merge, IrInst::Return { value: None });
+        f.build_cfg();
+
+        f.prune_unreachable();
+        assert_eq!(f.blocks.len(), 3, "dead arm pruned");
+        let mut checked = 0;
+        for b in &f.blocks {
+            for inst in &b.insts {
+                if let IrInst::Phi { incoming, .. } = inst {
+                    checked += 1;
+                    assert_eq!(incoming.len(), 1, "pruned pred input dropped: {incoming:?}");
+                    assert!(
+                        f.block(incoming[0].0).is_some(),
+                        "phi pred must survive remap"
+                    );
+                }
+            }
+        }
+        assert_eq!(checked, 1, "exactly one phi expected");
     }
 }
 

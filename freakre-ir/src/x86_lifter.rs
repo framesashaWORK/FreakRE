@@ -2939,14 +2939,116 @@ impl Lifter for X86Lifter {
             crate::ir::repair_block_graph(&mut func, parse_block_addr);
             func.build_cfg();
         }
+
+        // The lifter materializes the return-address push for every call
+        // (`tmp = sp - word; [tmp] = ret; sp = tmp`) so that [rsp±k] operand
+        // resolution during lifting stays aligned. That resolution is done by
+        // now, so the shadow can go: the `Call` itself implies the adjustment
+        // and the triple prints as pure noise in decompiled C.
+        let shadows = strip_call_shadows(&mut func, base_address, code.len() as u64);
+        let _ = shadows;
+
         func.prune_unreachable();
 
         Ok(func)
     }
 }
 
-fn parse_block_addr(name: &str, base_address: u64) -> Option<u64> {
-    if let Some(rest) = name.strip_prefix("bb_") {
+/// Remove call-return-address shadow sequences left by `emit_push` at call
+/// sites. The pattern (consecutive, same block):
+///   `t = Sub(sp, word)` → `Store{addr: t, value: Const(ret)}` → `sp = Copy(t)`
+/// → `Call`. The stored constant must fall inside the function's byte range
+/// (a real return address), which keeps genuine `push <code ptr>` argument
+/// setups... mostly intact — a `push offset cb; call` false positive is
+/// possible but rare. The temp must be referenced exactly twice (store addr +
+/// final copy) so no other consumer dangles after removal.
+fn strip_call_shadows(func: &mut IrFunction, base: u64, code_len: u64) -> usize {
+    use std::collections::HashMap;
+
+    // Use counts for every SSA temp in the function.
+    let mut uses: HashMap<u32, usize> = HashMap::new();
+    for b in &func.blocks {
+        for inst in &b.insts {
+            for src in inst.sources() {
+                if let Some(id) = src.var_id() {
+                    *uses.entry(id).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    let sp_names = ["rsp", "esp"];
+    let mut removed = 0usize;
+    for b in &mut func.blocks {
+        let mut len = b.insts.len();
+        let mut i = 0usize;
+        while i + 3 < len {
+            let (sub_tmp, word, sp_name) = match &b.insts[i] {
+                IrInst::Binary {
+                    dst,
+                    op: OpCode::Sub,
+                    lhs,
+                    rhs: Value::Const(w),
+                } => {
+                    let sp = match lhs {
+                        Value::Register { name, .. } if sp_names.contains(&name.as_str()) => {
+                            name.clone()
+                        }
+                        _ => {
+                            i += 1;
+                            continue;
+                        }
+                    };
+                    match dst {
+                        Value::Var { id, .. } => (*id, *w, sp),
+                        _ => {
+                            i += 1;
+                            continue;
+                        }
+                    }
+                }
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+            if word != 4 && word != 8 {
+                i += 1;
+                continue;
+            }
+            let ok_store = matches!(
+                &b.insts[i + 1],
+                IrInst::Store {
+                    addr,
+                    value: Value::Const(v),
+                    size,
+                } if addr.var_id() == Some(sub_tmp)
+                    && *size == word as u32
+                    && *v >= base as i64
+                    && (*v as u64) < base.saturating_add(code_len)
+            );
+            let ok_copy = matches!(
+                &b.insts[i + 2],
+                IrInst::Unary {
+                    dst: Value::Register { name, .. },
+                    op: OpCode::Copy,
+                    src,
+                } if *name == sp_name && src.var_id() == Some(sub_tmp)
+            );
+            let ok_call = matches!(&b.insts[i + 3], IrInst::Call { .. });
+            if ok_store && ok_copy && ok_call && uses.get(&sub_tmp).copied().unwrap_or(0) == 2 {
+                b.insts.drain(i..i + 3);
+                removed += 3;
+                len -= 3;
+                continue; // do not advance: the Call may follow another shadow
+            }
+            i += 1;
+        }
+    }
+    removed
+}
+
+fn parse_block_addr(name: &str, base_address: u64) -> Option<u64> {    if let Some(rest) = name.strip_prefix("bb_") {
         // saturating: `o` comes from a (possibly hostile) label string.
         return rest
             .parse::<usize>()
@@ -4420,17 +4522,38 @@ mod tests {
     // в”Ђв”Ђв”Ђ CALL / RET stack semantics в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
     #[test]
-    fn test_call_pushes_return_address() {
-        // call rel5 at 0x1000: rsp -= 8 and the return address (0x100A)
-        // is stored at [rsp]; the callee symbol resolves to func_100A.
+    fn test_call_return_address_shadow_stripped() {
+        // call rel5 at 0x1000: the lifter models the return-address push for
+        // [rsp±k] alignment during lifting, then strips the shadow post-pass:
+        // the decompiled IR shows a bare `Call` with callee func_100A and no
+        // rsp-decrement/store/copy noise.
         let lifter = X86Lifter::new(true);
         let code = [0xE8, 0x05, 0x00, 0x00, 0x00, 0xC3];
         let func = lifter.lift_function(&code, 0x1000, "t").unwrap();
         let d = dump(&func);
         assert!(d.contains("func_100A"), "callee target expected:\n{}", d);
-        assert!(has_op(&d, "Sub"), "push must decrement rsp:\n{}", d);
-        assert!(d.contains("Const(8)"), "64-bit push delta expected:\n{}", d);
-        assert!(d.contains("Store"), "return address must be stored:\n{}", d);
+        assert!(!has_op(&d, "Sub"), "push shadow must be stripped:\n{}", d);
+        assert!(!d.contains("Store"), "no return-address store expected:\n{}", d);
+    }
+
+    #[test]
+    fn test_push_const_code_addr_survives() {
+        // A genuine `push <constant>` before a call is argument machinery,
+        // not a return-address shadow: the stored constant (0x1010) lies
+        // outside the function's byte range [0x1000, 0x100B), so it must
+        // survive stripping while the call's own shadow is removed.
+        let lifter = X86Lifter::new(true);
+        let mut code = vec![0x68, 0x10, 0x10, 0x00, 0x00]; // push imm32
+        code.extend_from_slice(&[0xE8, 0x05, 0x00, 0x00, 0x00]); // call rel5
+        code.push(0xC3); // ret
+        let func = lifter.lift_function(&code, 0x1000, "t").unwrap();
+        let d = dump(&func);
+        assert!(d.contains("func_100F"), "callee target expected:\n{}", d);
+        assert!(
+            d.contains("Store"),
+            "argument push must survive (ret==0x100F not pushed here):\n{}",
+            d
+        );
     }
 
     #[test]

@@ -1149,6 +1149,293 @@ pub fn remove_trivial_phis(ssa: &mut SsaFunction) {
 
 // ─── Deconstruction ──────────────────────────────────────────────────
 
+/// Statistics reported by [`ssa_gvn`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct GvnStats {
+    /// Redundant pure instructions eliminated (uses rewritten to the
+    /// dominating equivalent).
+    pub eliminated: usize,
+}
+
+/// Hashable, orderable value identity for GVN keys. Mirrors [`SsaVal`]
+/// minus the type (SSA versions are unique per base variable, so the
+/// version pair already identifies the value).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum GvnVal {
+    Ver(BaseVar, u32),
+    Const(i64),
+    Wide(Vec<u8>),
+    Str(String),
+    Sym(String),
+}
+
+impl From<&SsaVal> for GvnVal {
+    fn from(v: &SsaVal) -> Self {
+        match v {
+            SsaVal::Ver(vv) => GvnVal::Ver(vv.base.clone(), vv.version),
+            SsaVal::Const(c) => GvnVal::Const(*c),
+            SsaVal::WideConst(b) => GvnVal::Wide(b.clone()),
+            SsaVal::StringRef(s) => GvnVal::Str(s.clone()),
+            SsaVal::Symbol(s) => GvnVal::Sym(s.clone()),
+        }
+    }
+}
+
+/// Hash-consing key for a pure SSA instruction.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum GvnKey {
+    Bin {
+        op: OpCode,
+        a: GvnVal,
+        b: GvnVal,
+    },
+    Un {
+        op: OpCode,
+        a: GvnVal,
+    },
+    Adc {
+        a: GvnVal,
+        b: GvnVal,
+        c: GvnVal,
+    },
+    Sbb {
+        a: GvnVal,
+        b: GvnVal,
+        c: GvnVal,
+    },
+}
+
+/// Whether `op` is commutative (`a OP b == b OP a`), enabling operand
+/// order normalization before hashing.
+fn op_is_commutative(op: &OpCode) -> bool {
+    matches!(op, OpCode::Add | OpCode::Mul | OpCode::And | OpCode::Or | OpCode::Xor)
+}
+
+fn ssa_inst_dst_read(inst: &SsaInst) -> Option<&VersionedVar> {
+    match inst {
+        SsaInst::Binary { dst, .. }
+        | SsaInst::Unary { dst, .. }
+        | SsaInst::Adc { dst, .. }
+        | SsaInst::Sbb { dst, .. }
+        | SsaInst::Load { dst, .. } => Some(dst),
+        SsaInst::Call { dst: Some(dst), .. } => Some(dst),
+        _ => None,
+    }
+}
+
+/// Dominators over the SSA CFG (same Cooper-Harvey-Kennedy algorithm as
+/// [`compute_dominators`], which operates on plain IR).
+fn ssa_dominators(ssa: &SsaFunction) -> HashMap<BlockId, BlockId> {
+    let entry = ssa.entry_block;
+    // Reverse post-order over SSA successors.
+    let mut visited: HashSet<BlockId> = HashSet::new();
+    let mut post: Vec<BlockId> = Vec::new();
+    let mut stack: Vec<(BlockId, usize)> = vec![(entry, 0)];
+    visited.insert(entry);
+    while let Some(frame) = stack.last_mut() {
+        let succs: &[BlockId] = match ssa.block(frame.0) {
+            Some(b) => &b.successors,
+            None => &[],
+        };
+        if frame.1 < succs.len() {
+            let s = succs[frame.1];
+            frame.1 += 1;
+            if visited.insert(s) {
+                stack.push((s, 0));
+            }
+        } else {
+            post.push(frame.0);
+            stack.pop();
+        }
+    }
+    let rpo: Vec<BlockId> = post.into_iter().rev().collect();
+    let rpo_num: HashMap<BlockId, usize> = rpo.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+
+    let mut idoms: HashMap<BlockId, BlockId> = HashMap::new();
+    idoms.insert(entry, entry);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &b in &rpo {
+            if b == entry {
+                continue;
+            }
+            let preds = match ssa.block(b) {
+                Some(bl) => &bl.predecessors,
+                None => continue,
+            };
+            let mut new_idom = match preds.iter().copied().find(|p| idoms.contains_key(p)) {
+                Some(p) => p,
+                None => continue,
+            };
+            for &p in preds {
+                if p == new_idom || !idoms.contains_key(&p) {
+                    continue;
+                }
+                new_idom = intersect(p, new_idom, &idoms, &rpo_num);
+            }
+            if idoms.get(&b) != Some(&new_idom) {
+                idoms.insert(b, new_idom);
+                changed = true;
+            }
+        }
+    }
+    idoms
+}
+
+/// Global value numbering (common-subexpression elimination) on SSA form.
+///
+/// Walks the dominator tree in preorder with a *scoped* hash table of pure
+/// instruction values: a value computed in block B remains available only
+/// in B's dominator subtree, which is exactly the region where reuse is
+/// sound (the definition dominates every rewritten use). Identical pure
+/// instructions (`dst2 = Add(x, y)` where a dominating block already holds
+/// `dst1 = Add(x, y)`) are eliminated: `dst2` is substituted with `dst1`
+/// everywhere (instruction operands and phi inputs). Commutative
+/// operations (`+ * & | ^`) are canonicalized by operand order before
+/// hashing, so `a + b` and `b + a` unify.
+///
+/// Loads, stores, calls, syscalls and terminators are never merged — only
+/// their operands get substituted.
+pub fn ssa_gvn(ssa: &mut SsaFunction) -> GvnStats {
+    let mut stats = GvnStats::default();
+    let idom = ssa_dominators(ssa);
+
+    // Dominator-tree children lists.
+    let mut children: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+    for (&b, &d) in &idom {
+        if b != d {
+            children.entry(d).or_default().push(b);
+        }
+    }
+
+    // Substitution for eliminated destinations (applied after the walk).
+    let mut subst: HashMap<VersionedVar, VersionedVar> = HashMap::new();
+    // Scoped value table: key -> defining version.
+    let mut table: HashMap<GvnKey, VersionedVar> = HashMap::new();
+
+    // Explicit DFS with undo frames so table entries inserted inside a
+    // subtree are removed when leaving it.
+    enum Frame {
+        Enter(BlockId),
+        Exit(Vec<GvnKey>),
+    }
+    let mut stack: Vec<Frame> = vec![Frame::Enter(ssa.entry_block)];
+
+    while let Some(frame) = stack.pop() {
+        match frame {
+            Frame::Enter(b) => {
+                let bi = match ssa.blocks.iter().position(|sb| sb.id == b) {
+                    Some(i) => i,
+                    None => continue,
+                };
+                let mut inserted: Vec<GvnKey> = Vec::new();
+                for inst in &mut ssa.blocks[bi].insts {
+                    // Resolve operands through prior eliminations first —
+                    // keys must be built on canonical values.
+                    ssa_inst_map_vals(inst, &mut |op| {
+                        if let SsaVal::Ver(vv) = op {
+                            resolve_var(vv, &subst);
+                        }
+                    });
+                    let (key, dst) = match inst {
+                        SsaInst::Binary { dst, op, lhs, rhs } => {
+                            let (a, b) = (GvnVal::from(&*lhs), GvnVal::from(&*rhs));
+                            let (a, b) = if op_is_commutative(op) && a > b {
+                                (b, a)
+                            } else {
+                                (a, b)
+                            };
+                            (
+                                GvnKey::Bin {
+                                    op: *op,
+                                    a,
+                                    b,
+                                },
+                                dst,
+                            )
+                        }
+                        SsaInst::Unary { dst, op, src } => {
+                            (GvnKey::Un { op: *op, a: GvnVal::from(&*src) }, dst)
+                        }
+                        SsaInst::Adc { dst, a, b, carry } => (
+                            GvnKey::Adc {
+                                a: GvnVal::from(&*a),
+                                b: GvnVal::from(&*b),
+                                c: GvnVal::from(&*carry),
+                            },
+                            dst,
+                        ),
+                        SsaInst::Sbb { dst, a, b, carry } => (
+                            GvnKey::Sbb {
+                                a: GvnVal::from(&*a),
+                                b: GvnVal::from(&*b),
+                                c: GvnVal::from(&*carry),
+                            },
+                            dst,
+                        ),
+                        // Impure or non-value instructions: operands were
+                        // resolved above, nothing to number.
+                        _ => continue,
+                    };
+                    match table.get(&key) {
+                        Some(canonical) => {
+                            // Redundant re-computation: substitute dst with
+                            // the dominating definition.
+                            subst.insert(dst.clone(), canonical.clone());
+                            stats.eliminated += 1;
+                        }
+                        None => {
+                            table.insert(key.clone(), dst.clone());
+                            inserted.push(key);
+                        }
+                    }
+                }
+                stack.push(Frame::Exit(inserted));
+                if let Some(kids) = children.get(&b) {
+                    for &kid in kids.iter().rev() {
+                        stack.push(Frame::Enter(kid));
+                    }
+                }
+            }
+            Frame::Exit(keys) => {
+                for k in keys {
+                    table.remove(&k);
+                }
+            }
+        }
+    }
+
+    if subst.is_empty() {
+        return stats;
+    }
+
+    // Rewrite remaining operands (phi inputs and instructions) to the
+    // canonical definitions, and drop the eliminated instructions.
+    for b in &mut ssa.blocks {
+        for p in &mut b.phis {
+            for (_, v) in &mut p.inputs {
+                resolve_var(v, &subst);
+            }
+        }
+        let mut kept = Vec::with_capacity(b.insts.len());
+        for inst in b.insts.drain(..) {
+            let mut inst = inst;
+            ssa_inst_map_vals(&mut inst, &mut |op| {
+                if let SsaVal::Ver(vv) = op {
+                    resolve_var(vv, &subst);
+                }
+            });
+            let eliminated = ssa_inst_dst_read(&inst).is_some_and(|d| subst.contains_key(d));
+            if !eliminated {
+                kept.push(inst);
+            }
+        }
+        b.insts = kept;
+    }
+    stats
+}
+
 /// Statistics reported by [`ssa_dce`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DceStats {
@@ -1389,6 +1676,9 @@ pub fn from_ssa(ssa: &SsaFunction) -> Result<IrFunction, SsaError> {
         for phi in &sb.phis {
             let dst_val = concrete(&mut vals, &mut out, &phi.dst);
             for (pred, input) in &phi.inputs {
+                let pi = *pos.get(pred).ok_or(SsaError::UnknownBlock(pred.0))?;
+                let pred_block =
+                    ssa.blocks.get(pi).ok_or(SsaError::UnknownBlock(pred.0))?;
                 // Self-referencing input (`d = PHI(…, d)`): identity, no copy.
                 if *input == phi.dst {
                     continue;
@@ -1397,9 +1687,6 @@ pub fn from_ssa(ssa: &SsaFunction) -> Result<IrFunction, SsaError> {
                 if src_val == dst_val {
                     continue;
                 }
-                let pi = *pos.get(pred).ok_or(SsaError::UnknownBlock(pred.0))?;
-                let pred_block =
-                    ssa.blocks.get(pi).ok_or(SsaError::UnknownBlock(pred.0))?;
                 let copies: &mut Vec<IrInst> = if pred_block.successors.len() > 1 {
                     split_copies.entry((*pred, sb.id)).or_default()
                 } else {
@@ -1763,12 +2050,12 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(copies_then.len(), 2);
+        assert_eq!(copies_then.len(), 1, "one direct copy per phi input");
         assert!(matches!(
             then_b.terminator(),
             Some(IrInst::Branch { target }) if *target == BlockId(3)
         ));
-        let merged = match copies_then[1] {
+        let merged = match copies_then[0] {
             IrInst::Unary {
                 dst,
                 op: OpCode::Copy,
@@ -1791,7 +2078,7 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(copies_else.len(), 2);
+        assert_eq!(copies_else.len(), 1, "one direct copy per phi input");
 
         let merge = ir.block(BlockId(3)).unwrap();
         assert_eq!(merge.insts.len(), 1);
@@ -1870,7 +2157,7 @@ mod tests {
             "exactly one split block must branch to merge"
         );
         let edge: &IrBlock = edges_to_merge[0];
-        assert_eq!(edge.insts.len(), 3);
+        assert_eq!(edge.insts.len(), 2, "one copy plus branch");
         assert_eq!(
             edge.insts.iter().filter(|i| i.is_terminator()).count(),
             1,
@@ -2040,8 +2327,8 @@ mod tests {
         );
         assert_eq!(
             edges_to_merge[0].insts.len(),
-            5,
-            "two phis x two copies plus branch expected"
+            3,
+            "two phis x one direct copy each plus branch expected"
         );
 
         let b1_ir = ir.block(b1).unwrap();
@@ -2249,6 +2536,203 @@ mod tests {
             metadata: FunctionMetadata::default(),
         };
         assert!(matches!(from_ssa(&ssa), Err(SsaError::IdExhausted)));
+    }
+
+    #[test]
+    fn test_ssa_gvn_eliminates_dominated_recomputation() {
+        // entry: x=1; y=2; t1=x+y; cbranch b1/b2
+        // b1: t2=x+y (redundant, entry dominates b1); return t2
+        // b2: return t1
+        let mut f = IrFunction::new("gvn_dom", 0x0);
+        let cond = f.alloc_var(Ty::Bool);
+        let b1 = f.add_block("then");
+        let b2 = f.add_block("else");
+        let x = Value::reg("x", Ty::i64());
+        let y = Value::reg("y", Ty::i64());
+        let t1 = Value::reg("t1", Ty::i64());
+        let t2 = Value::reg("t2", Ty::i64());
+
+        f.push_inst(
+            f.entry_block,
+            IrInst::Unary {
+                dst: x.clone(),
+                op: OpCode::Copy,
+                src: Value::int(1),
+            },
+        );
+        f.push_inst(
+            f.entry_block,
+            IrInst::Unary {
+                dst: y.clone(),
+                op: OpCode::Copy,
+                src: Value::int(2),
+            },
+        );
+        f.push_inst(
+            f.entry_block,
+            IrInst::Binary {
+                dst: t1.clone(),
+                op: OpCode::Add,
+                lhs: x.clone(),
+                rhs: y.clone(),
+            },
+        );
+        f.push_inst(
+            f.entry_block,
+            IrInst::CBranch {
+                cond,
+                target_true: b1,
+                target_false: b2,
+            },
+        );
+        f.push_inst(
+            b1,
+            IrInst::Binary {
+                dst: t2.clone(),
+                op: OpCode::Add,
+                lhs: x.clone(),
+                rhs: y.clone(),
+            },
+        );
+        f.push_inst(b1, IrInst::Return { value: Some(t2) });
+        f.push_inst(b2, IrInst::Return { value: Some(t1) });
+
+        let mut ssa = to_ssa(&mut f).unwrap();
+        let stats = ssa_gvn(&mut ssa);
+        assert_eq!(stats.eliminated, 1, "dominated recomputation must fold");
+
+        // b1 must now return t1's version directly.
+        let b1_ssa = ssa.block(b1).unwrap();
+        match &b1_ssa.insts.last() {
+            Some(SsaInst::Return {
+                value: Some(SsaVal::Ver(v)),
+            }) => {
+                assert_eq!(v.base, BaseVar::Reg("t1".to_string()));
+            }
+            other => panic!("expected return of t1, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_ssa_gvn_keeps_sibling_recomputation() {
+        // Same add in two sibling branches: neither dominates the other,
+        // both must survive.
+        let mut f = IrFunction::new("gvn_sib", 0x0);
+        let cond = f.alloc_var(Ty::Bool);
+        let b1 = f.add_block("then");
+        let b2 = f.add_block("else");
+        let x = Value::reg("x", Ty::i64());
+        let y = Value::reg("y", Ty::i64());
+        let t2 = Value::reg("t2", Ty::i64());
+        let t3 = Value::reg("t3", Ty::i64());
+
+        f.push_inst(
+            f.entry_block,
+            IrInst::Unary {
+                dst: x.clone(),
+                op: OpCode::Copy,
+                src: Value::int(1),
+            },
+        );
+        f.push_inst(
+            f.entry_block,
+            IrInst::Unary {
+                dst: y.clone(),
+                op: OpCode::Copy,
+                src: Value::int(2),
+            },
+        );
+        f.push_inst(
+            f.entry_block,
+            IrInst::CBranch {
+                cond,
+                target_true: b1,
+                target_false: b2,
+            },
+        );
+        f.push_inst(
+            b1,
+            IrInst::Binary {
+                dst: t2.clone(),
+                op: OpCode::Add,
+                lhs: x.clone(),
+                rhs: y.clone(),
+            },
+        );
+        f.push_inst(b1, IrInst::Return { value: Some(t2) });
+        f.push_inst(
+            b2,
+            IrInst::Binary {
+                dst: t3.clone(),
+                op: OpCode::Add,
+                lhs: x.clone(),
+                rhs: y.clone(),
+            },
+        );
+        f.push_inst(b2, IrInst::Return { value: Some(t3) });
+
+        let mut ssa = to_ssa(&mut f).unwrap();
+        let stats = ssa_gvn(&mut ssa);
+        assert_eq!(stats.eliminated, 0, "sibling adds must survive");
+        assert_eq!(ssa.block(b1).unwrap().insts.len(), 2);
+        assert_eq!(ssa.block(b2).unwrap().insts.len(), 2);
+    }
+
+    #[test]
+    fn test_ssa_gvn_commutative_unification() {
+        // t1 = x + y; t2 = y + x — same block, commutative normalization
+        // must unify them.
+        let mut f = IrFunction::new("gvn_com", 0x0);
+        let x = Value::reg("x", Ty::i64());
+        let y = Value::reg("y", Ty::i64());
+        let t1 = Value::reg("t1", Ty::i64());
+        let t2 = Value::reg("t2", Ty::i64());
+
+        f.push_inst(
+            f.entry_block,
+            IrInst::Unary {
+                dst: x.clone(),
+                op: OpCode::Copy,
+                src: Value::int(1),
+            },
+        );
+        f.push_inst(
+            f.entry_block,
+            IrInst::Unary {
+                dst: y.clone(),
+                op: OpCode::Copy,
+                src: Value::int(2),
+            },
+        );
+        f.push_inst(
+            f.entry_block,
+            IrInst::Binary {
+                dst: t1.clone(),
+                op: OpCode::Add,
+                lhs: x.clone(),
+                rhs: y.clone(),
+            },
+        );
+        f.push_inst(
+            f.entry_block,
+            IrInst::Binary {
+                dst: t2.clone(),
+                op: OpCode::Add,
+                lhs: y.clone(),
+                rhs: x.clone(),
+            },
+        );
+        f.push_inst(f.entry_block, IrInst::Return { value: Some(t2) });
+
+        let mut ssa = to_ssa(&mut f).unwrap();
+        let stats = ssa_gvn(&mut ssa);
+        assert_eq!(stats.eliminated, 1, "y+x must unify with x+y");
+        match &ssa.blocks[0].insts.last() {
+            Some(SsaInst::Return {
+                value: Some(SsaVal::Ver(v)),
+            }) => assert_eq!(v.base, BaseVar::Reg("t1".to_string())),
+            other => panic!("expected return of t1, got {other:?}"),
+        }
     }
 
     #[test]

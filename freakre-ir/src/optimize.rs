@@ -68,6 +68,18 @@ fn eval_const_binop(op: OpCode, a: i64, b: i64) -> Option<i64> {
         OpCode::Sar => Some(a.wrapping_shr(b as u32)),
         OpCode::Eq => Some(if a == b { 1 } else { 0 }),
         OpCode::Ne => Some(if a != b { 1 } else { 0 }),
+        // Comparisons fold to the 0/1 flag convention used by the lifters.
+        // Unsigned variants compare the bit patterns; signed variants the
+        // i64 values — both are width-agnostic, unlike Rol/Ror which are
+        // deliberately NOT folded (width depends on the lifted operand).
+        OpCode::LtU => Some(((a as u64) < (b as u64)) as i64),
+        OpCode::LeU => Some(((a as u64) <= (b as u64)) as i64),
+        OpCode::GtU => Some(((a as u64) > (b as u64)) as i64),
+        OpCode::GeU => Some(((a as u64) >= (b as u64)) as i64),
+        OpCode::LtS => Some((a < b) as i64),
+        OpCode::LeS => Some((a <= b) as i64),
+        OpCode::GtS => Some((a > b) as i64),
+        OpCode::GeS => Some((a >= b) as i64),
         _ => None,
     }
 }
@@ -276,6 +288,26 @@ mod tests {
         let removed = dce(&mut func);
         assert_eq!(removed, 1);
         assert_eq!(func.blocks[0].insts.len(), 2);
+    }
+
+    #[test]
+    fn test_constfold_compare_ops() {
+        // Unsigned vs signed disagreement on negative constants: the two
+        // families must not be conflated.
+        assert_eq!(
+            eval_const_binop_public(OpCode::LtU, -1, 1),
+            Some(0),
+            "0xFFFF... > 1 unsigned"
+        );
+        assert_eq!(
+            eval_const_binop_public(OpCode::LtS, -1, 1),
+            Some(1),
+            "-1 < 1 signed"
+        );
+        assert_eq!(eval_const_binop_public(OpCode::GeU, 0, 0), Some(1));
+        assert_eq!(eval_const_binop_public(OpCode::Ne, 5, 5), Some(0));
+        // Non-foldable ops stay None (Rol/Ror are width-dependent).
+        assert_eq!(eval_const_binop_public(OpCode::Rol, 1, 4), None);
     }
 
     #[test]

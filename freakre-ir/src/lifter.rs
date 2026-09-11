@@ -113,6 +113,9 @@ impl LifterRegistry {
             "mips64be" => Some(Box::new(crate::mips_lifter::MipsLifter::new(true))),
             "riscv32" | "riscv" => Some(Box::new(crate::riscv_lifter::RiscvLifter::new(false))),
             "riscv64" => Some(Box::new(crate::riscv_lifter::RiscvLifter::new(true))),
+            "ppc" | "ppc32" | "powerpc" => Some(Box::new(crate::ppc_lifter::PpcLifter::new(false))),
+            "ppc64" | "powerpc64" => Some(Box::new(crate::ppc_lifter::PpcLifter::new(true))),
+            "dex" | "dalvik" => Some(Box::new(crate::dex_lifter::DexLifter::new())),
             _ => None,
         }
     }
@@ -129,6 +132,9 @@ impl LifterRegistry {
             "mips64",
             "riscv32",
             "riscv64",
+            "ppc32",
+            "ppc64",
+            "dex",
         ]
     }
 

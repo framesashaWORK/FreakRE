@@ -64,10 +64,12 @@
 
 pub mod arch;
 pub mod arm_lifter;
+pub mod dex_lifter;
 pub mod ir;
 pub mod lifter;
 pub mod mips_lifter;
 pub mod optimize;
+pub mod ppc_lifter;
 pub mod riscv_lifter;
 pub mod sccp;
 pub mod ssa;
