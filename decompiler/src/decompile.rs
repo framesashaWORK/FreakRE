@@ -203,6 +203,7 @@ fn decompile_function_inner(
                 if !(has_stack_access && !lowered_has_rsp) {
                     ir = lowered;
                     crate::fold_flags::eliminate_dead_flag_defs(&mut ir);
+                    crate::fold_flags::coalesce_copies(&mut ir);
                 }
                 // else: SSA would hide `rsp`; keep original `ir` for stack recovery.
             }
@@ -215,6 +216,10 @@ fn decompile_function_inner(
     // If SSA was skipped due to rsp loss, `ir` is still the pre-SSA form.
     let stack_var_names = crate::stack_vars::recover_stack_vars(&mut ir);
     crate::fold_flags::eliminate_dead_flag_defs(&mut ir);
+    // Copy coalescing for the no-SSA path (and a second sweep for the SSA
+    // path: stack recovery can re-introduce copies via slot temps).
+    let cc = crate::fold_flags::coalesce_copies(&mut ir);
+    let _ = cc;
 
     // Phase 1: Convert IR to structured AST
     let mut ast = ir_to_ast(&ir);

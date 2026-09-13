@@ -992,6 +992,63 @@ fn propagate_copies(stmts: &mut Vec<Stmt>) {
     remove_dead_stmts(stmts, &used_after);
 }
 
+/// Collect every variable name a statement references (own expressions and
+/// nested bodies, including control-flow headers).
+fn collect_stmt_var_names(stmt: &Stmt, out: &mut HashSet<String>) {
+    stmt.for_each_expr(&mut |e: &Expr| {
+        if let Expr::Var(n) = e {
+            out.insert(n.clone());
+        }
+    });
+    match stmt {
+        Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                collect_stmt_var_names(s, out);
+            }
+            if let Some(eb) = else_body {
+                for s in eb {
+                    collect_stmt_var_names(s, out);
+                }
+            }
+        }
+        Stmt::While { body, .. } | Stmt::DoWhile { body, .. } | Stmt::Block(body) => {
+            for s in body {
+                collect_stmt_var_names(s, out);
+            }
+        }
+        Stmt::For {
+            init, update, body, ..
+        } => {
+            if let Some(i) = init {
+                collect_stmt_var_names(i, out);
+            }
+            if let Some(u) = update {
+                collect_stmt_var_names(u, out);
+            }
+            for s in body {
+                collect_stmt_var_names(s, out);
+            }
+        }
+        Stmt::Switch { cases, default, .. } => {
+            for c in cases {
+                for s in &c.body {
+                    collect_stmt_var_names(s, out);
+                }
+            }
+            if let Some(d) = default {
+                for s in d {
+                    collect_stmt_var_names(s, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn substitute_within_list(
     stmts: &mut [Stmt],
     def_counts: &HashMap<String, usize>,
@@ -1001,11 +1058,51 @@ fn substitute_within_list(
     // `pending` holds candidates visible to *direct* sub-expressions of
     // following statements at this nesting level.
     let mut pending: HashMap<String, Expr> = inherited_literals.clone();
+    // Indices of Var→Var copy statements whose target was fully propagated;
+    // dropped in a second sweep. A copy is only droppable when its target is
+    // never referenced again after the copy (in the remainder of this list,
+    // including nested bodies and control headers).
+    let mut drop_idx: Vec<usize> = Vec::new();
+    // Per-position set of variable names referenced at-or-after that position
+    // (suffix sets), precomputed to avoid re-borrowing during iteration.
+    let n = stmts.len();
+    let mut suffix_names: Vec<HashSet<String>> = vec![HashSet::new(); n + 1];
+    for si in (0..n).rev() {
+        let mut s = suffix_names[si + 1].clone();
+        collect_stmt_var_names(&stmts[si], &mut s);
+        suffix_names[si] = s;
+    }
 
-    for stmt in stmts.iter_mut() {
+    for (si, stmt) in stmts.iter_mut().enumerate() {
         // 1. Apply all pending replacements to this statement's own
         //    sub-expressions (not to its child lists).
         apply_pending_to_own_exprs(stmt, &pending);
+
+        // 1b. Multi-def Var→Var copies: safe to propagate sequentially within
+        // a single statement list because the map is rewritten at every
+        // redefinition (statement order dominates). This is what kills the
+        // lifter's `eax = x; rax = eax; a1 = rax` register-shuffle noise.
+        if let Stmt::Assign {
+            target: Expr::Var(name),
+            value: Expr::Var(src),
+        } = stmt
+        {
+            if name != src && !matches!(name.as_str(), "rsp" | "esp" | "rbp" | "ebp") {
+                let name = name.clone();
+                let src = src.clone();
+                // Droppable only if nothing after this statement still reads
+                // the target (later pending values referencing it count too).
+                let used_later = suffix_names[si + 1].contains(&name)
+                    || pending
+                        .values()
+                        .any(|e| expr_references_var(e, &name));
+                if used_later {
+                    pending.insert(name, Expr::Var(src));
+                } else {
+                    drop_idx.push(si);
+                }
+            }
+        }
 
         // 2. Register new candidate definitions found at this level.
         if let Stmt::Assign {
@@ -1037,6 +1134,24 @@ fn substitute_within_list(
         };
         if let Some(def_name) = redefined {
             pending.retain(|_, expr| !expr_references_var(expr, def_name));
+        }
+    }
+
+    // 1c. Neutralize the fully-propagated Var→Var copies by rewriting them as
+    // self-assignments (`x = x`); Pass 5d (`remove_self_assigns`) drops those
+    // later in the pipeline. Slices have no retain, and inventing a `Nop`
+    // variant would touch every AST consumer for zero benefit.
+    for si in drop_idx {
+        if let Stmt::Assign {
+            target: Expr::Var(name),
+            ..
+        } = &stmts[si]
+        {
+            let name = name.clone();
+            stmts[si] = Stmt::Assign {
+                target: Expr::Var(name.clone()),
+                value: Expr::Var(name),
+            };
         }
     }
 

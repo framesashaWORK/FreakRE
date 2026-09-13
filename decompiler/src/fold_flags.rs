@@ -1018,6 +1018,206 @@ fn mutable_sources(inst: &mut IrInst) -> Vec<&mut Value> {
     }
 }
 
+/// Frame/stack registers must never participate in copy coalescing:
+/// the stack-variable recovery keys on `Register("rsp")` reads and the
+/// lifter models pushes/pops as rsp copies.
+fn is_frame_reg(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.contains("sp") || n.contains("bp")
+}
+
+fn copy_key(v: &Value) -> Option<Value> {
+    match v {
+        Value::Register { .. } | Value::Var { .. } => Some(v.clone()),
+        _ => None,
+    }
+}
+
+/// Function-wide copy coalescing: forward copy propagation with
+/// block-level dataflow (intersection meet), plus dead-copy removal.
+///
+/// Kills the `eax = x; rax = eax; a1 = rax; use(a1)` chains that dwarf
+/// every decompiled expression. Runs to a fixpoint (chains need several
+/// rounds).
+///
+/// Soundness:
+/// - a copy `d = Copy(s)` is only propagated while BOTH `d` and `s` stay
+///   unwritten on every path from the copy to the use (kills on any def);
+/// - frame registers (rsp/rbp/esp/ebp/...) never participate;
+/// - Phi sources are substituted too (post-SSA IR can still carry phis
+///   when SSA bailed; a phi reading a copy is a normal use).
+pub fn coalesce_copies(func: &mut IrFunction) -> usize {
+    let n_blocks = func.blocks.len();
+    if n_blocks == 0 {
+        return 0;
+    }
+    // Block index by id for successor traversal.
+    let block_index: std::collections::HashMap<_, _> = func
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.id, i))
+        .collect();
+    // Predecessor index lists (by block index).
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n_blocks];
+    for (bi, b) in func.blocks.iter().enumerate() {
+        for succ in func.successors(b.id) {
+            if let Some(&sj) = block_index.get(&succ) {
+                preds[sj].push(bi);
+            }
+        }
+    }
+    // RPO-ish stable order: process blocks in a DFS from entry.
+    let mut order: Vec<usize> = Vec::with_capacity(n_blocks);
+    {
+        let mut seen = vec![false; n_blocks];
+        let mut stack = Vec::new();
+        if let Some(entry_idx) = func
+            .blocks
+            .iter()
+            .position(|b| b.id == func.entry_block)
+        {
+            seen[entry_idx] = true;
+            stack.push((entry_idx, 0));
+        }
+        while let Some(&mut (bi, ref mut next)) = stack.last_mut() {
+            if *next < preds[bi].len() {
+                let p = preds[bi][*next];
+                *next += 1;
+                if !seen[p] {
+                    seen[p] = true;
+                    stack.push((p, 0));
+                }
+            } else {
+                stack.pop();
+            }
+        }
+        // Blocks reachable from entry in position order (entry first);
+        // unreachable blocks (shouldn't exist post-prune) go last.
+        order = (0..n_blocks).filter(|&i| seen[i]).collect();
+    }
+
+    let mut total_subst = 0usize;
+    // Dataflow fixpoint: out[bi] maps copy-dst -> copy-src valid at block end.
+    let mut out_maps: Vec<HashMap<Value, Value>> = (0..n_blocks).map(|_| HashMap::new()).collect();
+    for _round in 0..6 {
+        let mut changed = false;
+        for &bi in &order {
+            // in = intersection of pred out-maps (preds with no map yet = empty,
+            // which is the conservative bottom for intersection).
+            let mut in_map: HashMap<Value, Value> = HashMap::new();
+            let mut first = true;
+            for &p in &preds[bi] {
+                if first {
+                    in_map = out_maps[p].clone();
+                    first = false;
+                } else {
+                    in_map.retain(|k, v| out_maps[p].get(k) == Some(v));
+                }
+            }
+            let mut map = in_map;
+            let b = &mut func.blocks[bi];
+            for inst in b.insts.iter_mut() {
+                // 1. Substitute sources through the current copy map.
+                for s in mutable_sources(inst) {
+                    if let Some(rep) = copy_key(s).and_then(|k| map.get(&k).cloned()) {
+                        *s = rep;
+                        total_subst += 1;
+                        changed = true;
+                    }
+                }
+                // 2. Kills: any def of d invalidates mappings to or from d.
+                if let Some(d) = inst.dst() {
+                    map.retain(|k, v| k != d && v != d);
+                }
+                // A Call clobbers caller-saved registers: drop mappings whose
+                // key OR value is a register (conservative: all of them).
+                if matches!(inst, IrInst::Call { .. } | IrInst::Syscall { .. }) {
+                    map.retain(|k, v| {
+                        !matches!(k, Value::Register { .. }) && !matches!(v, Value::Register { .. })
+                    });
+                }
+                // 3. Record new copies.
+                if let IrInst::Unary {
+                    op: OpCode::Copy,
+                    dst,
+                    src,
+                } = inst
+                {
+                    let ok = match (&*dst, &*src) {
+                        (Value::Register { name: dn, .. }, Value::Register { name: sn, .. }) => {
+                            !is_frame_reg(dn) && !is_frame_reg(sn)
+                        }
+                        (Value::Register { name: dn, .. }, Value::Var { .. }) => {
+                            !is_frame_reg(dn)
+                        }
+                        (Value::Var { .. }, Value::Register { name: sn, .. }) => {
+                            !is_frame_reg(sn)
+                        }
+                        (Value::Var { .. }, Value::Var { .. }) => true,
+                        _ => false,
+                    };
+                    if ok {
+                        let src_v = src.clone();
+                        if let Some(k) = copy_key(dst) {
+                            if k != src_v {
+                                map.insert(k, src_v);
+                            }
+                        }
+                    }
+                }
+            }
+            if map != out_maps[bi] {
+                out_maps[bi] = map;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Dead-copy removal: a Copy whose dst is now read nowhere is deleted.
+    // Frame-register copies are exempt (they carry push/pop semantics).
+    let mut use_counts: std::collections::HashMap<Value, usize> = HashMap::new();
+    for b in &func.blocks {
+        for inst in &b.insts {
+            for s in inst.sources() {
+                if let Some(k) = copy_key(s) {
+                    *use_counts.entry(k).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    let mut removed = 0usize;
+    for b in &mut func.blocks {
+        let mut ii = 0;
+        while ii < b.insts.len() {
+            let drop = match &b.insts[ii] {
+                IrInst::Unary {
+                    op: OpCode::Copy,
+                    dst,
+                    ..
+                } => {
+                    let frame = matches!(dst, Value::Register { name, .. } if is_frame_reg(name));
+                    !frame
+                        && use_counts.get(dst).copied().unwrap_or(0) == 0
+                        && !matches!(dst, Value::Var { .. } if var_id(dst).is_none())
+                }
+                _ => false,
+            };
+            if drop {
+                b.insts.remove(ii);
+                removed += 1;
+            } else {
+                ii += 1;
+            }
+        }
+    }
+    let _ = removed;
+    total_subst
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1670,6 +1870,135 @@ mod tests {
             ),
             "adc carry must be a folded SSA var, not flag_cf: {:?}",
             adc
+        );
+    }
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use super::*;
+
+    /// Chain `eax = x; rax = eax; rdx = Copy(rax); Return(rdx)` must collapse
+    /// to `Return(x)` with all three copies removed.
+    #[test]
+    fn test_coalesce_chain() {
+        let mut func = IrFunction::new("t", 0x1000);
+        let x = func.alloc_var(Ty::i64());
+        let eax = Value::reg("eax", Ty::i32());
+        let rax = Value::reg("rax", Ty::i64());
+        let rdx = Value::reg("rdx", Ty::i64());
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: eax.clone(),
+                op: OpCode::Copy,
+                src: x.clone().into(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: rax.clone(),
+                op: OpCode::Copy,
+                src: eax.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: rdx.clone(),
+                op: OpCode::Copy,
+                src: rax.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Return {
+                value: Some(rdx.into()),
+            },
+        );
+        let n = coalesce_copies(&mut func);
+        assert!(n >= 3, "expected substitutions, got {n}");
+        let b = &func.blocks[0];
+        // All copies dead: only the Return remains.
+        assert_eq!(b.insts.len(), 1, "{:?}", b.insts);
+        assert!(
+            matches!(&b.insts[0], IrInst::Return { value: Some(v) } if matches!(v, Value::Var { id, .. } if *id == x.var_id().unwrap())),
+            "{:?}",
+            b.insts
+        );
+    }
+
+    /// A redefinition between copy and use kills the mapping: `rax = eax;
+    /// eax = 7; Return(rax)` must keep returning eax's NEW def... i.e. the
+    /// use of rax stays `rax` (which now holds the pre-redef value) - we
+    /// simply do not substitute.
+    #[test]
+    fn test_coalesce_redef_kills() {
+        let mut func = IrFunction::new("t", 0x1000);
+        let eax = Value::reg("eax", Ty::i32());
+        let rax = Value::reg("rax", Ty::i64());
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: rax.clone(),
+                op: OpCode::Copy,
+                src: eax.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: eax.clone(),
+                op: OpCode::Copy,
+                src: Value::Const(7),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Return {
+                value: Some(rax.into()),
+            },
+        );
+        coalesce_copies(&mut func);
+        let b = &func.blocks[0];
+        // Return must still read `rax` (eax was redefined after the copy).
+        assert!(
+            matches!(&b.insts[b.insts.len() - 1], IrInst::Return { value: Some(v) } if matches!(v, Value::Register { name, .. } if name == "rax")),
+            "{:?}",
+            b.insts
+        );
+    }
+
+    /// rsp copies never participate: `t = Copy(rsp); Return(t)` keeps the copy.
+    #[test]
+    fn test_coalesce_leaves_rsp() {
+        let mut func = IrFunction::new("t", 0x1000);
+        let rsp = Value::reg("rsp", Ty::i64());
+        let t = func.alloc_var(Ty::i64());
+        let t_id = t.var_id().unwrap();
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: t.clone().into(),
+                op: OpCode::Copy,
+                src: rsp.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Return {
+                value: Some(t.clone()),
+            },
+        );
+        coalesce_copies(&mut func);
+        let b = &func.blocks[0];
+        // The copy survives AND the return still reads the temp (not rsp).
+        assert!(b.insts.len() >= 2, "{:?}", b.insts);
+        assert!(
+            matches!(&b.insts[b.insts.len() - 1], IrInst::Return { value: Some(v) } if matches!(v, Value::Var { id, .. } if *id == t_id)),
+            "{:?}",
+            b.insts
         );
     }
 }
