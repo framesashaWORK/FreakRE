@@ -1154,7 +1154,6 @@ dependencies = [
 name = "decompiler"
 version = "0.1.0"
 dependencies = [
- "dataflow",
  "freakre-ir",
  "freakre-type-propagation",
  "freakre-x86",
@@ -1865,7 +1864,6 @@ dependencies = [
  "serde",
  "str-extract",
  "thiserror 2.0.20",
- "type-system",
 ]
 
 [[package]]
