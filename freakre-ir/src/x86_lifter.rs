@@ -456,6 +456,80 @@ fn push_un(func: &mut IrFunction, block: BlockId, dst: Value, op: OpCode, src: V
     func.push_inst(block, IrInst::Unary { dst, op, src });
 }
 
+/// After a full-width (64-bit) write to a parent register, mirror the fresh
+/// value into the overlapping subregister views with And-mask extracts.
+///
+/// Background: `write_reg` keeps the *parent* fresh when a *subregister* is
+/// written (`eax = x` also emits `rax = zext(x)`), but the reverse edge was
+/// missing — a `Call` whose dst is `rax` left `eax`/`ax`/`al` stale. The next
+/// `mov [mem], eax` (the standard /O0 call-result spill) then read a dead
+/// value, e.g. `arg_18 = eax` kept `n-1` instead of `fib(n-1)`.
+/// The And-mask form (not `Trunc`) is deliberate: every downstream consumer
+/// already folds plain `And`, and `ir_to_ast` collapses an identity mask
+/// (`dst(w) = And(v, mask(w))`) back into a plain value, so unread mirrors
+/// vanish in the existing dead-assignment elimination with zero C noise.
+/// Only the rax family is mirrored: it is the sole call-return register;
+/// rsp/rbp are excluded on purpose (stack-slot analysis keys on them).
+fn mirror_call_dst(func: &mut IrFunction, block: BlockId, parent: &Value) {
+    let is_rax64 = matches!(
+        parent,
+        Value::Register { name, ty }
+            if name == "rax" && matches!(ty, Ty::Int(64) | Ty::UInt(64))
+    );
+    if !is_rax64 {
+        return;
+    }
+    let parent_v = parent.clone();
+    // eax = rax & 0xFFFF_FFFF
+    push_bin(
+        func,
+        block,
+        reg_value(0, 32, false),
+        OpCode::And,
+        parent_v.clone(),
+        Value::Const(0xFFFF_FFFF),
+    );
+    // ax = rax & 0xFFFF
+    push_bin(
+        func,
+        block,
+        reg_value(0, 16, false),
+        OpCode::And,
+        parent_v.clone(),
+        Value::Const(0xFFFF),
+    );
+    // al = rax & 0xFF
+    push_bin(
+        func,
+        block,
+        reg_value(0, 8, false),
+        OpCode::And,
+        parent_v.clone(),
+        Value::Const(0xFF),
+    );
+    // ah = (rax >> 8) & 0xFF
+    let shifted = func.alloc_var(int_ty(64));
+    push_bin(
+        func,
+        block,
+        shifted.clone(),
+        OpCode::Shr,
+        parent_v,
+        Value::Const(8),
+    );
+    push_bin(
+        func,
+        block,
+        Value::Register {
+            name: "ah".to_string(),
+            ty: int_ty(8),
+        },
+        OpCode::And,
+        shifted,
+        Value::Const(0xFF),
+    );
+}
+
 struct RmLoc {
     reg: Option<Value>,
     addr: Option<Value>,
@@ -1638,14 +1712,8 @@ impl X86Lifter {
                 }
             }
             match found {
-                Some(v) => {
-                    for i in &blk.insts {
-                        }
-                    v
-                }
-                None => {
-                    return false;
-                }
+                Some(v) => v,
+                None => return false,
             }
         };
 
@@ -1749,7 +1817,7 @@ impl X86Lifter {
                 Ok(b) => {
                     by_va.insert(va, b);
                 }
-                Err(e) => {
+                Err(_) => {
                     func.blocks.retain(|b| !created.contains(&b.id));
                     for &cv in &created {
                         starts.retain(|_, v| *v != cv);
@@ -2639,14 +2707,20 @@ impl X86Lifter {
                 let ret_addr = address.wrapping_add(insn_len as u64) as i64;
                 self.emit_push(func, block, Value::Const(ret_addr), sbits);
                 let args = self.call_args(func, block);
+                let dst = Some(reg_value(0, self.ptr_bits(), false));
                 func.push_inst(
                     block,
                     IrInst::Call {
-                        dst: Some(reg_value(0, self.ptr_bits(), false)),
+                        dst: dst.clone(),
                         target: Value::Symbol(format!("func_{:X}", target_addr)),
                         args,
                     },
                 );
+                if self.is_64bit {
+                    if let Some(d) = dst.as_ref() {
+                        mirror_call_dst(func, block, d);
+                    }
+                }
                 Ok((insn_len, true))
             }
 
@@ -2845,14 +2919,20 @@ impl X86Lifter {
                     (0xFF, 2) => {
                         let v = loc.load(func, block, bits);
                         let args = self.call_args(func, block);
+                        let dst = Some(reg_value(0, self.ptr_bits(), false));
                         func.push_inst(
                             block,
                             IrInst::Call {
-                                dst: Some(reg_value(0, self.ptr_bits(), false)),
+                                dst: dst.clone(),
                                 target: v,
                                 args,
                             },
                         );
+                        if self.is_64bit {
+                            if let Some(d) = dst.as_ref() {
+                                mirror_call_dst(func, block, d);
+                            }
+                        }
                         Ok((pos + 1 + loc.len, true))
                     }
                     (0xFF, 4) => {

@@ -1892,7 +1892,7 @@ mod coalesce_tests {
             IrInst::Unary {
                 dst: eax.clone(),
                 op: OpCode::Copy,
-                src: x.clone().into(),
+                src: x.clone(),
             },
         );
         func.push_inst(
@@ -1914,7 +1914,7 @@ mod coalesce_tests {
         func.push_inst(
             func.entry_block,
             IrInst::Return {
-                value: Some(rdx.into()),
+                value: Some(rdx),
             },
         );
         let n = coalesce_copies(&mut func);
@@ -1957,7 +1957,7 @@ mod coalesce_tests {
         func.push_inst(
             func.entry_block,
             IrInst::Return {
-                value: Some(rax.into()),
+                value: Some(rax),
             },
         );
         coalesce_copies(&mut func);
@@ -1980,7 +1980,7 @@ mod coalesce_tests {
         func.push_inst(
             func.entry_block,
             IrInst::Unary {
-                dst: t.clone().into(),
+                dst: t.clone(),
                 op: OpCode::Copy,
                 src: rsp.clone(),
             },

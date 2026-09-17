@@ -195,6 +195,31 @@ impl<'a> IrToAstConverter<'a> {
                         };
                     }
                 }
+                // Identity-mask fold: the x86 lifter materializes subregister
+                // mirrors as `view = And(parent, mask(view))` (e.g. a Call
+                // returning in rax also defines `eax = rax & 0xFFFF_FFFF` so
+                // later `mov [mem], eax` spills observe the fresh value).
+                // When the mask covers the full destination width the And is
+                // a no-op extract — print the plain value so the C output
+                // reads `eax = rax` (a copy the simplifier coalesces) instead
+                // of `eax = rax & 0xFFFFFFFF` (opaque noise). Sound: for a
+                // w-bit destination, `v & ((1<<w)-1)` keeps exactly the bits
+                // the assignment would keep anyway.
+                if *op == OpCode::And {
+                    if let (Value::Const(m), Ty::Int(w) | Ty::UInt(w)) = (rhs, dst.ty()) {
+                        let full: i64 = if w >= 64 {
+                            -1
+                        } else {
+                            (1i64 << w) - 1
+                        };
+                        if *m == full {
+                            return vec![Stmt::Assign {
+                                target,
+                                value: lhs_expr,
+                            }];
+                        }
+                    }
+                }
                 let value = match self.convert_opcode_to_binop(*op) {
                     Some(bin_op) => Expr::Binary {
                         op: bin_op,

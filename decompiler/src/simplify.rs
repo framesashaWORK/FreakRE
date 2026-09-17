@@ -715,13 +715,85 @@ fn simplify_stmt(stmt: &mut Stmt) {
 // в”Ђв”Ђв”Ђ Dead Assignment Elimination в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 /// Remove assignments whose targets are never read afterwards.
+/// True when any statement in `stmts` (including nested bodies) writes the
+/// variable `name` (`Assign` to a bare `Var` target or a `Decl`).
+fn stmt_list_defines_var(stmts: &[Stmt], name: &str) -> bool {
+    for stmt in stmts {
+        let hit = match stmt {
+            Stmt::Assign {
+                target: Expr::Var(n),
+                ..
+            }
+            | Stmt::Decl { name: n, .. } => n == name,
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                stmt_list_defines_var(then_body, name)
+                    || else_body
+                        .as_ref()
+                        .is_some_and(|eb| stmt_list_defines_var(eb, name))
+            }
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+                stmt_list_defines_var(body, name)
+            }
+            Stmt::For { body, .. } => stmt_list_defines_var(body, name),
+            Stmt::Switch { cases, default, .. } => {
+                cases
+                    .iter()
+                    .any(|c| stmt_list_defines_var(&c.body, name))
+                    || default
+                        .as_ref()
+                        .is_some_and(|d| stmt_list_defines_var(d, name))
+            }
+            Stmt::Block(inner) => stmt_list_defines_var(inner, name),
+            Stmt::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
+                stmt_list_defines_var(try_body, name)
+                    || stmt_list_defines_var(catch_body, name)
+            }
+            _ => false,
+        };
+        if hit {
+            return true;
+        }
+    }
+    false
+}
+
 fn eliminate_dead_assignments(stmts: &mut Vec<Stmt>) {
     // Collect all variable reads
     let mut used_vars = HashSet::new();
     collect_used_vars_stmts(stmts, &mut used_vars);
-
-    // Also mark function params and return values as "used"
-    // (they're external interfaces)
+    // The x86-64 return register is live at function exit even when no
+    // statement reads it: a trailing `rax = eax` feeds the caller's read of
+    // rax after a fall-through `ret` (e.g. the else-tail of `fib`, where the
+    // `n < 2` path returns without an explicit Return statement). Without
+    // this seed the copy looks dead, is deleted, and the fall-through path
+    // returns garbage. `eax` covers the 32-bit spelling of the same storage.
+    // Harmless for non-x86 pipelines (DEX/ARM never use these names).
+    // The seed applies only when the top-level list can actually reach the
+    // exit: a trailing `return`/`goto` makes the fall-through unreachable,
+    // and then the seed would only pin dead `rax = ...` noise alive.
+    // `eax` is seeded only for code that never touches `rax` (32-bit
+    // pipelines): in 64-bit output every `eax` write is followed by its
+    // `write_reg` parent merge into `rax`, so the `rax` seed transitively
+    // protects the whole chain and a separate `eax` seed would only pin the
+    // dead call-dst mirrors (`eax = rax`) alive.
+    let falls_through = !matches!(
+        stmts.last(),
+        Some(Stmt::Return { .. } | Stmt::Goto { .. })
+    );
+    if falls_through {
+        used_vars.insert("rax".to_string());
+        if !stmt_list_defines_var(stmts, "rax") {
+            used_vars.insert("eax".to_string());
+        }
+    }
 
     // Remove dead assignments (iterate until stable)
     let mut changed = true;
@@ -770,6 +842,67 @@ fn expr_references_var(expr: &Expr, name: &str) -> bool {
     let mut reads = HashSet::new();
     collect_used_vars_expr(expr, &mut reads);
     reads.contains(name)
+}
+
+/// Canonical base register for an x86 register name (`eax`/`rax`/`al` →
+/// `"rax"`), or `None` when `name` is not a register at all.
+fn x86_register_base(name: &str) -> Option<&'static str> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "rax" | "eax" | "ax" | "al" | "ah" => "rax",
+        "rcx" | "ecx" | "cx" | "cl" | "ch" => "rcx",
+        "rdx" | "edx" | "dx" | "dl" | "dh" => "rdx",
+        "rbx" | "ebx" | "bx" | "bl" | "bh" => "rbx",
+        "rsp" | "esp" | "sp" | "spl" => "rsp",
+        "rbp" | "ebp" | "bp" | "bpl" => "rbp",
+        "rsi" | "esi" | "si" | "sil" => "rsi",
+        "rdi" | "edi" | "di" | "dil" => "rdi",
+        "r8" | "r8d" | "r8w" | "r8b" => "r8",
+        "r9" | "r9d" | "r9w" | "r9b" => "r9",
+        "r10" | "r10d" | "r10w" | "r10b" => "r10",
+        "r11" | "r11d" | "r11w" | "r11b" => "r11",
+        "r12" | "r12d" | "r12w" | "r12b" => "r12",
+        "r13" | "r13d" | "r13w" | "r13b" => "r13",
+        "r14" | "r14d" | "r14w" | "r14b" => "r14",
+        "r15" | "r15d" | "r15w" | "r15b" => "r15",
+        _ => return None,
+    })
+}
+
+/// Caller-saved registers under the Windows x86-64 (and x86-32) ABIs.
+fn x86_caller_saved(name: &str) -> bool {
+    matches!(
+        x86_register_base(name),
+        Some("rax") | Some("rcx") | Some("rdx") | Some("r8") | Some("r9") | Some("r10")
+            | Some("r11") | Some("rsi") | Some("rdi")
+    )
+}
+
+/// True when any own sub-expression of the statement contains a call.
+fn stmt_may_call(stmt: &Stmt) -> bool {
+    fn e(e: &Expr) -> bool {
+        expr_may_side_effect(e)
+    }
+    match stmt {
+        Stmt::Assign { target, value } => e(target) || e(value),
+        Stmt::Return { value: Some(v) } => e(v),
+        Stmt::Call { .. } => true,
+        Stmt::Expr(v) => e(v),
+        Stmt::Decl { init: Some(v), .. } => e(v),
+        Stmt::If { cond, .. } => e(cond),
+        Stmt::While { cond, .. } | Stmt::DoWhile { cond, .. } => e(cond),
+        Stmt::For {
+            init,
+            cond,
+            update,
+            ..
+        } => {
+            init.as_ref().is_some_and(|s| stmt_may_call(s))
+                || cond.as_ref().is_some_and(e)
+                || update.as_ref().is_some_and(|s| stmt_may_call(s))
+        }
+        Stmt::Switch { expr, .. } => e(expr),
+        _ => false,
+    }
 }
 
 fn remove_dead_stmts(stmts: &mut Vec<Stmt>, used_vars: &HashSet<String>) {
@@ -992,63 +1125,6 @@ fn propagate_copies(stmts: &mut Vec<Stmt>) {
     remove_dead_stmts(stmts, &used_after);
 }
 
-/// Collect every variable name a statement references (own expressions and
-/// nested bodies, including control-flow headers).
-fn collect_stmt_var_names(stmt: &Stmt, out: &mut HashSet<String>) {
-    stmt.for_each_expr(&mut |e: &Expr| {
-        if let Expr::Var(n) = e {
-            out.insert(n.clone());
-        }
-    });
-    match stmt {
-        Stmt::If {
-            then_body,
-            else_body,
-            ..
-        } => {
-            for s in then_body {
-                collect_stmt_var_names(s, out);
-            }
-            if let Some(eb) = else_body {
-                for s in eb {
-                    collect_stmt_var_names(s, out);
-                }
-            }
-        }
-        Stmt::While { body, .. } | Stmt::DoWhile { body, .. } | Stmt::Block(body) => {
-            for s in body {
-                collect_stmt_var_names(s, out);
-            }
-        }
-        Stmt::For {
-            init, update, body, ..
-        } => {
-            if let Some(i) = init {
-                collect_stmt_var_names(i, out);
-            }
-            if let Some(u) = update {
-                collect_stmt_var_names(u, out);
-            }
-            for s in body {
-                collect_stmt_var_names(s, out);
-            }
-        }
-        Stmt::Switch { cases, default, .. } => {
-            for c in cases {
-                for s in &c.body {
-                    collect_stmt_var_names(s, out);
-                }
-            }
-            if let Some(d) = default {
-                for s in d {
-                    collect_stmt_var_names(s, out);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
 fn substitute_within_list(
     stmts: &mut [Stmt],
     def_counts: &HashMap<String, usize>,
@@ -1063,13 +1139,19 @@ fn substitute_within_list(
     // never referenced again after the copy (in the remainder of this list,
     // including nested bodies and control headers).
     let mut drop_idx: Vec<usize> = Vec::new();
-    // Per-position set of variable names referenced at-or-after that position
-    // (suffix sets), precomputed to avoid re-borrowing during iteration.
+    // Whether this list (including nested bodies) ever writes `rax`.
+    // Decides subregister-copy protection below: in 64-bit output every
+    // `eax` write carries a `write_reg` parent merge into `rax`, so an
+    // unread subreg copy (e.g. a dead call-dst mirror `eax = rax`) is safe
+    // to drop — the `rax` twin survives via its own protection. Code that
+    // never touches `rax` is 32-bit-style, where `eax` IS the return
+    // register and its copies must be kept like `rax` ones.
+    let list_defines_rax = stmt_list_defines_var(stmts, "rax");
     let n = stmts.len();
     let mut suffix_names: Vec<HashSet<String>> = vec![HashSet::new(); n + 1];
     for si in (0..n).rev() {
         let mut s = suffix_names[si + 1].clone();
-        collect_stmt_var_names(&stmts[si], &mut s);
+        collect_used_vars_stmt(&stmts[si], &mut s);
         suffix_names[si] = s;
     }
 
@@ -1078,10 +1160,34 @@ fn substitute_within_list(
         //    sub-expressions (not to its child lists).
         apply_pending_to_own_exprs(stmt, &pending);
 
+        // 2. A statement that (re)defines a variable kills its previous
+        //    pending entry: later reads must observe the NEW value, not the
+        //    value the variable held before this definition. This must run
+        //    *before* the new candidate from this statement is registered.
+        let redefined: Option<String> = match stmt {
+            Stmt::Assign {
+                target: Expr::Var(name),
+                ..
+            }
+            | Stmt::Decl { name, .. } => Some(name.clone()),
+            _ => None,
+        };
+        if let Some(def_name) = redefined.as_deref() {
+            pending.remove(def_name);
+        }
+        // Calls clobber every caller-saved register: pending entries whose
+        // *value* is such a register name must not survive across the call,
+        // or later reads would be rewritten to a clobbered value.
+        if stmt_may_call(stmt) {
+            pending.retain(|_, expr| {
+                !matches!(expr, Expr::Var(v) if x86_caller_saved(v))
+            });
+        }
+
         // 1b. Multi-def Var→Var copies: safe to propagate sequentially within
-        // a single statement list because the map is rewritten at every
-        // redefinition (statement order dominates). This is what kills the
-        // lifter's `eax = x; rax = eax; a1 = rax` register-shuffle noise.
+        //    a single statement list because the map is rewritten at every
+        //    redefinition (statement order dominates). This is what kills the
+        //    lifter's `eax = x; rax = eax; a1 = rax` register-shuffle noise.
         if let Stmt::Assign {
             target: Expr::Var(name),
             value: Expr::Var(src),
@@ -1090,13 +1196,28 @@ fn substitute_within_list(
             if name != src && !matches!(name.as_str(), "rsp" | "esp" | "rbp" | "ebp") {
                 let name = name.clone();
                 let src = src.clone();
+                // `rax` itself is always protected: it is the return
+                // register and can feed the function's fall-through return
+                // even when no later statement reads it. Other registers
+                // (argument setup, subregister mirrors) are protected only
+                // when this list never writes `rax` — i.e. 32-bit-style code
+                // where `eax` IS the return register. In 64-bit code an
+                // unread subreg copy (dead call-dst mirror `eax = rax`) is
+                // safe to drop: its `rax` twin survives via its own
+                // protection. Values still propagate into later reads.
+                // NOTE: compare the register NAME, not its base —
+                // `x86_register_base("eax")` is `Some("rax")`, which would
+                // protect the whole family including the dead mirrors.
+                let reg_base = x86_register_base(&name);
+                let protect = name == "rax"
+                    || (reg_base.is_some() && !list_defines_rax);
                 // Droppable only if nothing after this statement still reads
                 // the target (later pending values referencing it count too).
                 let used_later = suffix_names[si + 1].contains(&name)
                     || pending
                         .values()
                         .any(|e| expr_references_var(e, &name));
-                if used_later {
+                if used_later || protect {
                     pending.insert(name, Expr::Var(src));
                 } else {
                     drop_idx.push(si);
@@ -1104,7 +1225,7 @@ fn substitute_within_list(
             }
         }
 
-        // 2. Register new candidate definitions found at this level.
+        // 3. Register new candidate definitions found at this level.
         if let Stmt::Assign {
             target: Expr::Var(name),
             value,
@@ -1119,20 +1240,12 @@ fn substitute_within_list(
             }
         }
 
-        // 3. Invalidate candidates whose source variable is redefined by this
-        //    statement: `v1 = rax; rax = rcx; return v1` must NOT become
-        //    `return rcx`. Self-referential candidates registered just above
-        //    (`v1 = v1 + 1`) are culled here too — later uses observe the NEW
-        //    value, not the expression.
-        let redefined = match stmt {
-            Stmt::Assign {
-                target: Expr::Var(name),
-                ..
-            }
-            | Stmt::Decl { name, .. } => Some(name),
-            _ => None,
-        };
-        if let Some(def_name) = redefined {
+        // 4. Invalidate candidates whose *value* reads the redefined source:
+        //    `v1 = rax; rax = rcx; return v1` must NOT become `return rcx`.
+        //    Self-referential candidates registered just above (`v1 = v1 + 1`)
+        //    are culled here too — later uses observe the NEW value, not the
+        //    expression.
+        if let Some(def_name) = redefined.as_deref() {
             pending.retain(|_, expr| !expr_references_var(expr, def_name));
         }
     }
@@ -1229,7 +1342,13 @@ fn substitute_within_list(
 fn apply_pending_to_own_exprs(stmt: &mut Stmt, pending: &HashMap<String, Expr>) {
     match stmt {
         Stmt::Assign { target, value } => {
-            substitute_vars_expr(target, pending);
+            // A bare-Var target is a *write*, not a read: substituting
+            // `eax = x` into `dword_8 = x` would silently mutate a different
+            // variable. Only compound targets (Deref addresses, Field bases)
+            // contain address reads that legitimately propagate.
+            if !matches!(target, Expr::Var(_)) {
+                substitute_vars_expr(target, pending);
+            }
             substitute_vars_expr(value, pending);
         }
         Stmt::Return { value: Some(v) } => substitute_vars_expr(v, pending),

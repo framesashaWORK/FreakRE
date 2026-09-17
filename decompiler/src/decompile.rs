@@ -219,7 +219,12 @@ fn decompile_function_inner(
     // Copy coalescing for the no-SSA path (and a second sweep for the SSA
     // path: stack recovery can re-introduce copies via slot temps).
     let cc = crate::fold_flags::coalesce_copies(&mut ir);
-    let _ = cc;
+    if std::env::var("FREAKRE_CC_DEBUG").is_ok() {
+        eprintln!("CCDBG coalesce_copies substituted {cc} in {}", func.name);
+        for b in &ir.blocks {
+            eprintln!("CCDBG bb{} {:?}", b.id.0, b.insts);
+        }
+    }
 
     // Phase 1: Convert IR to structured AST
     let mut ast = ir_to_ast(&ir);

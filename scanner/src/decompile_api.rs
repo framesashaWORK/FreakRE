@@ -241,7 +241,7 @@ pub fn decompile_pe_all_functions(data: &[u8]) -> Result<Vec<DecompiledFunction>
         })
         .collect();
     let mut out = Vec::new();
-    for (i, func) in detected.iter().enumerate() {
+    for (i, _func) in detected.iter().enumerate() {
         let (fstart, fsize) = extended[i];
         let Some(func_slice) = crate::scanner::carve_func_slice(
             code_region,
