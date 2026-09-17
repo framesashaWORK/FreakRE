@@ -11,6 +11,5 @@ func-finder = { path = "../func-finder" }
 freakre-x86 = { path = "../freakre-x86" }
 entropy-rs = { path = "../entropy-rs" }
 str-extract = { path = "../str-extract" }
-type-system = { path = "../type-system" }
 thiserror = { workspace = true }
 serde = { workspace = true }

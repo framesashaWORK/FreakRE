@@ -20,6 +20,9 @@ pub struct DecompiledFunction {
     pub size: u64,
     /// C pseudocode.
     pub c_code: String,
+    /// What the SSA stage (Phase 0.6) did: attempted / failed / rsp-fallback.
+    /// Lets batch harnesses measure how often the pre-SSA fallback fires.
+    pub events: decompiler::PipelineEvents,
 }
 
 /// Decompile the function containing `address` from a PE image.
@@ -106,14 +109,16 @@ pub fn decompile_pe_function(data: &[u8], address: Option<u64>) -> Result<Decomp
     );
 
     let string_table = build_string_table(&pe, data);
-    let c_code = decompiler::decompile_function_with_strings(&ir_func, &string_table)
-        .map_err(|e| format!("decompilation failed: {e}"))?;
+    let (c_code, events) =
+        decompiler::decompile_function_with_strings_and_events(&ir_func, &string_table);
+    let c_code = c_code.map_err(|e| format!("decompilation failed: {e}"))?;
 
     Ok(DecompiledFunction {
         address: func.start,
         name: func_name,
         size: func.size as u64,
         c_code,
+        events,
     })
 }
 
@@ -167,13 +172,15 @@ pub fn decompile_pe_function_sized(
         &pe_data_windows(&pe, data),
     );
     let string_table = build_string_table(&pe, data);
-    let c_code = decompiler::decompile_function_with_strings(&ir_func, &string_table)
-        .map_err(|e| format!("decompilation failed: {e}"))?;
+    let (c_code, events) =
+        decompiler::decompile_function_with_strings_and_events(&ir_func, &string_table);
+    let c_code = c_code.map_err(|e| format!("decompilation failed: {e}"))?;
     Ok(DecompiledFunction {
         address: rel,
         name: func_name,
         size: size as u64,
         c_code,
+        events,
     })
 }
 
@@ -262,14 +269,15 @@ pub fn decompile_pe_all_functions(data: &[u8]) -> Result<Vec<DecompiledFunction>
             fstart,
             &windows,
         );
-        if let Ok(c_code) =
-            decompiler::decompile_function_with_strings(&ir_func, &string_table)
+        if let (Ok(c_code), events) =
+            decompiler::decompile_function_with_strings_and_events(&ir_func, &string_table)
         {
             out.push(DecompiledFunction {
                 address: fstart,
                 name: func_name,
                 size: fsize as u64,
                 c_code,
+                events,
             });
         }
     }

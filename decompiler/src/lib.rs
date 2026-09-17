@@ -56,7 +56,9 @@ pub struct IfElsePattern {
 
 pub use decompile::{
     decompile_exports, decompile_exports_with_config, decompile_exports_with_diagnostics,
-    decompile_function, decompile_function_with_config, decompile_function_with_strings,
+    decompile_function, decompile_function_with_config, decompile_function_with_events,
+    decompile_function_with_strings, decompile_function_with_strings_and_events,
     DecompileDiagnostic, DecompileDiagnosticKind, DecompileError, DecompilerConfig,
+    PipelineEvents,
 };
 pub use strings::StringTable;

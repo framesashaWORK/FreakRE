@@ -85,6 +85,59 @@ pub fn decompile_function(func: &IrFunction) -> Result<String, DecompileError> {
     decompile_function_with_config(func, &DecompilerConfig::default())
 }
 
+/// Per-function SSA-pipeline events (Phase 0.6).
+///
+/// The SSA round-trip used to fail silently: `to_ssa`/`from_ssa` errors were
+/// swallowed by `if let Ok(...)` and the rsp-fallback fired without a trace,
+/// so a broken SSA was indistinguishable from a healthy one. Every event is
+/// now recorded here; use [`decompile_function_with_events`] to observe them.
+/// Serde-serializable so batch harnesses (bench, System32 metrics) can count
+/// fallbacks per function.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PipelineEvents {
+    /// SSA was attempted (`config.use_ssa`).
+    pub ssa_attempted: bool,
+    /// `to_ssa` failed; the pre-SSA IR flowed through untouched.
+    pub ssa_to_ssa_error: Option<String>,
+    /// `from_ssa` failed after a successful `to_ssa`; pre-SSA IR kept.
+    pub ssa_from_ssa_error: Option<String>,
+    /// Legacy: SSA succeeded but hid `rsp`, forcing the pre-SSA fallback.
+    /// Obsolete since `from_ssa` preserves register spellings — kept for
+    /// serde compatibility with recorded batches; always false on new runs.
+    pub ssa_rsp_fallback: bool,
+}
+
+impl PipelineEvents {
+    /// True when SSA ran end-to-end and its output was used.
+    pub fn ssa_clean(&self) -> bool {
+        self.ssa_attempted
+            && self.ssa_to_ssa_error.is_none()
+            && self.ssa_from_ssa_error.is_none()
+            && !self.ssa_rsp_fallback
+    }
+}
+
+/// Decompile a single IR function, also returning the SSA-pipeline events.
+///
+/// Identical to [`decompile_function_with_config`] except the second tuple
+/// element reports what Phase 0.6 did (attempted / failed / rsp-fallback).
+pub fn decompile_function_with_events(
+    func: &IrFunction,
+    config: &DecompilerConfig,
+) -> (Result<String, DecompileError>, PipelineEvents) {
+    let mut events = PipelineEvents::default();
+    let result = decompile_function_inner(
+        func,
+        config,
+        &crate::call_naming::SignatureMap::default(),
+        &crate::call_naming::AddrNameMap::default(),
+        None,
+        None,
+        &mut events,
+    );
+    (result, events)
+}
+
 /// Decompile a single IR function, rendering address constants that point at
 /// known image strings as C string literals (`f(0x14001000)` → `f("...")`).
 ///
@@ -94,14 +147,27 @@ pub fn decompile_function_with_strings(
     func: &IrFunction,
     strings: &crate::strings::StringTable,
 ) -> Result<String, DecompileError> {
-    decompile_function_inner(
+    decompile_function_with_strings_and_events(func, strings).0
+}
+
+/// Image-aware variant of [`decompile_function_with_events`]: string-literal
+/// annotation plus the SSA-pipeline events. Used by batch harnesses that
+/// need per-function fallback statistics.
+pub fn decompile_function_with_strings_and_events(
+    func: &IrFunction,
+    strings: &crate::strings::StringTable,
+) -> (Result<String, DecompileError>, PipelineEvents) {
+    let mut events = PipelineEvents::default();
+    let result = decompile_function_inner(
         func,
         &DecompilerConfig::default(),
         &crate::call_naming::SignatureMap::default(),
         &crate::call_naming::AddrNameMap::default(),
         Some(strings),
         None,
-    )
+        &mut events,
+    );
+    (result, events)
 }
 
 /// Decompile a function through an explicit SSA round-trip.
@@ -131,6 +197,7 @@ pub fn decompile_function_with_config(
         &crate::call_naming::AddrNameMap::default(),
         None,
         None,
+        &mut PipelineEvents::default(),
     )
 }
 
@@ -141,6 +208,7 @@ fn decompile_function_inner(
     addr_names: &crate::call_naming::AddrNameMap,
     strings: Option<&crate::strings::StringTable>,
     callees: Option<&crate::types::CalleeTypes>,
+    events: &mut PipelineEvents,
 ) -> Result<String, DecompileError> {
     validate_function_size(func)?;
 
@@ -152,60 +220,51 @@ fn decompile_function_inner(
     crate::fold_flags::fold_adc_carries(&mut ir);
 
     // Phase 0.6: SSA round-trip (optional, enabled by default).
-    // Must run before stack-var recovery so that recovered Var ids correspond
-    // to the final lowered IR (from_ssa allocates fresh Vars). However SSA
-    // lowers `Register("rsp")` to `Var`s, which blinds `recover_stack_vars`
-    // (it keys on `Register("rsp")`). For functions that actually use `rsp`
-    // for stack slots, we detect the loss and fall back to the pre-SSA IR.
+    // `from_ssa` preserves architectural-register spellings (see
+    // `ssa::concrete`), so `recover_stack_vars` keeps seeing `rsp` and no
+    // pre-SSA fallback is needed: SSA optimizations now apply to stack
+    // functions too (previously 25/25 bench functions skipped SSA).
     if config.use_ssa {
-        let has_stack_access = ir.blocks.iter().any(|b| {
-            b.insts.iter().any(|i| {
-                i.sources()
-                    .iter()
-                    .any(|v| matches!(v, freakre_ir::Value::Register { name, .. } if name == "rsp"))
-                    || i.dst().is_some_and(
-                        |d| matches!(d, freakre_ir::Value::Register { name, .. } if name == "rsp"),
-                    )
-            })
-        });
+        events.ssa_attempted = true;
         let mut ssa_candidate = ir.clone();
-        if let Ok(mut ssa) = freakre_ir::ssa::to_ssa(&mut ssa_candidate) {
-            freakre_ir::ssa::remove_trivial_phis(&mut ssa);
-            // SCCP: constant propagation over the SSA lattice. Kills dead
-            // branches (constant flag compares), folds conditional branches
-            // and collapses single-value phis before structuring.
-            let _sccp_stats = freakre_ir::sccp::sccp(&mut ssa);
-            // Second trivial-phi sweep: SCCP can make additional phis
-            // trivial (identical / single surviving input), and the fold
-            // now also covers single-input phis.
-            freakre_ir::ssa::remove_trivial_phis(&mut ssa);
-            // GVN: eliminate dominated pure recomputations (CSE with
-            // commutative unification) before they materialize as
-            // duplicated expressions in the AST.
-            let _gvn_stats = freakre_ir::ssa::ssa_gvn(&mut ssa);
-            // GVN can unify phi inputs, creating new trivial phis.
-            freakre_ir::ssa::remove_trivial_phis(&mut ssa);
-            // SSA-DCE: drop pure definitions left dead by SCCP folding,
-            // before they materialize as copies/expressions in lowered IR.
-            let _dce_stats = freakre_ir::ssa::ssa_dce(&mut ssa);
-            // from_ssa can only fail on malformed SSA (never on to_ssa output);
-            // on failure keep the pre-SSA IR exactly like the to_ssa-error path.
-            if let Ok(lowered) = freakre_ir::ssa::from_ssa(&ssa) {
-                let lowered_has_rsp = lowered.blocks.iter().any(|b| {
-                    b.insts.iter().any(|i| {
-                        i.sources().iter().any(
-                            |v| matches!(v, freakre_ir::Value::Register { name, .. } if name == "rsp"),
-                        ) || i.dst().is_some_and(
-                            |d| matches!(d, freakre_ir::Value::Register { name, .. } if name == "rsp"),
-                        )
-                    })
-                });
-                if !(has_stack_access && !lowered_has_rsp) {
-                    ir = lowered;
-                    crate::fold_flags::eliminate_dead_flag_defs(&mut ir);
-                    crate::fold_flags::coalesce_copies(&mut ir);
+        match freakre_ir::ssa::to_ssa(&mut ssa_candidate) {
+            Err(e) => {
+                // Was silently ignored (`if let Ok`); now recorded. The
+                // pre-SSA IR flows through untouched (same behavior as before,
+                // but observable via PipelineEvents).
+                events.ssa_to_ssa_error = Some(e.to_string());
+            }
+            Ok(mut ssa) => {
+                freakre_ir::ssa::remove_trivial_phis(&mut ssa);
+                // SCCP: constant propagation over the SSA lattice. Kills dead
+                // branches (constant flag compares), folds conditional branches
+                // and collapses single-value phis before structuring.
+                let _sccp_stats = freakre_ir::sccp::sccp(&mut ssa);
+                // Second trivial-phi sweep: SCCP can make additional phis
+                // trivial (identical / single surviving input), and the fold
+                // now also covers single-input phis.
+                freakre_ir::ssa::remove_trivial_phis(&mut ssa);
+                // GVN: eliminate dominated pure recomputations (CSE with
+                // commutative unification) before they materialize as
+                // duplicated expressions in the AST.
+                let _gvn_stats = freakre_ir::ssa::ssa_gvn(&mut ssa);
+                // GVN can unify phi inputs, creating new trivial phis.
+                freakre_ir::ssa::remove_trivial_phis(&mut ssa);
+                // SSA-DCE: drop pure definitions left dead by SCCP folding,
+                // before they materialize as copies/expressions in lowered IR.
+                let _dce_stats = freakre_ir::ssa::ssa_dce(&mut ssa);
+                // from_ssa can only fail on malformed SSA (never on to_ssa output);
+                // on failure keep the pre-SSA IR exactly like the to_ssa-error path.
+                match freakre_ir::ssa::from_ssa(&ssa) {
+                    Err(e) => {
+                        events.ssa_from_ssa_error = Some(e.to_string());
+                    }
+                    Ok(lowered) => {
+                        ir = lowered;
+                        crate::fold_flags::eliminate_dead_flag_defs(&mut ir);
+                        crate::fold_flags::coalesce_copies(&mut ir);
+                    }
                 }
-                // else: SSA would hide `rsp`; keep original `ir` for stack recovery.
             }
         }
     }
@@ -361,6 +420,7 @@ pub fn decompile_program_with_config(
             &addr_names,
             None,
             callees.as_ref(),
+            &mut PipelineEvents::default(),
         )?;
         results.push((func.name.clone(), c_code));
     }
@@ -477,6 +537,7 @@ pub fn decompile_exports_with_diagnostics(
             &addr_names,
             None,
             callees.as_ref(),
+            &mut PipelineEvents::default(),
         ) {
             Ok(code) => results.push((export_name.clone(), code)),
             Err(e) => diagnostics.push(DecompileDiagnostic {
@@ -751,6 +812,80 @@ mod tests {
             decompile_exports_with_diagnostics(&program, 0, &DecompilerConfig::default());
         assert!(results.is_empty());
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_pipeline_events_clean_on_simple_function() {
+        let mut func = IrFunction::new("clean", 0x1000);
+        func.push_inst(func.entry_block, IrInst::Return { value: None });
+
+        let (result, events) =
+            decompile_function_with_events(&func, &DecompilerConfig::default());
+        assert!(result.is_ok());
+        assert!(events.ssa_attempted);
+        assert!(events.ssa_clean());
+        assert!(events.ssa_to_ssa_error.is_none());
+        assert!(events.ssa_from_ssa_error.is_none());
+        assert!(!events.ssa_rsp_fallback);
+    }
+
+    #[test]
+    fn test_pipeline_events_no_fallback_on_stack_function() {
+        // Lifter-style prologue: `rsp` is written. Since `from_ssa`
+        // preserves register spellings, SSA applies end-to-end (no
+        // rsp-fallback) and stack-var recovery still sees `rsp`.
+        let mut func = IrFunction::new("stacky", 0x1000);
+        let rsp = freakre_ir::Value::Register {
+            name: "rsp".to_string(),
+            ty: Ty::i64(),
+        };
+        let t = func.alloc_var(Ty::i64());
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: t.clone(),
+                op: OpCode::Sub,
+                lhs: rsp.clone(),
+                rhs: freakre_ir::Value::Const(8),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: rsp,
+                op: OpCode::Copy,
+                src: t,
+            },
+        );
+        func.push_inst(func.entry_block, IrInst::Return { value: None });
+
+        let (result, events) =
+            decompile_function_with_events(&func, &DecompilerConfig::default());
+        assert!(result.is_ok());
+        assert!(events.ssa_attempted);
+        assert!(events.ssa_clean());
+        assert!(!events.ssa_rsp_fallback);
+        assert!(events.ssa_to_ssa_error.is_none());
+    }
+
+    #[test]
+    fn test_pipeline_events_records_to_ssa_error() {
+        // An unreachable block makes `to_ssa` refuse the function
+        // (`UnreachableBlocks`); the error used to vanish inside
+        // `if let Ok(...)`. The pre-SSA IR still flows through.
+        let mut func = IrFunction::new("unreach", 0x1000);
+        func.push_inst(func.entry_block, IrInst::Return { value: None });
+        let dead = func.add_block("dead");
+        func.push_inst(dead, IrInst::Return { value: None });
+
+        let (result, events) =
+            decompile_function_with_events(&func, &DecompilerConfig::default());
+        assert!(events.ssa_attempted);
+        assert!(!events.ssa_clean());
+        let detail = events.ssa_to_ssa_error.expect("to_ssa error must be recorded");
+        assert!(detail.contains("unreachable"), "unexpected detail: {detail}");
+        // The failure must not abort decompilation by itself.
+        assert!(result.is_ok());
     }
 
     #[test]

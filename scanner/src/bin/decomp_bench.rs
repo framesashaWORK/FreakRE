@@ -47,6 +47,29 @@ fn main() {
 
     let mut total_funcs = 0usize;
     let mut ok_files = 0usize;
+    // FREAKRE_BENCH_EVENTS=1: also aggregate SSA-pipeline events per function
+    // (how often the pre-SSA rsp-fallback fires). Methodology counter, off by
+    // default so normal runs stay quiet.
+    let want_events = std::env::var("FREAKRE_BENCH_EVENTS").is_ok();
+    let (mut ev_attempted, mut ev_clean, mut ev_fallback, mut ev_to_err, mut ev_from_err) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut tally = |ev: &decompiler::PipelineEvents| {
+        if ev.ssa_attempted {
+            ev_attempted += 1;
+        }
+        if ev.ssa_clean() {
+            ev_clean += 1;
+        }
+        if ev.ssa_rsp_fallback {
+            ev_fallback += 1;
+        }
+        if ev.ssa_to_ssa_error.is_some() {
+            ev_to_err += 1;
+        }
+        if ev.ssa_from_ssa_error.is_some() {
+            ev_from_err += 1;
+        }
+    };
     for pe_path in &pes {
         let stem = pe_path
             .file_stem()
@@ -64,6 +87,9 @@ fn main() {
                     Ok(f) => {
                         let name = format!("{}_sub_{:X}.c", stem, f.address);
                         std::fs::write(out_dir.join(&name), &f.c_code).expect("write c");
+                        if want_events {
+                            tally(&f.events);
+                        }
                         funcs += 1;
                     }
                     Err(e) => eprintln!("{} @ {:X}: {}", stem, va, e),
@@ -79,6 +105,9 @@ fn main() {
                 for f in &funcs {
                     let name = format!("{}_sub_{:X}.c", stem, f.address);
                     std::fs::write(out_dir.join(&name), &f.c_code).expect("write c");
+                    if want_events {
+                        tally(&f.events);
+                    }
                 }
                 eprintln!("{}: {} functions decompiled", stem, funcs.len());
                 total_funcs += funcs.len();
@@ -89,4 +118,10 @@ fn main() {
         }
     }
     eprintln!("---- {} files, {} functions ----", ok_files, total_funcs);
+    if want_events {
+        eprintln!(
+            "EVENTS attempted={} clean={} rsp_fallback={} to_ssa_err={} from_ssa_err={}",
+            ev_attempted, ev_clean, ev_fallback, ev_to_err, ev_from_err
+        );
+    }
 }

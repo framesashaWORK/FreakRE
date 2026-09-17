@@ -1512,7 +1512,24 @@ fn concrete(
     if let Some(v) = vals.get(vv) {
         return v.clone();
     }
-    let v = out.alloc_var(vv.ty.clone());
+    // Architectural registers keep their spelling on lowering instead of
+    // becoming fresh Vars. The decompiler's downstream passes key on
+    // register names (`recover_stack_vars` on `rsp`, params on arg regs,
+    // copy-propagation on `rax`/`eax`), so lowering `rsp.3` to `v91` used
+    // to blind them — forcing the pre-SSA fallback for every stack function.
+    // Collapsing same-base versions to one name is sound: `to_ssa` never
+    // places two phis of the same base in one block, so same-edge copies
+    // cannot target the same spelling twice, and sequential defs on a path
+    // execute in order (later def wins, exactly like the versioned flow).
+    // Numbered IR vars still get fresh Vars (their versions are genuinely
+    // distinct values with no downstream name consumer).
+    let v = match &vv.base {
+        BaseVar::Reg(name) => Value::Register {
+            name: name.clone(),
+            ty: vv.ty.clone(),
+        },
+        BaseVar::Var(_) => out.alloc_var(vv.ty.clone()),
+    };
     vals.insert(vv.clone(), v.clone());
     v
 }
@@ -1797,12 +1814,24 @@ mod tests {
 
     /// Diamond: entry -> b1 / b2 -> merge. Both arms redefine "x".
     fn diamond() -> IrFunction {
+        diamond_with(false)
+    }
+
+    /// Diamond shape; `numbered` selects a numbered-`Var` merge variable
+    /// instead of register `x`. Lowering-structure tests use the numbered
+    /// form (registers collapse spellings on lowering and produce no edge
+    /// copies by design — see `concrete`).
+    fn diamond_with(numbered: bool) -> IrFunction {
         let mut f = IrFunction::new("diamond", 0x0);
+        let x = if numbered {
+            f.alloc_var(Ty::i64())
+        } else {
+            Value::reg("x", Ty::i64())
+        };
         let cond = f.alloc_var(Ty::Bool);
         let b1 = f.add_block("then");
         let b2 = f.add_block("else");
         let b3 = f.add_block("merge");
-        let x = Value::reg("x", Ty::i64());
 
         f.push_inst(
             f.entry_block,
@@ -2023,7 +2052,7 @@ mod tests {
 
     #[test]
     fn test_from_ssa_edge_copies_structure() {
-        let mut func = diamond();
+        let mut func = diamond_with(true);
         let ssa = to_ssa(&mut func).unwrap();
         let ir = from_ssa(&ssa).unwrap();
 
@@ -2086,13 +2115,45 @@ mod tests {
     }
 
     #[test]
+    fn test_from_ssa_registers_keep_spelling_no_edge_churn() {
+        // Registers collapse spellings on lowering (`concrete`): a phi on
+        // `x` needs no edge copies or split blocks — the raw name already
+        // merges the flow. This is what lets `recover_stack_vars` see `rsp`
+        // after SSA (no pre-SSA fallback).
+        let mut func = diamond();
+        let ssa = to_ssa(&mut func).unwrap();
+        assert_eq!(ssa.block(BlockId(3)).unwrap().phis.len(), 1);
+        let ir = from_ssa(&ssa).unwrap();
+
+        for b in &ir.blocks {
+            for inst in &b.insts {
+                assert!(!matches!(inst, IrInst::Phi { .. }), "phi must be gone");
+            }
+            assert!(
+                !b.label.starts_with("edge_"),
+                "register merge needs no split block, found {}",
+                b.label
+            );
+        }
+        // The merge reads the raw register: both arms wrote `x`, so the
+        // spelling already carries the merged value on every path.
+        let merge = ir.block(BlockId(3)).unwrap();
+        match merge.insts.last() {
+            Some(IrInst::Return {
+                value: Some(Value::Register { name, .. }),
+            }) => assert_eq!(name, "x"),
+            other => panic!("expected return of raw register x, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_from_ssa_splits_critical_edges() {
         let mut f = IrFunction::new("critical", 0x0);
         let cond = f.alloc_var(Ty::Bool);
         let b1 = f.add_block("inner");
         let b2 = f.add_block("else");
         let merge = f.add_block("merge");
-        let x = Value::reg("x", Ty::i64());
+        let x = f.alloc_var(Ty::i64());
 
         f.push_inst(
             f.entry_block,
@@ -2247,8 +2308,8 @@ mod tests {
         let b1 = f.add_block("inner");
         let b2 = f.add_block("else");
         let merge = f.add_block("merge");
-        let x = Value::reg("x", Ty::i64());
-        let y = Value::reg("y", Ty::i64());
+        let x = f.alloc_var(Ty::i64());
+        let y = f.alloc_var(Ty::i64());
 
         f.push_inst(
             f.entry_block,

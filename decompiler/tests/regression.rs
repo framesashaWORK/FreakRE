@@ -232,8 +232,12 @@ fn dead_assignment_with_call_keeps_the_call() {
 #[test]
 fn copy_prop_does_not_use_value_redefined_later_in_same_list() {
     // v1 = rax; rax = rcx; return v1;
-    // The copy candidate (v1 → rax) must be invalidated when rax is
-    // redefined before the use; `return rcx` reads the WRONG value.
+    // v1 captures rax *before* the redefinition, so the result must read the
+    // entry value of rax — never rcx. Since SSA register spellings are
+    // preserved on lowering, GVN/DCE prove both copies dead (`v1` aliases
+    // entry-rax, `rax = rcx` is unread) and the output is just `return rax`.
+    // Before spelling preservation the copies survived as fresh vars
+    // (`return vN`); either shape is correct as long as rcx never leaks in.
     let mut func = IrFunction::new("redef_copy", 0x6000);
     let v1 = func.alloc_var(Ty::i64());
     let rax = Value::reg("rax", Ty::i64());
@@ -257,15 +261,14 @@ fn copy_prop_does_not_use_value_redefined_later_in_same_list() {
     func.push_inst(func.entry_block, IrInst::Return { value: Some(v1) });
     func.build_cfg();
     let c = decompile_function(&func).unwrap();
-    // With SSA, v1 may be renamed to v1 (not v0) due to fresh allocation, but must still be a v-var, not rcx.
-    assert!(
-        c.contains("return v"),
-        "copy was propagated across a redefinition of its source (expected return vN):\n{}",
-        c
-    );
     assert!(
         !c.contains("return rcx"),
         "`return v` wrongly became `return rcx`:\n{}",
+        c
+    );
+    assert!(
+        c.contains("return rax") || c.contains("return v"),
+        "result must read pre-redefinition rax (as `rax` or a temp), got:\n{}",
         c
     );
 }
