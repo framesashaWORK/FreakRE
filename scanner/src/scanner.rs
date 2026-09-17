@@ -193,7 +193,7 @@ impl Scanner {
         // Collect string values for backdoor/shellcode analysis
         let string_values: Vec<&str> = strings.iter().map(|s| s.value.as_str()).collect();
 
-        // в”Ђв”Ђв”Ђ PE Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── PE Analysis ──────────────────────────────────────────────
         let mut pe_info = None;
         let mut sections_entropy = Vec::new();
         let mut import_score = 0.0;
@@ -232,7 +232,7 @@ impl Scanner {
         if let Some(pe) = pe {
             is_library = pe_is_library(&data);
 
-            // PE warnings в†’ findings
+            // PE warnings → findings
             for warning in &pe.warnings {
                 let sev = match warning.kind {
                     pe_parser::WarningKind::RwxSection => Severity::High,
@@ -288,7 +288,7 @@ impl Scanner {
             let import_report = analyzer.analyze();
             // Capability-based import detection is unreliable for *libraries*
             // (DLLs legitimately export/use these APIs), so it is skipped for
-            // them вЂ” a malicious library is still caught by the code-level
+            // them — a malicious library is still caught by the code-level
             // analyzers (shellcode / CFG / YARA).
             import_score = if is_library {
                 0.0
@@ -400,14 +400,14 @@ impl Scanner {
                     .collect(),
             });
 
-            // в”Ђв”Ђв”Ђ PE Security Findings в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+            // ─── PE Security Findings ─────────────────────────────
             let dll_flags = pe.dll_characteristics_flags();
             if !dll_flags.iter().any(|f| f.contains("ASLR")) {
                 findings.push(Finding {
                     severity: Severity::High,
                     module: "pe-parser".into(),
                     rule_id: "PE_NO_ASLR".into(),
-                    description: "PE lacks ASLR (DYNAMIC_BASE) вЂ” easier to exploit".into(),
+                    description: "PE lacks ASLR (DYNAMIC_BASE) — easier to exploit".into(),
                     details: None,
                 });
             }
@@ -430,7 +430,7 @@ impl Scanner {
                 });
             }
 
-            // TLS callbacks вЂ” execute before entry point
+            // TLS callbacks — execute before entry point
             let tls_cbs = pe.tls_callbacks();
             if !tls_cbs.is_empty() {
                 let sev = if tls_cbs.len() > 3 {
@@ -443,7 +443,7 @@ impl Scanner {
                     module: "pe-parser".into(),
                     rule_id: "PE_TLS_CALLBACKS".into(),
                     description: format!(
-                        "{} TLS callback(s) detected вЂ” code runs before entry point (anti-debug/unpacker)",
+                        "{} TLS callback(s) detected — code runs before entry point (anti-debug/unpacker)",
                         tls_cbs.len()
                     ),
                     details: Some(format!("Callbacks: {}", tls_cbs.iter().map(|c| format!("0x{:X}", c)).collect::<Vec<_>>().join(", "))),
@@ -456,7 +456,7 @@ impl Scanner {
                     severity: Severity::Info,
                     module: "pe-parser".into(),
                     rule_id: "PE_DOTNET".into(),
-                    description: ".NET CLR assembly detected вЂ” static x86/x64 analysis limited"
+                    description: ".NET CLR assembly detected — static x86/x64 analysis limited"
                         .into(),
                     details: Some("Use IL disassembler (ILSpy/dnSpy) for full analysis".into()),
                 });
@@ -490,7 +490,7 @@ impl Scanner {
                     module: "pe-parser".into(),
                     rule_id: "PE_SUSPICIOUS_RESOURCES".into(),
                     description: format!(
-                        "{} suspicious resource(s) of {} total (high entropy in .rsrc вЂ” possible packed payload)",
+                        "{} suspicious resource(s) of {} total (high entropy in .rsrc — possible packed payload)",
                         susp_res, num_res
                     ),
                     details: None,
@@ -498,12 +498,12 @@ impl Scanner {
             }
 
             // NOTE: `PE_DELAY_IMPORTS` and `PE_NO_RICH_HEADER` were intentionally
-            // removed вЂ” both are benign/common on legitimate binaries (MinGW, Go,
+            // removed — both are benign/common on legitimate binaries (MinGW, Go,
             // Rust, linkers without rich headers) and produced only noise without
             // contributing to detection.
         }
 
-        // в”Ђв”Ђв”Ђ ELF Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── ELF Analysis ─────────────────────────────────────────────
         let mut elf_info = None;
 
         if file_type == "ELF" {
@@ -606,7 +606,7 @@ impl Scanner {
             }
         }
 
-        // в”Ђв”Ђв”Ђ Mach-O Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── Mach-O Analysis ──────────────────────────────────────────
         let mut macho_info = None;
 
         if file_type.starts_with("Mach-O") {
@@ -741,7 +741,7 @@ impl Scanner {
             }
         }
 
-        // в”Ђв”Ђв”Ђ WebAssembly Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── WebAssembly Analysis ─────────────────────────────────────
         let mut wasm_info = None;
 
         if file_type == "WebAssembly" {
@@ -819,7 +819,7 @@ impl Scanner {
             }
         }
 
-        // в”Ђв”Ђв”Ђ DEX Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── DEX Analysis ─────────────────────────────────────────────
         let mut dex_info = None;
 
         if file_type == "DEX" {
@@ -877,7 +877,7 @@ impl Scanner {
             }
         }
 
-        // в”Ђв”Ђв”Ђ COFF Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── COFF Analysis ────────────────────────────────────────────
         let mut coff_info = None;
 
         if file_type == "COFF" {
@@ -932,7 +932,7 @@ impl Scanner {
             }
         }
 
-        // в”Ђв”Ђв”Ђ Flat Binary Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── Flat Binary Analysis ─────────────────────────────────────
         let mut flat_binary_info = None;
 
         if file_type == "unknown" || file_type.starts_with("Script/") || file_type == "DOS" {
@@ -969,7 +969,7 @@ impl Scanner {
                         is_srecord: true,
                     });
                 } else {
-                    // Raw binary вЂ” use from_slice to avoid cloning entire data
+                    // Raw binary — use from_slice to avoid cloning entire data
                     let bin = flat_binary::FlatBinary::from_slice(&data, 0);
                     let entropy = bin.entropy();
                     let looks_like_shellcode = bin.looks_like_shellcode();
@@ -985,7 +985,7 @@ impl Scanner {
                     });
                 }
             } else {
-                // Binary data вЂ” use from_slice to avoid cloning entire data
+                // Binary data — use from_slice to avoid cloning entire data
                 let bin = flat_binary::FlatBinary::from_slice(&data, 0);
                 let entropy = bin.entropy();
                 let looks_like_shellcode = bin.looks_like_shellcode();
@@ -1438,7 +1438,7 @@ impl Scanner {
         };
 
         // Backdoor/behavioral *pattern* detection (C2 beacon loops, DLL
-        // hijacking) is unreliable for libraries вЂ” skipped for DLLs.
+        // hijacking) is unreliable for libraries — skipped for DLLs.
         if let Some(ref bd_report) = backdoor_analysis {
             if !bd_report.findings.is_empty() {
                 for bd_finding in &bd_report.findings {
@@ -1496,7 +1496,7 @@ impl Scanner {
             });
         }
 
-        // в”Ђв”Ђв”Ђ Shellcode Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── Shellcode Analysis ───────────────────────────────────────
         let mut shellcode_report = None;
 
         // File-offset ranges of non-code sections (resources, data, relocs).
@@ -1540,7 +1540,7 @@ impl Scanner {
                 continue;
             }
             // For PE files, shellcode patterns inside *normal* (low-entropy)
-            // code sections are almost always coincidental вЂ” compilers emit
+            // code sections are almost always coincidental — compilers emit
             // `xor [reg], imm8` / loops constantly. Only flag them in
             // high-entropy (в‰Ґ7.0) / anomalous regions where real self-
             // decrypting or packed code lives. Flat binaries / shellcode
@@ -1601,7 +1601,7 @@ impl Scanner {
             });
         }
 
-        // в”Ђв”Ђв”Ђ Cross-Reference Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── Cross-Reference Analysis ────────────────────────────────
         let mut xref_summary = None;
         let mut function_infos: Vec<FunctionInfo> = Vec::new();
         {
@@ -1724,7 +1724,7 @@ impl Scanner {
             }
         }
 
-        // в”Ђв”Ђв”Ђ CFG Analysis в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── CFG Analysis ─────────────────────────────────────────────
         let mut cfg_summary_info = None;
         {
             // Only run CFG on actual executable code sections.
@@ -1746,7 +1746,7 @@ impl Scanner {
                     let raw = sec.raw_data(&data);
                     (raw, sec.virtual_address as usize, pe.is_64bit)
                 })
-                // If no code section found вЂ” skip CFG entirely (don't use whole file)
+                // If no code section found — skip CFG entirely (don't use whole file)
             } else {
                 None
             };
@@ -1810,7 +1810,7 @@ impl Scanner {
             }
         }
 
-        // в”Ђв”Ђв”Ђ Function Signature Matching в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── Function Signature Matching ──────────────────────────────
         let mut signature_summary_info = None;
         {
             let sig_config = SigScanConfig::default();
@@ -1849,7 +1849,7 @@ impl Scanner {
             });
         }
 
-        // в”Ђв”Ђв”Ђ YARA Scanning в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── YARA Scanning ────────────────────────────────────────────
         if let Some(ref yara) = self.yara_scanner {
             let result = yara.scan(&data);
             if result.truncated {
@@ -1881,7 +1881,7 @@ impl Scanner {
             }
         }
 
-        // в”Ђв”Ђв”Ђ ML Classification в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── ML Classification ────────────────────────────────────────
         let mut ml_classification = None;
         let mut ml_malicious_confidence: f64 = 0.0;
         if self.profile.runs_ml() {
@@ -2167,12 +2167,12 @@ impl Scanner {
         }
         }
 
-        // в”Ђв”Ђв”Ђ Strong-signal gate (noise-free) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── Strong-signal gate (noise-free) ──────────────────────────
         // Pattern / behavioral heuristics (backdoor strings, import
         // capability, entropy, structural PE quirks) are unreliable on large
         // legitimate binaries and must be corroborated by a concrete
-        // code-level signal вЂ” shellcode execution, a CFG anomaly, or packer
-        // detection вЂ” before they can drive a non-clean verdict. Without such
+        // code-level signal — shellcode execution, a CFG anomaly, or packer
+        // detection — before they can drive a non-clean verdict. Without such
         // a signal only Low/Medium findings are discarded; Critical/High
         // findings always survive so real malware is never silenced here.
         let has_strong_signal = findings.iter().any(|f| {
@@ -2189,7 +2189,7 @@ impl Scanner {
                     && matches!(f.severity, Severity::High | Severity::Critical))
         });
 
-        // в”Ђв”Ђв”Ђ Final Scoring в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ─── Final Scoring ────────────────────────────────────────────
         let (suspicion_score, verdict) = if has_strong_signal {
             let max_severity = findings.iter().map(|f| f.severity).max();
             let backdoor_score = backdoor_report

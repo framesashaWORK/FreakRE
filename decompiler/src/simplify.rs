@@ -110,7 +110,7 @@ pub fn simplify_function_with_stats(func: &mut AstFunction) -> SimplifyStats {
     stats
 }
 
-// в”Ђв”Ђв”Ђ Prologue / Epilogue Noise Removal в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Prologue / Epilogue Noise Removal ──────────────────────────────
 
 /// Pass 5d: drop self-assignments (`x = x`) and local declarations whose
 /// name is never read anywhere in the body. Parameters are exempt (they are
@@ -347,11 +347,11 @@ fn strip_dead_flag_assignments_inner(stmts: &mut Vec<Stmt>, used_vars: &HashSet<
     }
 }
 
-// в”Ђв”Ђв”Ђ Expression Simplification в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Expression Simplification ──────────────────────────────────────
 
 fn simplify_expr(expr: &Expr) -> Expr {
     match expr {
-        // в”Ђв”Ђ Binary operations в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Binary operations ────────────────────────────────────────
         Expr::Binary { op, lhs, rhs } => {
             let l = simplify_expr(lhs);
             let r = simplify_expr(rhs);
@@ -400,7 +400,7 @@ fn simplify_expr(expr: &Expr) -> Expr {
                 return r;
             }
 
-            // Annihilator: x * 0 в†’ 0, x & 0 в†’ 0
+            // Annihilator: x * 0 → 0, x & 0 → 0
             if matches!(op, BinOp::Mul | BinOp::And) && is_zero(&r) && is_pure(&l) {
                 return Expr::IntLit(0);
             }
@@ -408,17 +408,17 @@ fn simplify_expr(expr: &Expr) -> Expr {
                 return Expr::IntLit(0);
             }
 
-            // Self-cancel: x ^ x в†’ 0, x - x в†’ 0
+            // Self-cancel: x ^ x → 0, x - x → 0
             if matches!(op, BinOp::Xor | BinOp::Sub) && l == r && is_pure(&l) {
                 return Expr::IntLit(0);
             }
 
-            // Self: x & x в†’ x, x | x в†’ x
+            // Self: x & x → x, x | x → x
             if matches!(op, BinOp::And | BinOp::Or) && l == r && is_pure(&l) {
                 return l;
             }
 
-            // Comparison self: x == x в†’ true, x != x в†’ false
+            // Comparison self: x == x → true, x != x → false
             if *op == BinOp::Eq && l == r && is_pure(&l) {
                 return Expr::BoolLit(true);
             }
@@ -426,10 +426,10 @@ fn simplify_expr(expr: &Expr) -> Expr {
                 return Expr::BoolLit(false);
             }
 
-            // Bitwise mask simplification: (x & 0xFF) в†’ cast to u8 conceptually
+            // Bitwise mask simplification: (x & 0xFF) → cast to u8 conceptually
             // We keep it as-is but note for type inference
 
-            // Shift+mask: (x >> n) & ((1 << m) - 1) вЂ” bitfield extract
+            // Shift+mask: (x >> n) & ((1 << m) - 1) — bitfield extract
             // Left as-is for now (requires type info)
 
             Expr::Binary {
@@ -439,7 +439,7 @@ fn simplify_expr(expr: &Expr) -> Expr {
             }
         }
 
-        // в”Ђв”Ђ Unary operations в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Unary operations ─────────────────────────────────────────
         Expr::Unary { op, operand } => {
             let inner = simplify_expr(operand);
 
@@ -458,7 +458,7 @@ fn simplify_expr(expr: &Expr) -> Expr {
                 }
             }
 
-            // Double negation: ~~x в†’ x
+            // Double negation: ~~x → x
             if *op == UnOp::Not {
                 if let Expr::Unary {
                     op: UnOp::Not,
@@ -468,7 +468,7 @@ fn simplify_expr(expr: &Expr) -> Expr {
                     return (**inner2).clone();
                 }
             }
-            // Double logical not: !!x в†’ x (semantically for bools)
+            // Double logical not: !!x → x (semantically for bools)
             if *op == UnOp::LogNot {
                 if let Expr::Unary {
                     op: UnOp::LogNot,
@@ -512,10 +512,10 @@ fn simplify_expr(expr: &Expr) -> Expr {
             }
         }
 
-        // в”Ђв”Ђ Cast simplification в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Cast simplification ──────────────────────────────────────
         Expr::Cast { ty, expr } => {
             let inner = simplify_expr(expr);
-            // Redundant cast: (T)(T)x в†’ (T)x вЂ” would need type equality check
+            // Redundant cast: (T)(T)x → (T)x — would need type equality check
             // For now just recurse
             Expr::Cast {
                 ty: ty.clone(),
@@ -523,7 +523,7 @@ fn simplify_expr(expr: &Expr) -> Expr {
             }
         }
 
-        // в”Ђв”Ђ Ternary simplification в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Ternary simplification ───────────────────────────────────
         Expr::Ternary {
             cond,
             then_expr,
@@ -545,7 +545,7 @@ fn simplify_expr(expr: &Expr) -> Expr {
             }
         }
 
-        // в”Ђв”Ђ Recursive descent for compound expressions в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Recursive descent for compound expressions ───────────────
         Expr::Call { func, args } => {
             let new_args: Vec<Expr> = args.iter().map(simplify_expr).collect();
             Expr::Call {
@@ -565,7 +565,7 @@ fn simplify_expr(expr: &Expr) -> Expr {
         Expr::AddrOf(inner) => Expr::AddrOf(Box::new(simplify_expr(inner))),
         Expr::Sizeof(inner) => Expr::Sizeof(Box::new(simplify_expr(inner))),
 
-        // Leaves вЂ” no simplification
+        // Leaves — no simplification
         other => other.clone(),
     }
 }
@@ -619,7 +619,7 @@ fn is_pure(expr: &Expr) -> bool {
     }
 }
 
-// в”Ђв”Ђв”Ђ Statement-level simplification в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Statement-level simplification ─────────────────────────────────
 
 fn simplify_stmts(stmts: &mut [Stmt]) {
     for stmt in stmts.iter_mut() {
@@ -712,7 +712,7 @@ fn simplify_stmt(stmt: &mut Stmt) {
     }
 }
 
-// в”Ђв”Ђв”Ђ Dead Assignment Elimination в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Dead Assignment Elimination ────────────────────────────────────
 
 /// Remove assignments whose targets are never read afterwards.
 /// True when any statement in `stmts` (including nested bodies) writes the
@@ -1097,9 +1097,9 @@ fn collect_used_vars_expr(expr: &Expr, out: &mut HashSet<String>) {
     }
 }
 
-// в”Ђв”Ђв”Ђ Copy Propagation в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Copy Propagation ───────────────────────────────────────────────
 
-/// Inline single-use variables: `x = expr; ... use(x)` в†’ `... use(expr)`.
+/// Inline single-use variables: `x = expr; ... use(x)` → `... use(expr)`.
 ///
 /// A variable is propagated only when ALL of these hold:
 /// - exactly ONE definition in the whole function (multi-def variables would
@@ -1644,9 +1644,9 @@ fn substitute_vars_expr(expr: &mut Expr, defs: &HashMap<String, Expr>) {
     }
 }
 
-// в”Ђв”Ђв”Ђ Condition Merging в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Condition Merging ──────────────────────────────────────────────
 
-/// Merge nested if-without-else: `if (a) { if (b) { ... } }` в†’ `if (a && b) { ... }`
+/// Merge nested if-without-else: `if (a) { if (b) { ... } }` → `if (a && b) { ... }`
 /// Merge nested if-without-else into a single conjunction.
 /// Counts each AND-merged condition in `stats.conditions_merged_and`.
 #[allow(clippy::ptr_arg)]

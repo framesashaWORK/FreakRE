@@ -9,7 +9,7 @@ fn fmt(code: &[u8], addr: u64, mode: Mode) -> String {
     format_instruction(&dec(code, addr, mode).unwrap())
 }
 
-// в”Ђв”Ђ LDE length bugs в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ── LDE length bugs ──────────────────────────────────────────────────
 
 #[test]
 fn lde_jcc_rel32_is_six_bytes() {
@@ -21,7 +21,7 @@ fn lde_jcc_rel32_is_six_bytes() {
 
 #[test]
 fn lde_bswap_has_no_modrm() {
-    // bswap edx: 0F CA вЂ” exactly 2 bytes, no ModR/M byte
+    // bswap edx: 0F CA — exactly 2 bytes, no ModR/M byte
     let code = [0x0F, 0xCA];
     assert_eq!(decode_len(&code, Mode::X64).unwrap(), 2);
     assert_eq!(fmt(&code, 0, Mode::X64), "bswap edx");
@@ -45,35 +45,35 @@ fn lde_moffs64_with_rex_w() {
 
 #[test]
 fn lde_rdtsc_cpuid_are_two_bytes() {
-    // 0F 31 rdtsc / 0F A2 cpuid вЂ” no ModR/M
+    // 0F 31 rdtsc / 0F A2 cpuid — no ModR/M
     assert_eq!(decode_len(&[0x0F, 0x31], Mode::X64).unwrap(), 2);
     assert_eq!(decode_len(&[0x0F, 0xA2], Mode::X64).unwrap(), 2);
 }
 
 #[test]
 fn lde_imul_imm8_length() {
-    // imul ecx, dword ptr [rax], 5 в†’ 6B 08 05 = 3 bytes
+    // imul ecx, dword ptr [rax], 5 → 6B 08 05 = 3 bytes
     let code = [0x6B, 0x08, 0x05];
     assert_eq!(decode_len(&code, Mode::X64).unwrap(), 3);
 }
 
 #[test]
 fn lde_test_rm8_imm8_length() {
-    // test byte ptr [rcx], 0xFF в†’ F6 01 FF = 3 bytes
+    // test byte ptr [rcx], 0xFF → F6 01 FF = 3 bytes
     let code = [0xF6, 0x01, 0xFF];
     assert_eq!(decode_len(&code, Mode::X64).unwrap(), 3);
-    // test eax, 0x41 в†’ A9 41 00 00 00 = 5 bytes; but F7 /0 with modrm:
+    // test eax, 0x41 → A9 41 00 00 00 = 5 bytes; but F7 /0 with modrm:
     let code2 = [0xF7, 0xC1, 0x39, 0x05, 0x00, 0x00]; // test ecx, 0x539
     assert_eq!(decode_len(&code2, Mode::X64).unwrap(), 6);
 }
 
-// в”Ђв”Ђ Decoder operand bugs в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ── Decoder operand bugs ─────────────────────────────────────────────
 
 #[test]
 fn decode_movsx_dest_and_src_sizes() {
     // movsx esi, al: reg field 7 = esi (dword), rm 0 = al (byte)
     assert_eq!(fmt(&[0x0F, 0xBE, 0xF0], 0, Mode::X64), "movsx esi, al");
-    // movsx rax, al with REX.W: 48 0F BE C8 в†’ movsx rax, al
+    // movsx rax, al with REX.W: 48 0F BE C8 → movsx rax, al
     assert_eq!(
         fmt(&[0x48, 0x0F, 0xBE, 0xC0], 0, Mode::X64),
         "movsx rax, al"
@@ -89,7 +89,7 @@ fn decode_movsx_dest_and_src_sizes() {
 
 #[test]
 fn decode_movzx_uses_full_base_registers_in_x64() {
-    // movzx eax, byte ptr [rax] вЂ” base must be rax, not eax
+    // movzx eax, byte ptr [rax] — base must be rax, not eax
     assert_eq!(
         fmt(&[0x0F, 0xB6, 0x00], 0, Mode::X64),
         "movzx eax, byte ptr [rax]"
@@ -109,15 +109,15 @@ fn decode_push_pop_default_to_64bit_in_x64() {
 
 #[test]
 fn decode_rex_swaps_high_bytes_for_low_bytes() {
-    // 40 B4 05: REX present without B в†’ idx 4 is spl, not ah
+    // 40 B4 05: REX present without B → idx 4 is spl, not ah
     assert_eq!(fmt(&[0x40, 0xB4, 0x05], 0, Mode::X64), "mov spl, 0x5");
     // Without REX it stays ah
     assert_eq!(fmt(&[0xB4, 0x05], 0, Mode::X64), "mov ah, 0x5");
-    // 41 B4 05 в†’ r12b
+    // 41 B4 05 → r12b
     assert_eq!(fmt(&[0x41, 0xB4, 0x05], 0, Mode::X64), "mov r12b, 0x5");
 }
 
-// в”Ђв”Ђ New opcode coverage в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ── New opcode coverage ──────────────────────────────────────────────
 
 #[test]
 fn coverage_alu_reg_forms() {
@@ -130,7 +130,7 @@ fn coverage_alu_reg_forms() {
 
 #[test]
 fn coverage_mov_imm_to_rm() {
-    // mov dword ptr [rsp+0x10], 0 в†’ C7 44 24 10 00...
+    // mov dword ptr [rsp+0x10], 0 → C7 44 24 10 00...
     let c = fmt(
         &[0xC7, 0x44, 0x24, 0x10, 0x00, 0x00, 0x00, 0x00],
         0,
@@ -141,34 +141,34 @@ fn coverage_mov_imm_to_rm() {
 
 #[test]
 fn coverage_shift_group() {
-    // shl eax, 4 в†’ C1 E0 04
+    // shl eax, 4 → C1 E0 04
     assert_eq!(fmt(&[0xC1, 0xE0, 0x04], 0, Mode::X64), "shl eax, 0x4");
-    // shr eax, 1 в†’ D1 E8
+    // shr eax, 1 → D1 E8
     assert_eq!(fmt(&[0xD1, 0xE8], 0, Mode::X64), "shr eax, 0x1");
-    // sar eax, cl в†’ D3 F8
+    // sar eax, cl → D3 F8
     assert_eq!(fmt(&[0xD3, 0xF8], 0, Mode::X64), "sar eax, cl");
 }
 
 #[test]
 fn coverage_group3_f7() {
-    // neg rax в†’ 48 F7 D8
+    // neg rax → 48 F7 D8
     assert_eq!(fmt(&[0x48, 0xF7, 0xD8], 0, Mode::X64), "neg rax");
-    // not rax в†’ 48 F7 D0
+    // not rax → 48 F7 D0
     assert_eq!(fmt(&[0x48, 0xF7, 0xD0], 0, Mode::X64), "not rax");
-    // div rbx в†’ 48 F7 F3
+    // div rbx → 48 F7 F3
     assert_eq!(fmt(&[0x48, 0xF7, 0xF3], 0, Mode::X64), "div rbx");
-    // imul rbx в†’ 48 F7 EB
+    // imul rbx → 48 F7 EB
     assert_eq!(fmt(&[0x48, 0xF7, 0xEB], 0, Mode::X64), "imul rbx");
 }
 
 #[test]
 fn coverage_imul_with_immediate() {
-    // imul ecx, dword ptr [rax], 5 в†’ 6B 08 05
+    // imul ecx, dword ptr [rax], 5 → 6B 08 05
     assert_eq!(
         fmt(&[0x6B, 0x08, 0x05], 0, Mode::X64),
         "imul ecx, dword ptr [rax], 0x5"
     );
-    // imul r9d, r10d, -3 в†’ 45 6B CA FD
+    // imul r9d, r10d, -3 → 45 6B CA FD
     assert_eq!(
         fmt(&[0x45, 0x6B, 0xCA, 0xFD], 0, Mode::X64),
         "imul r9d, r10d, -0x3"
@@ -187,14 +187,14 @@ fn coverage_leave_enter_push_imm() {
 
 #[test]
 fn coverage_cmovcc_and_bt() {
-    // cmovz eax, ebx в†’ 0F 44 C3
+    // cmovz eax, ebx → 0F 44 C3
     assert_eq!(fmt(&[0x0F, 0x44, 0xC3], 0, Mode::X64), "cmove eax, ebx");
-    // bt dword ptr [rax], ecx в†’ 0F A3 08
+    // bt dword ptr [rax], ecx → 0F A3 08
     assert_eq!(
         fmt(&[0x0F, 0xA3, 0x08], 0, Mode::X64),
         "bt dword ptr [rax], ecx"
     );
-    // bt eax, 5 в†’ 0F BA E0 05
+    // bt eax, 5 → 0F BA E0 05
     assert_eq!(fmt(&[0x0F, 0xBA, 0xE0, 0x05], 0, Mode::X64), "bt eax, 0x5");
 }
 
@@ -214,7 +214,7 @@ fn sanity_known_good_decodes_still_work() {
     if let Operand::Rel(t) = insn.operands[0] {
         assert_eq!(t, 0x1005);
     }
-    // jne short backwards: 75 FE at 0x10 в†’ target = 0x10 + 2 - 2 = 0x10
+    // jne short backwards: 75 FE at 0x10 → target = 0x10 + 2 - 2 = 0x10
     let insn = dec(&[0x75, 0xFE], 0x10, Mode::X64).unwrap();
     if let Operand::Rel(t) = insn.operands[0] {
         assert_eq!(t, 0x10);

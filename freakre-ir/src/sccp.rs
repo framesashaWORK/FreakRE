@@ -1,11 +1,11 @@
 ﻿//! Sparse Conditional Constant Propagation (SCCP) over [`SsaFunction`].
 //!
-//! Classic WegmanвЂ“Zadeck lattice over SSA values driven by an executable-edge
+//! Classic Wegman–Zadeck lattice over SSA values driven by an executable-edge
 //! worklist:
 //!
-//! - `Top` вЂ” value not yet computed,
-//! - `Const(i64)` вЂ” known constant,
-//! - `Over` вЂ” overdefined (loads, calls, memory, conflicting constants).
+//! - `Top` — value not yet computed,
+//! - `Const(i64)` — known constant,
+//! - `Over` — overdefined (loads, calls, memory, conflicting constants).
 //!
 //! At fixpoint the pass rewrites the SSA in place:
 //!
@@ -23,7 +23,7 @@
 //!
 //! Soundness: memory (Load/Store), calls and syscalls are always
 //! overdefined; an indirect branch kills nothing but marks no new edges
-//! (its block keeps whatever edges it had вЂ” conservative).
+//! (its block keeps whatever edges it had — conservative).
 
 use crate::ir::{BlockId, OpCode};
 use crate::ssa::{SsaFunction, SsaInst, SsaVal, VersionedVar};
@@ -169,7 +169,7 @@ pub fn sccp(ssa: &mut SsaFunction) -> SccpStats {
         prev_edges = Some(n);
     }
 
-    // в”Ђв”Ђв”Ђ Rewrite в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // ─── Rewrite ────────────────────────────────────────────────────────
     let mut stats = SccpStats::default();
 
     // 1. Drop non-executable blocks; fix predecessor/successor caches.
@@ -266,7 +266,7 @@ pub fn sccp(ssa: &mut SsaFunction) -> SccpStats {
     stats
 }
 
-// в”Ђв”Ђв”Ђ Lattice helpers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Lattice helpers ────────────────────────────────────────────────────
 
 fn mark_edge(
     from: BlockId,

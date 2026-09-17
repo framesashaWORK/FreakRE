@@ -5,7 +5,7 @@ use crate::types::Ty;
 pub struct X86Lifter {
     is_64bit: bool,
     max_instructions: usize,
-    /// Optional image context for jump-table recovery: (virtual address в†’
+    /// Optional image context for jump-table recovery: (virtual address →
     /// bytes). Only used to *read* dispatch tables; lifting never executes
     /// or re-decodes image content outside the recovered targets.
     image: Option<ImageCtx>,
@@ -14,7 +14,7 @@ pub struct X86Lifter {
 /// Read-only view of the binary image for jump-table recovery.
 #[derive(Debug, Clone)]
 pub struct ImageCtx {
-    /// Sections as (vaddr, size) вЂ” vaddrв†’offset resolution via containment.
+    /// Sections as (vaddr, size) — vaddr→offset resolution via containment.
     sections: Vec<(u64, u64)>,
     /// Image base (VA of the first mapped byte in `bytes[0]` coordinate).
     image_base: u64,
@@ -299,7 +299,7 @@ struct SubregWrite {
     zero_high: bool,
 }
 
-/// Alias table for nested x86 registers (al/ah/ax/eax/... в†’ widest parent).
+/// Alias table for nested x86 registers (al/ah/ax/eax/... → widest parent).
 ///
 /// Writes to narrow views are canonicalized through `write_reg` as a
 /// read-modify-write of the parent so narrow writes stay visible to wider
@@ -806,8 +806,8 @@ impl X86Lifter {
     /// Design (stays within the existing IR ops): the narrow-name copy is
     /// emitted unchanged so narrow readers still see the write, and the
     /// value is additionally merged into the widest enclosing parent via a
-    /// masked read-modify-write вЂ” `parent = (parent & !field) | value_field`
-    /// вЂ” so later wider reads observe it too. 32-bit writes in 64-bit mode
+    /// masked read-modify-write — `parent = (parent & !field) | value_field`
+    /// — so later wider reads observe it too. 32-bit writes in 64-bit mode
     /// clear the upper half instead (`parent = zext(value)`), matching the
     /// architectural zero-extension.
     fn write_reg(
@@ -1038,7 +1038,7 @@ impl X86Lifter {
     }
 
     /// INC/DEC flags: ZF/SF/OF/PF as usual but CF is deliberately left
-    /// untouched вЂ” the one way INC/DEC differ from ADD/SUB.
+    /// untouched — the one way INC/DEC differ from ADD/SUB.
     fn write_incdec_flags(
         &self,
         func: &mut IrFunction,
@@ -1618,7 +1618,7 @@ impl X86Lifter {
     ///    target against the function's lifted extent,
     /// 4. reuses existing blocks at exact target addresses or lifts the case
     ///    body into fresh blocks,
-    /// 5. rewrites the terminator into `IrInst::Switch` (no default arm вЂ”
+    /// 5. rewrites the terminator into `IrInst::Switch` (no default arm —
     ///    the guard edge already covers out-of-range).
     ///
     /// Any doubt leaves the IndirectBranch untouched: soundness over
@@ -1727,7 +1727,7 @@ impl X86Lifter {
             return false;
         }
 
-        // 3. Bounds guard (ja / jae) в†’ entry count.
+        // 3. Bounds guard (ja / jae) → entry count.
         let Some(count) = find_bounds_count(func, bid, &index_val, self.is_64bit) else {
             return false;
         };
@@ -2031,7 +2031,7 @@ impl X86Lifter {
                         Ok((pos + 2, true))
                     }
 
-                    // в”Ђв”Ђ SSE data movement (legacy encoding) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+                    // ── SSE data movement (legacy encoding) ──────────
                     // 10/28/6F: xmm <- mem/reg   11/29/7F: mem/reg <- xmm
                     // Pure data movement regardless of the exact mnemonic
                     // (movups/movaps/movdqa/movdqu/movss/movsd).
@@ -2077,7 +2077,7 @@ impl X86Lifter {
                         }
                     }
 
-                    // pxor/xorps вЂ” the canonical `xmm = 0` zeroing idiom when
+                    // pxor/xorps — the canonical `xmm = 0` zeroing idiom when
                     // both operands are the same register.
                     0x57 | 0xEF => {
                         let p2 = pos + 1;
@@ -3024,7 +3024,7 @@ impl Lifter for X86Lifter {
                     Ok(ok) => ok,
                     // Unsupported opcode: skip the whole instruction using the
                     // precise length from the LDE and keep going. Bailing out on
-                    // the first SSE/AVX op would lose the entire function вЂ” real
+                    // the first SSE/AVX op would lose the entire function — real
                     // x64 code is full of them.
                     Err(LifterError::UnsupportedInstruction(msg)) => {
                         let len = freakre_x86::decode_len(
@@ -3229,11 +3229,11 @@ fn lde_bad(off: usize) -> LifterError {
 /// `(table_va, index_value, scale)`.
 ///
 /// Accepted shapes (as emitted by the lifter for `jmp [table + reg*scale]`):
-/// - `Add(Const(table), Mul(index, Const(scale)))` вЂ” both defs in the
+/// - `Add(Const(table), Mul(index, Const(scale)))` — both defs in the
 ///   dispatch block,
-/// - `Add(<lea-resolved base>, Mul(index, Const(scale)))` вЂ” the base
+/// - `Add(<lea-resolved base>, Mul(index, Const(scale)))` — the base
 ///   register is resolved backwards through `Copy`/`Add` defs,
-/// - anything else в†’ `None` (the pass leaves the dispatch alone).
+/// - anything else → `None` (the pass leaves the dispatch alone).
 fn parse_jt_addr(
     func: &IrFunction,
     site: BlockId,
@@ -3312,7 +3312,7 @@ fn jt_mul_def(blk: &IrBlock, v: &Value) -> Option<(Value, u64)> {
 
 /// Constant-fold a table-base operand: literal `Const`, or a chain of
 /// `Copy`/`Add(Const, Const)` definitions up to (and including) the dispatch
-/// block вЂ” the `lea reg, [rip+table]` shape.
+/// block — the `lea reg, [rip+table]` shape.
 fn jt_const_of(func: &IrFunction, site: BlockId, v: &Value) -> Option<u64> {
     match v {
         Value::Const(c) => Some(*c as u64),
@@ -3343,7 +3343,7 @@ fn jt_const_of(func: &IrFunction, site: BlockId, v: &Value) -> Option<u64> {
 }
 
 /// Last definition of `v` scanning blocks in program order, stopping at
-/// (and including) `upto` вЂ” register re-definitions after the dispatch must
+/// (and including) `upto` — register re-definitions after the dispatch must
 /// not shadow the value the dispatch actually used.
 fn find_def_upto<'a>(func: &'a IrFunction, v: &Value, upto: BlockId) -> Option<&'a IrInst> {
     let mut found = None;
@@ -3382,13 +3382,13 @@ fn last_def_in_block<'a>(blk: &'a IrBlock, v: &Value) -> Option<&'a IrInst> {
 /// Derive the jump-table entry count from the bounds guard.
 ///
 /// Canonical compiler shapes around a dispatch `jmp [tbl + idx*8]`:
-/// - `cmp idx, N` + `ja  default` в†’ valid indices `0..=N` в†’ count `N + 1`
+/// - `cmp idx, N` + `ja  default` → valid indices `0..=N` → count `N + 1`
 ///   (lifter cond: `And(Ne(cf,1), Ne(zf,1))`),
-/// - `cmp idx, N` + `jae default` в†’ valid indices `0..=N-1` в†’ count `N`
+/// - `cmp idx, N` + `jae default` → valid indices `0..=N-1` → count `N`
 ///   (lifter cond: `Ne(cf,1)`).
 ///
 /// The cmp is lowered to `cf = LtU(idx, N)` on the same index value that
-/// feeds the address computation вЂ” matched directly or through subreg
+/// feeds the address computation — matched directly or through subreg
 /// (`eax` vs `rax`) / `Sext`/`Copy` chains. Guards in other shapes
 /// (`jbe`, swapped operands, runtime bounds) leave the dispatch alone.
 fn find_bounds_count(
@@ -3410,8 +3410,8 @@ fn find_bounds_count(
                 continue;
             };
             // Determine the guard's jcc form from the branch condition:
-            // And-shape в†’ `ja`, Ne(flag_cf, 1) в†’ `jae`. Anything else (jbe,
-            // jle, вЂ¦) does not bound a 0-based table from above.
+            // And-shape → `ja`, Ne(flag_cf, 1) → `jae`. Anything else (jbe,
+            // jle, …) does not bound a 0-based table from above.
             let count = b.terminator().and_then(|term| match term {
                 IrInst::CBranch { cond, .. } => {
                     let shape = find_def_upto(func, cond, pid).and_then(|def| match def {
@@ -3845,7 +3845,7 @@ mod tests {
     /// Canonical guarded x64 jump table:
     /// ```text
     /// 0x1000  cmp  eax, 1          (N = max valid index)
-    /// 0x1003  ja   default         (And-shaped cond в†’ ja в†’ count = N+1)
+    /// 0x1003  ja   default         (And-shaped cond → ja → count = N+1)
     /// 0x1005  jmp  qword [tbl + rax*8]   (REX.W: 48 FF 24 C5 <disp32>)
     /// 0x100D  case0: mov eax,1 ; ret
     /// 0x1013  case1: mov eax,2 ; ret
@@ -3856,7 +3856,7 @@ mod tests {
         // 48 FF 24 C5 <disp32>: REX.W + modrm=0x24 (m=0, /4, SIB), SIB=0xC5
         // (scale 8, index rax, no base) + absolute disp32. The lifter
         // resolves the no-base SIB form through rip_next, so the emitted
-        // address constant is jmp_next + disp вЂ” hence disp = tbl - jmp_next.
+        // address constant is jmp_next + disp — hence disp = tbl - jmp_next.
         let table_va: u64 = 0x14002000;
         let disp = (table_va as i64).wrapping_sub(jmp_next as i64) as i32; // disp32
         let mut code = vec![
@@ -4238,7 +4238,7 @@ mod tests {
         assert!(has_op(&d, "Sext"), "mask must come from Sext(cond):\n{}", d);
         assert!(
             !d.contains("Neg"),
-            "Neg(Sext(cond)) keeps only the low bit вЂ” mask must be Sext(cond) directly:\n{}",
+            "Neg(Sext(cond)) keeps only the low bit — mask must be Sext(cond) directly:\n{}",
             d
         );
     }
@@ -4420,7 +4420,7 @@ mod tests {
     #[test]
     fn test_vex_c5_skipped_gracefully() {
         let lifter = X86Lifter::new(true);
-        // vzeroupper вЂ” unsupported but correctly sized by the LDE
+        // vzeroupper — unsupported but correctly sized by the LDE
         let code = [0xC5, 0xF8, 0x77, 0xC3];
         let f = lifter.lift_function(&code, 0x1000, "t").unwrap();
         assert!(
@@ -4564,7 +4564,7 @@ mod tests {
         }
     }
 
-    // в”Ђв”Ђв”Ђ Sub-register aliasing в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // ─── Sub-register aliasing ──────────────────────────────────────────
 
     #[test]
     fn test_al_write_updates_wide_parent() {
@@ -4633,7 +4633,7 @@ mod tests {
         assert!(has_reg(&d, "rbx"), "bh merge target must be rbx:\n{}", d);
     }
 
-    // в”Ђв”Ђв”Ђ ALU flag modeling в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // ─── ALU flag modeling ──────────────────────────────────────────────
 
     #[test]
     fn test_add_writes_all_flags() {
@@ -4708,7 +4708,7 @@ mod tests {
         );
     }
 
-    // в”Ђв”Ђв”Ђ CALL / RET stack semantics в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // ─── CALL / RET stack semantics ─────────────────────────────────────
 
     #[test]
     fn test_call_return_address_shadow_stripped() {

@@ -435,6 +435,12 @@ fn harvest_arm_with_capstone(
         mask: vec![true; len],
         min_len: len,
         confidence: cfg.conf_long,
+        // Metadata is attached by `harvest_pe` once the export name is known
+        // (`semantic_metadata`), same as the x86 path.
+        semantic_role: String::new(),
+        calling_convention: String::new(),
+        sources: Vec::new(),
+        sinks: Vec::new(),
     }]))
 }
 

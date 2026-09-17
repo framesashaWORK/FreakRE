@@ -15,7 +15,7 @@ use crate::ir_to_ast::IrToAstConverter;
 use freakre_ir::{BlockId, IrFunction, IrInst, OpCode, Value};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-// в”Ђв”Ђв”Ђ Public API в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Public API ──────────────────────────────────────────────────────
 
 /// Structure the control flow of a function into AST statements.
 pub fn structure_control_flow(func: &IrFunction, converter: &mut IrToAstConverter) -> Vec<Stmt> {
@@ -23,7 +23,7 @@ pub fn structure_control_flow(func: &IrFunction, converter: &mut IrToAstConverte
     s.structure(converter)
 }
 
-// в”Ђв”Ђв”Ђ Loop classification в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Loop classification ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LoopKind {
@@ -48,7 +48,7 @@ struct LoopInfo {
     pre_header: Option<BlockId>,
 }
 
-// в”Ђв”Ђв”Ђ Switch / jump-table info в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Switch / jump-table info ────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 struct SwitchInfo {
@@ -56,13 +56,13 @@ struct SwitchInfo {
     dispatch_block: BlockId,
     /// The expression being switched on.
     expr: Value,
-    /// case value в†’ target block
+    /// case value → target block
     cases: BTreeMap<i64, BlockId>,
     /// Optional default target.
     default: Option<BlockId>,
 }
 
-// в”Ђв”Ђв”Ђ Try-catch region в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Try-catch region ────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 struct TryCatchRegion {
@@ -70,7 +70,7 @@ struct TryCatchRegion {
     catch_handler: BlockId,
 }
 
-// в”Ђв”Ђв”Ђ Structurer в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Structurer ──────────────────────────────────────────────────────
 
 struct ControlFlowStructurer<'a> {
     func: &'a IrFunction,
@@ -114,7 +114,7 @@ impl<'a> ControlFlowStructurer<'a> {
         }
     }
 
-    // в”Ђв”Ђ entry point в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // ── entry point ──────────────────────────────────────────────────
 
     /// Emit a `goto` to `target` (an already-emitted block) and record the
     /// target so the second structuring pass prepends a matching label at the
@@ -280,7 +280,7 @@ impl<'a> ControlFlowStructurer<'a> {
         )
     }
 
-    // в”Ђв”Ђ region processor в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // ── region processor ─────────────────────────────────────────────
 
     /// Process a region of the CFG starting at `start`.
     /// `enclosing_loop_idx` is the index into `self.loops` if we are inside a loop.
@@ -311,7 +311,7 @@ impl<'a> ControlFlowStructurer<'a> {
                 break;
             }
 
-            // Already visited in this region? в†’ continue / break / inline / goto
+            // Already visited in this region? → continue / break / inline / goto
             if ctx.visited.contains(&block_id) && !ctx.inline_now.remove(&block_id) {
                 let header_continue = enclosing_loop_idx
                     .map(|loop_idx| {
@@ -362,7 +362,7 @@ impl<'a> ControlFlowStructurer<'a> {
             // edge targets a loop, switch, or try-region header.
             self.maybe_emit_label(&mut stmts, block_id);
 
-            // в”Ђв”Ђ Check if this block is a loop header в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+            // ── Check if this block is a loop header ────────────────
             if let Some(&loop_idx) = self.loop_by_header.get(&block_id) {
                 let loop_stmts =
                     self.structure_loop(loop_idx, enclosing_loop_idx, converter, ctx, depth);
@@ -375,7 +375,7 @@ impl<'a> ControlFlowStructurer<'a> {
                 continue;
             }
 
-            // в”Ђв”Ђ Check if this block is a switch dispatch в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+            // ── Check if this block is a switch dispatch ────────────
             if let Some(sw_idx) = self.switch_at(block_id) {
                 let (sw_stmts, cont) = self.structure_switch(
                     sw_idx,
@@ -390,7 +390,7 @@ impl<'a> ControlFlowStructurer<'a> {
                 continue;
             }
 
-            // в”Ђв”Ђ Check if this block starts a try-catch region в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+            // ── Check if this block starts a try-catch region ───────
             if let Some(tc_idx) = self.try_catch_at(block_id) {
                 let tc_stmts =
                     self.structure_try_catch(tc_idx, enclosing_loop_idx, converter, ctx, depth);
@@ -399,7 +399,7 @@ impl<'a> ControlFlowStructurer<'a> {
                 continue;
             }
 
-            // в”Ђв”Ђ Normal block в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+            // ── Normal block ────────────────────────────────────────
             ctx.visited.insert(block_id);
 
             let block = match self.func.block(block_id) {
@@ -476,7 +476,7 @@ impl<'a> ControlFlowStructurer<'a> {
                     if let Some(loop_idx) = enclosing_loop_idx {
                         let li = &self.loops[loop_idx];
                         if li.kind == LoopKind::DoWhile && li.latch == block_id {
-                            // This is the do-while exit condition вЂ” already handled by structure_loop
+                            // This is the do-while exit condition — already handled by structure_loop
                             break;
                         }
                     }
@@ -739,7 +739,7 @@ impl<'a> ControlFlowStructurer<'a> {
         (first_cond, tt, tf)
     }
 
-    // в”Ђв”Ђ Loop structuring в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // ── Loop structuring ────────────────────────────────────────────
 
     fn structure_loop(
         &self,
@@ -1093,7 +1093,7 @@ impl<'a> ControlFlowStructurer<'a> {
         None
     }
 
-    // в”Ђв”Ђ Switch structuring в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // ── Switch structuring ───────────────────────────────────────────
 
     fn structure_switch(
         &self,
@@ -1268,7 +1268,7 @@ impl<'a> ControlFlowStructurer<'a> {
         None
     }
 
-    // в”Ђв”Ђ Try-catch structuring в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // ── Try-catch structuring ────────────────────────────────────────
 
     fn structure_try_catch(
         &self,
@@ -1340,7 +1340,7 @@ impl<'a> ControlFlowStructurer<'a> {
         None
     }
 
-    // в”Ђв”Ђ Helpers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // ── Helpers ──────────────────────────────────────────────────────
 
     fn is_back_edge(&self, from: BlockId, to: BlockId) -> bool {
         dominates_with_idom(to, from, &self.idom) && from != to
@@ -1472,7 +1472,7 @@ impl<'a> ControlFlowStructurer<'a> {
     }
 }
 
-// в”Ђв”Ђв”Ђ Context for tracking visited blocks during structuring в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Context for tracking visited blocks during structuring ──────────
 
 #[derive(Default)]
 struct StructContext {
@@ -1574,7 +1574,7 @@ pub(crate) fn dominates_with_idom(
     true
 }
 
-// в”Ђв”Ђв”Ђ Loop detection and classification в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Loop detection and classification ───────────────────────────────
 
 fn detect_and_classify_loops(func: &IrFunction, idom: &HashMap<BlockId, BlockId>) -> Vec<LoopInfo> {
     let mut loops: Vec<LoopInfo> = Vec::new();
@@ -1583,7 +1583,7 @@ fn detect_and_classify_loops(func: &IrFunction, idom: &HashMap<BlockId, BlockId>
     for block in &func.blocks {
         for succ in &block.successors {
             if dominates_with_idom(*succ, block.id, idom) {
-                // Back edge: block в†’ succ (succ is loop header)
+                // Back edge: block → succ (succ is loop header)
                 let header = *succ;
                 let latch = block.id;
 
@@ -1732,7 +1732,7 @@ fn latch_has_increment_pattern(block: &freakre_ir::IrBlock) -> bool {
     false
 }
 
-// в”Ђв”Ђв”Ђ Switch detection в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Switch detection ────────────────────────────────────────────────
 
 fn detect_switches(func: &IrFunction) -> Vec<SwitchInfo> {
     let mut switches = Vec::new();
@@ -1971,7 +1971,7 @@ fn detect_comparison_chain_switch(
                 }
             }
             _ => {
-                // End of chain вЂ” this block is the default
+                // End of chain — this block is the default
                 break;
             }
         }
@@ -1997,7 +1997,7 @@ fn extract_cmp_const(cmp_index: &CmpIndex, cond: &Value) -> Option<(u32, i64)> {
     cmp_index.lookup(cond).map(|(v, c, _)| (v, c))
 }
 
-// в”Ђв”Ђв”Ђ Try-catch detection в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Try-catch detection ─────────────────────────────────────────────
 
 fn detect_try_catch_regions(func: &IrFunction) -> Vec<TryCatchRegion> {
     let mut regions = Vec::new();
@@ -2085,7 +2085,7 @@ fn detect_try_catch_regions(func: &IrFunction) -> Vec<TryCatchRegion> {
     regions
 }
 
-// в”Ђв”Ђв”Ђ Legacy public API (kept for compatibility) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Legacy public API (kept for compatibility) ─────────────────────
 
 /// Detect loops in the CFG (public API for external consumers).
 pub fn detect_loops(func: &IrFunction) -> Vec<super::LoopInfo> {
@@ -2120,7 +2120,7 @@ pub fn detect_if_else(func: &IrFunction, block_id: BlockId) -> Option<super::IfE
     }
 }
 
-// в”Ђв”Ђв”Ђ Tests в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -2370,7 +2370,7 @@ mod tests {
         let body_block = func.add_block("body");
         let exit_block = func.add_block("exit");
 
-        // Entry: cbranch cond в†’ body | exit
+        // Entry: cbranch cond → body | exit
         func.push_inst(
             func.entry_block,
             IrInst::CBranch {
@@ -2380,7 +2380,7 @@ mod tests {
             },
         );
 
-        // Body: branch в†’ entry (back edge)
+        // Body: branch → entry (back edge)
         func.push_inst(
             body_block,
             IrInst::Branch {
@@ -2407,10 +2407,10 @@ mod tests {
         let cond = func.alloc_var(Ty::Bool);
         let latch = func.add_block("latch");
 
-        // Entry: unconditional branch в†’ latch (body)
+        // Entry: unconditional branch → latch (body)
         func.push_inst(func.entry_block, IrInst::Branch { target: latch });
 
-        // Latch: cbranch cond в†’ entry | exit
+        // Latch: cbranch cond → entry | exit
         let exit_block = func.add_block("exit");
         func.push_inst(
             latch,
@@ -2741,7 +2741,7 @@ mod tests {
         assert!(loops[0].body_blocks.contains(&b2));
     }
 
-    // в”Ђв”Ђв”Ђ Helpers for checking structured output в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // ─── Helpers for checking structured output ──────────────────
 
     /// Collect goto labels and warning comments that indicate structuring
     /// fell back to unstructured output.
@@ -2798,7 +2798,7 @@ mod tests {
         })
     }
 
-    // в”Ђв”Ђв”Ђ Reproducers: shapes that must not fall back to goto в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // ─── Reproducers: shapes that must not fall back to goto ────────
 
     /// Half-diamond: `if (c) { body }` where the body flows into the false
     /// target itself (the join IS one of the branch targets). This is the
@@ -2950,7 +2950,7 @@ mod tests {
         );
     }
 
-    // в”ЂвЂЂвЂЂ Degenerate while(true)+continue reproducers вЂЂвЂЂвЂЂвЂЂвЂЂвЂЂвЂЂвЂЂвЂЂвЂЂвЂЂвЂЂ
+    // ─── Degenerate while(true)+continue reproducers ────────────
 
     /// Count occurrences of IntLit(val) anywhere in the statement trees
     /// (including conditions). Used to verify code is emitted exactly once.

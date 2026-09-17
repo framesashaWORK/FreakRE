@@ -1205,12 +1205,6 @@ enum GvnKey {
     },
 }
 
-/// Whether `op` is commutative (`a OP b == b OP a`), enabling operand
-/// order normalization before hashing.
-fn op_is_commutative(op: &OpCode) -> bool {
-    matches!(op, OpCode::Add | OpCode::Mul | OpCode::And | OpCode::Or | OpCode::Xor)
-}
-
 fn ssa_inst_dst_read(inst: &SsaInst) -> Option<&VersionedVar> {
     match inst {
         SsaInst::Binary { dst, .. }
@@ -1341,7 +1335,10 @@ pub fn ssa_gvn(ssa: &mut SsaFunction) -> GvnStats {
                     let (key, dst) = match inst {
                         SsaInst::Binary { dst, op, lhs, rhs } => {
                             let (a, b) = (GvnVal::from(&*lhs), GvnVal::from(&*rhs));
-                            let (a, b) = if op_is_commutative(op) && a > b {
+                            // `OpCode::is_commutative` is the single source of
+                            // truth for operand-order normalisation (it also
+                            // covers Eq/Ne, which are commutative too).
+                            let (a, b) = if op.is_commutative() && a > b {
                                 (b, a)
                             } else {
                                 (a, b)

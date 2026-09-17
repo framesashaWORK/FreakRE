@@ -5,7 +5,7 @@
 //! full index rebuild on every process start. `.fbd` moves that work to pack
 //! time: the file stores the entries plus six ready-made hash tables (the
 //! same oct/quint/triple/pair/single/slow ladder the text database uses),
-//! and the loader just `mmap`s the file and validates the header вЂ” zero
+//! and the loader just `mmap`s the file and validates the header — zero
 //! parsing, zero index building, zero per-entry allocation. All reads are
 //! bounds- and alignment-checked views into the mapping; nothing is copied.
 //!
@@ -46,7 +46,7 @@ const KIND_SINGLE: usize = 4;
 const KIND_SLOW: usize = 5;
 const KIND_COUNT: usize = 6;
 
-// в”Ђв”Ђв”Ђ Packing в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Packing ─────────────────────────────────────────────────────────
 
 fn put_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_le_bytes());
@@ -98,24 +98,33 @@ fn pack_key(kind: usize, b: &[u8], gap_or_pos: usize) -> u64 {
 }
 
 /// Classify one entry into the index ladder (same rules as the text path).
-fn entry_index_key(e: &DbEntry) -> (usize, u64) {
+///
+/// Returns `(kind, key, slow_pos)`. `slow_pos` is the offset of the first
+/// fixed byte and is only meaningful for [`KIND_SLOW`] (entries opening with
+/// wildcards); it is `0` for every other kind. The caller folds it into the
+/// header's `max_slow_pos`, which bounds the loader's positional probe walk.
+fn entry_index_key(e: &DbEntry) -> (usize, u64, usize) {
     let mut fixed = e.mask.iter().enumerate().filter(|(_, &m)| m).map(|(p, _)| p);
     if e.mask.len() > 7 && e.mask[..8].iter().all(|&m| m) {
-        return (KIND_OCT, pack_key(KIND_OCT, &e.bytes[..8], 0));
+        return (KIND_OCT, pack_key(KIND_OCT, &e.bytes[..8], 0), 0);
     }
     if e.mask.len() > 4 && e.mask[..5].iter().all(|&m| m) {
-        return (KIND_QUINT, pack_key(KIND_QUINT, &e.bytes[..5], 0));
+        return (KIND_QUINT, pack_key(KIND_QUINT, &e.bytes[..5], 0), 0);
     }
     match (fixed.next(), fixed.next()) {
-        (Some(0), Some(1)) if e.mask.len() > 2 && e.mask[2] => {
-            (KIND_TRIPLE, pack_key(KIND_TRIPLE, &e.bytes[..3], 0))
-        }
-        (Some(0), Some(p1)) if p1 <= MAX_PAIR_GAP => {
-            (KIND_PAIR, pack_key(KIND_PAIR, &[e.bytes[0], e.bytes[p1]], p1))
-        }
-        (Some(0), _) => (KIND_SINGLE, pack_key(KIND_SINGLE, &e.bytes[..1], 0)),
-        (Some(p0), _) => (KIND_SLOW, pack_key(KIND_SLOW, &[e.bytes[p0]], p0)),
-        (None, _) => (KIND_SINGLE, pack_key(KIND_SINGLE, &e.bytes[..1], 0)),
+        (Some(0), Some(1)) if e.mask.len() > 2 && e.mask[2] => (
+            KIND_TRIPLE,
+            pack_key(KIND_TRIPLE, &e.bytes[..3], 0),
+            0,
+        ),
+        (Some(0), Some(p1)) if p1 <= MAX_PAIR_GAP => (
+            KIND_PAIR,
+            pack_key(KIND_PAIR, &[e.bytes[0], e.bytes[p1]], p1),
+            0,
+        ),
+        (Some(0), _) => (KIND_SINGLE, pack_key(KIND_SINGLE, &e.bytes[..1], 0), 0),
+        (Some(p0), _) => (KIND_SLOW, pack_key(KIND_SLOW, &[e.bytes[p0]], p0), p0),
+        (None, _) => (KIND_SINGLE, pack_key(KIND_SINGLE, &e.bytes[..1], 0), 0),
     }
 }
 
@@ -155,7 +164,7 @@ impl FlatTable {
 }
 
 /// Serialize parsed entries as an `.fbd` file. Entries should already be
-/// gated/curated вЂ” the loader applies no filtering.
+/// gated/curated — the loader applies no filtering.
 pub fn write_fdb(entries: &[DbEntry], w: &mut impl std::io::Write) -> std::io::Result<()> {
     struct Rec {
         ids: [u32; 7], // lib, name, arch, role, cc, sources, sinks
@@ -245,8 +254,10 @@ pub fn write_fdb(entries: &[DbEntry], w: &mut impl std::io::Write) -> std::io::R
 
     // Build the six tables (dedup keys, sort, place).
     let mut by_kind: Vec<Vec<(u64, Vec<u32>)>> = vec![Vec::new(); KIND_COUNT];
+    let mut max_slow_pos = 0usize;
     for (idx, e) in entries.iter().enumerate() {
-        let (kind, key) = entry_index_key(e);
+        let (kind, key, slow_pos) = entry_index_key(e);
+        max_slow_pos = max_slow_pos.max(slow_pos);
         by_kind[kind].push((key, vec![idx as u32]));
     }
     let mut tables: Vec<FlatTable> = Vec::with_capacity(KIND_COUNT);
@@ -368,7 +379,12 @@ pub fn write_fdb(entries: &[DbEntry], w: &mut impl std::io::Write) -> std::io::R
     put_u64(&mut hdr, run_ranges_off);
     put_u64(&mut hdr, aka_ids_off);
     put_u32(&mut hdr, aka_ids.len() as u32);
-    put_u32(&mut hdr, 0); // max_slow_pos (unused by loader probe walk; kept for parity)
+    // Widest leading-wildcard position, mirroring the text path's
+    // `Db::max_slow_pos`. The loader's slow probe walks
+    // `1..=offset.min(max_slow_pos)`, so persisting 0 here would make every
+    // KIND_SLOW entry unreachable through the `.fbd` path even though the
+    // index table for it was written.
+    put_u32(&mut hdr, max_slow_pos as u32);
     for (kind, t) in tables.iter().enumerate() {
         put_u32(&mut hdr, nkeys_per_kind[kind]);
         put_u32(&mut hdr, t.slots as u32);
@@ -383,7 +399,7 @@ pub fn write_fdb(entries: &[DbEntry], w: &mut impl std::io::Write) -> std::io::R
     w.write_all(&out)
 }
 
-// в”Ђв”Ђв”Ђ Loading в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ─── Loading ─────────────────────────────────────────────────────────
 
 /// A memory-mapped `.fbd` overlay. Cheap to construct: header validation
 /// only; every accessor is bounds-checked against precomputed section ends.
@@ -968,6 +984,57 @@ mod tests {
         let hits = ov.scan_code(&code3, 0, 10, None);
         assert_eq!(hits.len(), 1, "pair-ladder hit");
         assert_eq!(ov.function_name(hits[0].entry), "CmdTail");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A pattern whose first byte is a wildcard lands in `KIND_SLOW` — the
+    /// only ladder rung driven by the header's `max_slow_pos`. Persisting `0`
+    /// there (the pre-fix behaviour) left the table written but the positional
+    /// probe walk bounded to `1..=0`, so such entries were silently
+    /// unmatchable through `.fbd` while the text path still found them.
+    #[test]
+    fn slow_ladder_survives_the_fdb_roundtrip() {
+        let entry = DbEntry {
+            bytes: vec![
+                0x00, 0x8B, 0xEC, 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10, 0x53, 0x56, 0x57, 0x5D, 0xC3,
+                0x90, 0x90,
+            ],
+            mask: std::iter::once(false)
+                .chain(std::iter::repeat_n(true, 15))
+                .collect(),
+            library: "testlib",
+            function_name: "slow_ladder_fn",
+            arch: "x86",
+            min_func_len: 16,
+            confidence: 0.7,
+            aka: Vec::new(),
+            semantic_role: "",
+            calling_convention: "",
+            sources: "",
+            sinks: "",
+        };
+        assert_eq!(
+            entry_index_key(&entry).0,
+            KIND_SLOW,
+            "leading wildcard must classify as KIND_SLOW"
+        );
+
+        let path = std::env::temp_dir().join("func-sigs-fdb-slow.fbd");
+        pack_entries(std::slice::from_ref(&entry), &path).unwrap();
+        let ov = FdbOverlay::load(&path).unwrap();
+        assert_eq!(ov.max_slow_pos, 1, "slow position must be persisted");
+
+        // Two filler bytes put the pattern's first fixed byte at offset 2, so
+        // the slow probe finds it at pos = 1 with start = 1.
+        let mut code = vec![0xAAu8, 0xBB];
+        code.extend_from_slice(&entry.bytes[1..]);
+        code.extend(std::iter::repeat_n(0x90u8, 8));
+
+        let hits = ov.scan_code(&code, 0, 10, None);
+        assert_eq!(hits.len(), 1, "slow-ladder entry must be reachable");
+        assert_eq!(hits[0].offset, 1);
+        assert_eq!(ov.function_name(hits[0].entry), "slow_ladder_fn");
 
         let _ = std::fs::remove_file(&path);
     }

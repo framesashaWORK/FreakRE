@@ -233,7 +233,7 @@ fn decode_opcode(
     }
 
     Ok(match opcode {
-        // в”Ђв”Ђ Misc / system в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Misc / system ────────────────────────────────────────────
         0x90 => {
             if prefixes.rep {
                 (Mnemonic::Raw("pause".to_string()), vec![])
@@ -302,7 +302,7 @@ fn decode_opcode(
         0xFC => (Mnemonic::Cld, vec![]),
         0xFD => (Mnemonic::Std, vec![]),
 
-        // в”Ђв”Ђ Segment push/pop в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Segment push/pop ─────────────────────────────────────────
         0x06 => (Mnemonic::Push, vec![Operand::Reg(Register::Es)]),
         0x0E => (Mnemonic::Push, vec![Operand::Reg(Register::Cs)]),
         0x16 => (Mnemonic::Push, vec![Operand::Reg(Register::Ss)]),
@@ -311,7 +311,7 @@ fn decode_opcode(
         0x17 => (Mnemonic::Pop, vec![Operand::Reg(Register::Ss)]),
         0x1F => (Mnemonic::Pop, vec![Operand::Reg(Register::Ds)]),
 
-        // в”Ђв”Ђ Stack operations: 64-bit by default in long mode в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Stack operations: 64-bit by default in long mode ────────
         0x50..=0x57 => (
             Mnemonic::Push,
             vec![Operand::Reg(reg(opcode - 0x50, rex_b, stack_size))],
@@ -335,7 +335,7 @@ fn decode_opcode(
             vec![Operand::Imm(read_i8(bytes, pos)? as i64)],
         ),
 
-        // в”Ђв”Ђ inc/dec r (32-bit mode only; in x64 these are REX slots) в”Ђ
+        // ── inc/dec r (32-bit mode only; in x64 these are REX slots) ─
         0x40..=0x47 if !is_64 => (
             Mnemonic::Inc,
             vec![Operand::Reg(reg(opcode - 0x40, false, op_size))],
@@ -345,7 +345,7 @@ fn decode_opcode(
             vec![Operand::Reg(reg(opcode - 0x48, false, op_size))],
         ),
 
-        // в”Ђв”Ђ mov r, imm в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── mov r, imm ───────────────────────────────────────────────
         0xB8..=0xBF => {
             let r = reg(opcode - 0xB8, rex_b, op_size);
             let imm = if rex_w && is_64 {
@@ -365,7 +365,7 @@ fn decode_opcode(
             )
         }
 
-        // в”Ђв”Ђ ALU reg/mem forms (00-3D) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── ALU reg/mem forms (00-3D) ────────────────────────────────
         // +0: r/m8, r8   +1: r/m, r   +2: r8, r/m8   +3: r, r/m
         // +4: al, imm8   +5: acc, imm
         0x00..=0x03
@@ -402,7 +402,7 @@ fn decode_opcode(
             ],
         ),
 
-        // в”Ђв”Ђ test в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── test ─────────────────────────────────────────────────────
         0x84 => {
             let (r, rm, _) =
                 decode_modrm(bytes, pos, ctx, rex, OperandSize::Byte, OperandSize::Byte)?;
@@ -427,7 +427,7 @@ fn decode_opcode(
             ],
         ),
 
-        // в”Ђв”Ђ mov r/m forms в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── mov r/m forms ────────────────────────────────────────────
         0x88 => {
             let (r, rm, _) =
                 decode_modrm(bytes, pos, ctx, rex, OperandSize::Byte, OperandSize::Byte)?;
@@ -461,7 +461,7 @@ fn decode_opcode(
             (Mnemonic::Lea, vec![Operand::Reg(r), rm])
         }
 
-        // в”Ђв”Ђ moffs moves в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── moffs moves ──────────────────────────────────────────────
         0xA0..=0xA3 => {
             let (addr, sz) = read_moffs(bytes, pos, ctx, rex_w, op_size)?;
             let mem = Operand::Mem(MemOperand {
@@ -480,13 +480,13 @@ fn decode_opcode(
             }
         }
 
-        // в”Ђв”Ђ movsxd (x64) / arpl (x86, unsupported) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── movsxd (x64) / arpl (x86, unsupported) ───────────────────
         0x63 if is_64 => {
             let (r, rm, _) = decode_modrm(bytes, pos, ctx, rex, op_size, OperandSize::Dword)?;
             (Mnemonic::Movsxd, vec![Operand::Reg(r), rm])
         }
 
-        // в”Ђв”Ђ imul with immediate в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── imul with immediate ──────────────────────────────────────
         0x69 => {
             let (r, rm, next) = decode_modrm(bytes, pos, ctx, rex, op_size, op_size)?;
             let imm = read_imm_opsize(bytes, next, ctx)?;
@@ -498,7 +498,7 @@ fn decode_opcode(
             (Mnemonic::Imul, vec![Operand::Reg(r), rm, Operand::Imm(imm)])
         }
 
-        // в”Ђв”Ђ String operations в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── String operations ────────────────────────────────────────
         0xA4 => (Mnemonic::Movsb, vec![]),
         0xA5 => str_op(
             ctx,
@@ -535,7 +535,7 @@ fn decode_opcode(
             (Mnemonic::Scasw, Mnemonic::Scasd, Mnemonic::Scasq),
         ),
 
-        // в”Ђв”Ђ Control flow в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Control flow ─────────────────────────────────────────────
         0x70..=0x7F => {
             let rel = read_i8(bytes, pos)? as i64;
             (
@@ -582,7 +582,7 @@ fn decode_opcode(
             )
         }
 
-        // в”Ђв”Ђ Group 1: add/or/adc/sbb/and/sub/xor/cmp, imm в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Group 1: add/or/adc/sbb/and/sub/xor/cmp, imm ────────────
         0x80 | 0x82 => {
             let (rf, dst, next) = modrm_group(bytes, pos, ctx, rex, OperandSize::Byte)?;
             (
@@ -605,7 +605,7 @@ fn decode_opcode(
             )
         }
 
-        // в”Ђв”Ђ Shift groups в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Shift groups ─────────────────────────────────────────────
         0xC0 | 0xC1 => {
             let sz = if opcode == 0xC0 {
                 OperandSize::Byte
@@ -637,7 +637,7 @@ fn decode_opcode(
             (shift_mnemonic(rf), vec![dst, Operand::Reg(Register::Cl)])
         }
 
-        // в”Ђв”Ђ Group 11: mov r/m, imm в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Group 11: mov r/m, imm ───────────────────────────────────
         0xC6 => {
             let (_, dst, next) = modrm_group(bytes, pos, ctx, rex, OperandSize::Byte)?;
             (
@@ -653,7 +653,7 @@ fn decode_opcode(
             )
         }
 
-        // в”Ђв”Ђ Group 3 (F6/F7): test/not/neg/mul/imul/div/idiv в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Group 3 (F6/F7): test/not/neg/mul/imul/div/idiv ──────────
         0xF6 | 0xF7 => {
             let sz = if opcode == 0xF6 {
                 OperandSize::Byte
@@ -679,7 +679,7 @@ fn decode_opcode(
             }
         }
 
-        // в”Ђв”Ђ Group 5 (FF): inc/dec/call/jmp/push r/m в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Group 5 (FF): inc/dec/call/jmp/push r/m ──────────────────
         0xFF if pos < bytes.len() => {
             let rf = (bytes[pos] >> 3) & 7;
             let sz = match rf {
@@ -706,7 +706,7 @@ fn decode_opcode(
             }
         }
 
-        // в”Ђв”Ђ Two-byte opcodes (0F xx) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // ── Two-byte opcodes (0F xx) ─────────────────────────────────
         0x0F if pos < bytes.len() => {
             let op2 = bytes[pos];
             let inner_pos = pos + 1;
@@ -966,7 +966,7 @@ fn rel_target(address: u64, insn_len: usize, rel: i64) -> u64 {
     (address as i64 + insn_len as i64 + rel) as u64
 }
 
-/// moffs displacement: sized by operand size (REX.W в†’ 8, 66 в†’ 2, else 4).
+/// moffs displacement: sized by operand size (REX.W → 8, 66 → 2, else 4).
 fn read_moffs(
     code: &[u8],
     pos: usize,
@@ -1040,7 +1040,7 @@ fn shift_mnemonic(reg_field: u8) -> Mnemonic {
     }
 }
 
-// в”Ђв”Ђ Helper functions в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ── Helper functions ──────────────────────────────────────────────
 
 fn read_u8(code: &[u8], pos: usize) -> Result<u8, DecodeError> {
     code.get(pos).copied().ok_or(DecodeError::TooShort)
@@ -1157,7 +1157,7 @@ pub(crate) fn reg_for_index(idx: u8, rex_ext: bool, size: OperandSize) -> Regist
 }
 
 /// Byte registers. With a REX prefix present, the high bytes (AH/CH/DH/BH)
-/// become SPL/BPL/SIL/DIL; REX.B selects r8bвЂ“r15b instead.
+/// become SPL/BPL/SIL/DIL; REX.B selects r8b–r15b instead.
 fn reg8_for_index(idx: u8, rex_present: bool, rex_ext: bool) -> Register {
     if rex_ext {
         return match idx + 8 {

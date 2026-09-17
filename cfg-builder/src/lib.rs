@@ -693,15 +693,18 @@ fn connect_edges(
                     if let Some(target_offset) =
                         resolve_branch_target(inst, code, config.base_va, config.is_64bit)
                     {
-                        let target_relative = if target_offset >= config.base_va as usize {
-                            target_offset - config.base_va as usize
-                        } else {
-                            continue;
-                        };
-
-                        if let Some(&target_id) = offset_to_block.get(&target_relative) {
-                            blocks[i].successors.push(target_id);
-                            blocks[i].edge_types.push(EdgeType::ConditionalBranch);
+                        // A target below the image base lies outside the
+                        // analysed region: drop only the *taken* edge. This
+                        // must not `continue`, because the not-taken edge
+                        // below is still real — skipping it left the next
+                        // block without a predecessor, so anomaly detection
+                        // reported live code as unreachable.
+                        if target_offset >= config.base_va as usize {
+                            let target_relative = target_offset - config.base_va as usize;
+                            if let Some(&target_id) = offset_to_block.get(&target_relative) {
+                                blocks[i].successors.push(target_id);
+                                blocks[i].edge_types.push(EdgeType::ConditionalBranch);
+                            }
                         }
                     }
 
@@ -1567,6 +1570,49 @@ mod tests {
         assert_eq!(
             resolve_branch_target(&inst, &code, 0x1000, true),
             Some(0x1014)
+        );
+    }
+
+    /// A conditional branch whose target resolves BELOW `base_va` is outside
+    /// the analysed region, so only the taken edge may be dropped. The
+    /// not-taken (fallthrough) edge is still real: `connect_edges` used to
+    /// `continue` on the below-base target, skipping the fallthrough push as
+    /// well, which left the next block predecessor-less and made anomaly
+    /// detection flag live code as unreachable.
+    #[test]
+    fn conditional_branch_below_base_keeps_its_fallthrough_edge() {
+        // 0x1000: 74 80   JZ -128 -> 0xF82, below base_va = 0x1000
+        // 0x1002: 90      NOP
+        // 0x1003: C3      RET
+        let code = vec![0x74, 0x80, 0x90, 0xC3];
+        let config = CfgConfig {
+            seed_from_prologues: false,
+            ..Default::default()
+        };
+        let cfg = build_cfg(&code, 0x1000, &config);
+
+        assert!(cfg.blocks.len() >= 2, "expected a fallthrough block");
+
+        let entry = &cfg.blocks[0];
+        assert_eq!(
+            entry.successors.len(),
+            1,
+            "below-base target must not swallow the fallthrough edge"
+        );
+        assert_eq!(entry.edge_types, vec![EdgeType::Fallthrough]);
+        assert_eq!(
+            entry.successors.len(),
+            entry.edge_types.len(),
+            "successors/edge_types must stay parallel"
+        );
+
+        assert!(
+            cfg.unreachable_blocks().is_empty(),
+            "fallthrough target wrongly flagged unreachable: {:?}",
+            cfg.unreachable_blocks()
+                .iter()
+                .map(|b| b.start_offset)
+                .collect::<Vec<_>>()
         );
     }
 }
