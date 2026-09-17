@@ -273,7 +273,29 @@ fn decompile_function_inner(
     // Runs after SSA so that the recovered mapping matches the final IR's Var ids,
     // and before final dead-flag elimination so recovered copies stay alive.
     // If SSA was skipped due to rsp loss, `ir` is still the pre-SSA form.
-    let stack_var_names = crate::stack_vars::recover_stack_vars(&mut ir);
+    let mut stack_var_names = crate::stack_vars::recover_stack_vars(&mut ir);
+    // Home-slot coalescing: a slot that provably carries one parameter's
+    // live range (`dword_8 = a1` on entry, lineage-checked mutations only,
+    // parameter never recycled as scratch) is renamed to the parameter
+    // register and the entry store is deleted. Runs before naming so no
+    // phantom `dword_N` declaration survives.
+    {
+        let is_64 = ir.blocks.iter().any(|b| {
+            b.insts.iter().any(|i| {
+                i.dst().is_some_and(|d| {
+                    matches!(
+                        d,
+                        freakre_ir::Value::Register {
+                            ty: freakre_ir::Ty::Int(64) | freakre_ir::Ty::UInt(64),
+                            ..
+                        }
+                    )
+                })
+            })
+        });
+        let params = crate::params::recover_params(&ir, is_64);
+        crate::stack_vars::coalesce_home_slots(&mut ir, &mut stack_var_names, &params);
+    }
     crate::fold_flags::eliminate_dead_flag_defs(&mut ir);
     // Copy coalescing for the no-SSA path (and a second sweep for the SSA
     // path: stack recovery can re-introduce copies via slot temps).

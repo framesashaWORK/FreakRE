@@ -59,6 +59,7 @@
 //! escapes.
 
 use crate::ast::{Expr, Stmt};
+use crate::params::RecoveredParam;
 use freakre_ir::{IrFunction, IrInst, OpCode, Ty, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -153,6 +154,265 @@ pub fn recover_stack_vars(func: &mut IrFunction) -> StackVarNames {
     }
 
     names
+}
+
+/// Home-slot coalescing: fold a parameter's stack home into the parameter.
+///
+/// MSVC `/O0` spills every register argument to its home slot on entry
+/// (`mov [rsp+8], ecx`), so recovered slots start life as `dword_8 = a1`
+/// with all later uses routed through the slot. When the slot provably
+/// carries nothing but the parameter's live range, the slot variable is
+/// renamed to the parameter register and the entry store is deleted:
+///
+/// ```text
+/// dword_8 = a1; ...; eax = dword_8   →   eax = a1
+/// ```
+///
+/// Gates (all must hold, otherwise the slot is kept as-is):
+/// - G1 init: the slot's first definition in block order lives in the entry
+///   block and copies a recovered parameter register (`S = Copy(P)`).
+/// - G2 lineage: every other definition copies either the slot itself, the
+///   same parameter (redundant re-spill), or a temp whose single definition
+///   reads the slot (`S = S - 1` mutations). Anything else rejects.
+/// - G3 no scratch: the parameter (all its register aliases) is never
+///   *defined* anywhere — params are entry values, so an `ecx = ...` write
+///   means the register was recycled and the slot is a distinct live range.
+/// - G4 no escape: the slot never appears under `AddrOf` or as a call
+///   target (by-value call args are fine).
+/// Returns the number of coalesced slots; coalesced ids are removed from
+/// `names` so no phantom `dword_N` declaration survives.
+pub fn coalesce_home_slots(
+    func: &mut IrFunction,
+    names: &mut StackVarNames,
+    params: &[RecoveredParam],
+) -> usize {
+    if names.is_empty() || params.is_empty() {
+        return 0;
+    }
+    let param_regs: HashSet<&str> = params
+        .iter()
+        .flat_map(|p| p.aliases.iter().copied())
+        .collect();
+    let entry = func.entry_block;
+    // (init block index, init inst index, slot id, param value).
+    let mut coalesce: Vec<(usize, usize, u32, Value)> = Vec::new();
+    'slots: for &slot_id in names.keys() {
+        // Collect definitions in block order.
+        let mut defs: Vec<(usize, usize, Value)> = Vec::new();
+        for (bi, block) in func.blocks.iter().enumerate() {
+            for (ii, inst) in block.insts.iter().enumerate() {
+                let is_def = inst.dst().is_some_and(|d| {
+                    matches!(d, Value::Var { id, .. } if *id == slot_id)
+                });
+                if !is_def {
+                    continue;
+                }
+                let IrInst::Unary {
+                    op: OpCode::Copy,
+                    src,
+                    ..
+                } = inst
+                else {
+                    continue 'slots;
+                };
+                defs.push((bi, ii, src.clone()));
+            }
+        }
+        if defs.is_empty() {
+            continue;
+        }
+        // G1: first definition overall is the entry-block init from a param.
+        let (init_bi, init_ii, init_src) = &defs[0];
+        if func.blocks.get(*init_bi).map(|b| b.id) != Some(entry) {
+            continue;
+        }
+        let Value::Register { name: init_reg, .. } = init_src else {
+            continue;
+        };
+        if !param_regs.contains(init_reg.as_str()) {
+            continue;
+        }
+        // The init parameter's full alias set (a `ecx` spill is killed by an
+        // `eax`-family... no — by any write to rcx/ecx/cx/cl/ch).
+        let aliases: &[&str] = params
+            .iter()
+            .find(|p| p.aliases.iter().any(|a| *a == init_reg.as_str()))
+            .map(|p| p.aliases.as_slice())
+            .unwrap_or(&[]);
+        // G2: lineage of the remaining definitions.
+        for (_, _, src) in defs.iter().skip(1) {
+            match src {
+                Value::Var { id, .. } if *id == slot_id => {}
+                Value::Register { name, .. } if name == init_reg => {}
+                Value::Var { id, .. } => {
+                    // Temp must be single-defined by an expression reading
+                    // the slot (`t = S - 1`).
+                    if !temp_reads_slot(func, *id, slot_id) {
+                        continue 'slots;
+                    }
+                }
+                _ => continue 'slots,
+            }
+        }
+        // G3: the parameter register is never defined (scratch reuse would
+        // make the slot a distinct live range).
+        // G4: the slot never escapes (AddrOf/call-target).
+        for block in &func.blocks {
+            for inst in &block.insts {
+                if inst.dst().is_some_and(|d| {
+                    matches!(d, Value::Register { name, .. } if aliases.contains(&name.as_str()))
+                }) {
+                    continue 'slots;
+                }
+                if inst_sources_escape_slot(inst, slot_id) {
+                    continue 'slots;
+                }
+            }
+        }
+        coalesce.push((*init_bi, *init_ii, slot_id, init_src.clone()));
+    }
+    let mut done = 0usize;
+    for (init_bi, init_ii, slot_id, param) in coalesce {
+        for block in func.blocks.iter_mut() {
+            for inst in block.insts.iter_mut() {
+                rewrite_slot_uses(inst, slot_id, &param);
+            }
+        }
+        // Drop the init store (now a `P = Copy(P)` self-copy).
+        if let Some(block) = func.blocks.get_mut(init_bi) {
+            if block.insts.get(init_ii).is_some() {
+                block.insts.remove(init_ii);
+            }
+        }
+        names.remove(&slot_id);
+        done += 1;
+    }
+    done
+}
+
+/// True when temp var `temp_id` has exactly one definition and its sources
+/// read `slot_id` (`t = S - 1` shape: a slot mutation routed through a temp).
+fn temp_reads_slot(func: &IrFunction, temp_id: u32, slot_id: u32) -> bool {
+    let mut defs = 0u32;
+    let mut reads_slot = false;
+    for block in &func.blocks {
+        for inst in &block.insts {
+            let is_def = inst.dst().is_some_and(|d| {
+                matches!(d, Value::Var { id, .. } if *id == temp_id)
+            });
+            if is_def {
+                defs += 1;
+                if inst_sources_read_slot(inst, slot_id) {
+                    reads_slot = true;
+                }
+            }
+        }
+    }
+    defs == 1 && reads_slot
+}
+
+/// True when any source operand of `inst` is exactly `Var(slot_id)`.
+fn inst_sources_read_slot(inst: &IrInst, slot_id: u32) -> bool {
+    inst.sources().iter().any(|v| {
+        matches!(v, Value::Var { id, .. } if *id == slot_id)
+    })
+}
+
+/// True when `inst` leaks the slot in a way renaming cannot follow: the
+/// slot used as a call/branch target. (Plain value uses — args, addresses,
+/// switch indices — stay sound because every def/use is rewritten, so the
+/// renamed flow mirrors the slot flow exactly. There is no address-taking
+/// `Value` in the IR, so nothing else can smuggle the slot out.)
+fn inst_sources_escape_slot(inst: &IrInst, slot_id: u32) -> bool {
+    let is_target = match inst {
+        IrInst::Call { target, .. } | IrInst::IndirectBranch { target } => {
+            matches!(target, Value::Var { id, .. } if *id == slot_id)
+        }
+        _ => false,
+    };
+    is_target
+}
+
+/// Replace every `Var(slot_id)` operand (sources AND plain-Var destinations)
+/// with `replacement`. Destination rewriting is load-bearing: a mutation
+/// `S = S - 1` must become `P = P - 1`, otherwise later reads would observe
+/// a stale parameter while the slot flow moved on.
+fn rewrite_slot_uses(inst: &mut IrInst, slot_id: u32, replacement: &Value) {
+    for_each_value_mut(inst, &mut |v| {
+        if matches!(v, Value::Var { id, .. } if *id == slot_id) {
+            *v = replacement.clone();
+        }
+    });
+}
+
+/// Apply `f` to every `Value` position of `inst`, destinations included.
+/// Must stay exhaustive over `IrInst`: any missed position breaks
+/// `rewrite_slot_uses` soundness (a surviving `Var(slot)` would alias the
+/// renamed flow).
+fn for_each_value_mut(inst: &mut IrInst, f: &mut impl FnMut(&mut Value)) {
+    match inst {
+        IrInst::Binary { dst, lhs, rhs, .. } => {
+            f(dst);
+            f(lhs);
+            f(rhs);
+        }
+        IrInst::Adc { dst, a, b, carry } | IrInst::Sbb { dst, a, b, carry } => {
+            f(dst);
+            f(a);
+            f(b);
+            f(carry);
+        }
+        IrInst::Unary { dst, src, .. } => {
+            f(dst);
+            f(src);
+        }
+        IrInst::Load { dst, addr, .. } => {
+            f(dst);
+            f(addr);
+        }
+        IrInst::Store { addr, value, .. } => {
+            f(addr);
+            f(value);
+        }
+        IrInst::CBranch { cond, .. } => {
+            f(cond);
+        }
+        IrInst::Call { dst, target, args } => {
+            if let Some(d) = dst {
+                f(d);
+            }
+            f(target);
+            for a in args.iter_mut() {
+                f(a);
+            }
+        }
+        IrInst::Return { value } => {
+            if let Some(v) = value {
+                f(v);
+            }
+        }
+        IrInst::IndirectBranch { target } => {
+            f(target);
+        }
+        IrInst::Switch { index, .. } => {
+            f(index);
+        }
+        IrInst::Phi { dst, incoming } => {
+            f(dst);
+            for (_, v) in incoming.iter_mut() {
+                f(v);
+            }
+        }
+        IrInst::Syscall { number, args } => {
+            if let Some(n) = number {
+                f(n);
+            }
+            for a in args.iter_mut() {
+                f(a);
+            }
+        }
+        IrInst::Branch { .. } | IrInst::Nop => {}
+    }
 }
 
 /// Rename AST variables produced by [`recover_stack_vars`] from `v{id}` to
@@ -1027,6 +1287,195 @@ fn rename_expr(expr: &mut Expr, names: &StackVarNames) {
 mod tests {
     use super::*;
     use freakre_ir::{x86_lifter::X86Lifter, Lifter};
+
+    fn rcx_param() -> RecoveredParam {
+        RecoveredParam {
+            slot: 0,
+            canonical: "rcx",
+            aliases: vec!["rcx", "ecx", "cx", "cl", "ch"],
+            ty: Ty::i64(),
+        }
+    }
+
+    fn slot_names(slot_id: u32) -> StackVarNames {
+        let mut names = StackVarNames::new();
+        names.insert(
+            slot_id,
+            RecoveredStackVar {
+                name: "dword_8".to_string(),
+                ty: Ty::i32(),
+            },
+        );
+        names
+    }
+
+    fn no_var_left(func: &IrFunction, slot_id: u32) -> bool {
+        func.blocks.iter().all(|b| {
+            b.insts.iter().all(|inst| {
+                let mut found = false;
+                for_each_value_mut_clone(inst, &mut |v| {
+                    if matches!(v, Value::Var { id, .. } if *id == slot_id) {
+                        found = true;
+                    }
+                });
+                !found
+            })
+        })
+    }
+
+    /// Read-only twin of `for_each_value_mut` for test inspection.
+    fn for_each_value_mut_clone(inst: &IrInst, f: &mut impl FnMut(&Value)) {
+        let mut owned = inst.clone();
+        for_each_value_mut(&mut owned, &mut |v| f(v));
+    }
+
+    #[test]
+    fn test_home_slot_leaf_spill_coalesces() {
+        // S = ecx; eax = S; return eax  →  eax = ecx; return eax.
+        let mut func = IrFunction::new("leaf", 0x1000);
+        let slot = func.alloc_var(Ty::i32());
+        let slot_id = slot.var_id().unwrap();
+        let ecx = Value::reg("ecx", Ty::i32());
+        let eax = Value::reg("eax", Ty::i32());
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: slot.clone(),
+                op: OpCode::Copy,
+                src: ecx,
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: eax,
+                op: OpCode::Copy,
+                src: slot.clone(),
+            },
+        );
+        func.push_inst(func.entry_block, IrInst::Return { value: None });
+        let mut names = slot_names(slot_id);
+        let n = coalesce_home_slots(&mut func, &mut names, &[rcx_param()]);
+        assert_eq!(n, 1);
+        assert!(names.is_empty(), "coalesced slot must lose its declaration");
+        assert!(no_var_left(&func, slot_id));
+    }
+
+    #[test]
+    fn test_home_slot_scratch_reuse_rejects() {
+        // Same spill, but ecx is recycled as scratch later: the slot is a
+        // distinct live range and must survive.
+        let mut func = IrFunction::new("scratch", 0x1000);
+        let slot = func.alloc_var(Ty::i32());
+        let slot_id = slot.var_id().unwrap();
+        let ecx = Value::reg("ecx", Ty::i32());
+        let eax = Value::reg("eax", Ty::i32());
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: slot.clone(),
+                op: OpCode::Copy,
+                src: ecx.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: eax.clone(),
+                op: OpCode::Copy,
+                src: slot.clone(),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: ecx,
+                op: OpCode::Copy,
+                src: eax,
+            },
+        );
+        func.push_inst(func.entry_block, IrInst::Return { value: None });
+        let mut names = slot_names(slot_id);
+        let n = coalesce_home_slots(&mut func, &mut names, &[rcx_param()]);
+        assert_eq!(n, 0);
+        assert_eq!(names.len(), 1);
+    }
+
+    #[test]
+    fn test_home_slot_mutation_lineage_accepts() {
+        // S = ecx; t = S - 1; S = t; return S — slot mutations stay in the
+        // merged flow (`ecx = ecx - 1`).
+        let mut func = IrFunction::new("mut", 0x1000);
+        let slot = func.alloc_var(Ty::i32());
+        let slot_id = slot.var_id().unwrap();
+        let ecx = Value::reg("ecx", Ty::i32());
+        let t = func.alloc_var(Ty::i32());
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: slot.clone(),
+                op: OpCode::Copy,
+                src: ecx,
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Binary {
+                dst: t.clone(),
+                op: OpCode::Sub,
+                lhs: slot.clone(),
+                rhs: Value::Const(1),
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: slot.clone(),
+                op: OpCode::Copy,
+                src: t,
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Return {
+                value: Some(slot.clone()),
+            },
+        );
+        let mut names = slot_names(slot_id);
+        let n = coalesce_home_slots(&mut func, &mut names, &[rcx_param()]);
+        assert_eq!(n, 1);
+        assert!(no_var_left(&func, slot_id));
+    }
+
+    #[test]
+    fn test_home_slot_foreign_store_rejects() {
+        // S = ecx; S = edx — the slot is recycled for another value.
+        let mut func = IrFunction::new("foreign", 0x1000);
+        let slot = func.alloc_var(Ty::i32());
+        let slot_id = slot.var_id().unwrap();
+        let ecx = Value::reg("ecx", Ty::i32());
+        let edx = Value::reg("edx", Ty::i32());
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: slot.clone(),
+                op: OpCode::Copy,
+                src: ecx,
+            },
+        );
+        func.push_inst(
+            func.entry_block,
+            IrInst::Unary {
+                dst: slot,
+                op: OpCode::Copy,
+                src: edx,
+            },
+        );
+        func.push_inst(func.entry_block, IrInst::Return { value: None });
+        let mut names = slot_names(slot_id);
+        let n = coalesce_home_slots(&mut func, &mut names, &[rcx_param()]);
+        assert_eq!(n, 0);
+    }
 
     fn stack_access_func() -> IrFunction {
         let mut func = IrFunction::new("stacky", 0x1000);
