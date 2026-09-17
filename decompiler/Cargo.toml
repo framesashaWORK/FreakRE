@@ -7,7 +7,6 @@ license = "MIT"
 
 [dependencies]
 freakre-ir = { path = "../freakre-ir" }
-dataflow = { path = "../dataflow" }
 freakre-type-propagation = { path = "../type-propagation" }
 freakre-x86 = { path = "../freakre-x86" }
 pe-parser = { path = "../pe-parser" }
