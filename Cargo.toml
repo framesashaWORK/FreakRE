@@ -24,7 +24,6 @@ members = [
     "decompiler",
     "project-db",
     "func-finder",
-    "type-system",
     "plugins",
     "diffing",
     "sys-plugins",
