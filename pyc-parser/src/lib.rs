@@ -283,45 +283,6 @@ pub struct CodeObject {
     pub co_code: Vec<u8>,
 }
 
-/// Parse a Python bytecode code object from marshalled data.
-pub fn parse_code_object(data: &[u8], version: Option<PythonVersion>) -> Option<CodeObject> {
-    // Skip to the code object (starts with 'c' opcode or similar)
-    // This is simplified - full parsing requires understanding marshal format
-    
-    // For now, extract what we can from the raw bytecode
-    if data.len() < 8 {
-        return None;
-    }
-
-    // Simplified extraction - real implementation would parse the marshal format
-    let mut constants = Vec::new();
-    let mut names = Vec::new();
-
-    // Scan for string-like constants (ASCII printable runs)
-    for i in 0..data.len() {
-        if data[i] >= 0x20 && data[i] <= 0x7E {
-            let start = i;
-            while i < data.len() && data[i] >= 0x20 && data[i] <= 0x7E {
-                // continue
-            }
-            if i - start >= 3 {
-                if let Ok(s) = std::str::from_utf8(&data[start..i]) {
-                    constants.push(s.to_string());
-                }
-            }
-        }
-    }
-
-    Some(CodeObject {
-        arg_count: 0,
-        constants,
-        names,
-        instructions: vec![],
-        source_path: None,
-        co_code: data.to_vec(),
-    })
-}
-
 /// Python version inferred from the magic number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PythonVersion {
@@ -477,11 +438,22 @@ pub fn analyze_python(data: &[u8]) -> Option<PycReport> {
     let source_path = read_source_path(&data[code_offset..]);
     let body = &data[code_offset..];
 
-    // Disassemble bytecode if it's at least 2 bytes per instruction
-    let instructions = if body.len() >= 2 {
-        disassemble(body, python_version)
-    } else {
-        vec![]
+    // Try to extract code object from bytecode body and parse constants
+    let (instructions, constants) = {
+        let (insts, consts) = parse_code_object(body);
+        if insts.is_empty() {
+            // Fallback to simple disassembly
+            (
+                if body.len() >= 2 {
+                    disassemble(body, python_version)
+                } else {
+                    vec![]
+                },
+                consts,
+            )
+        } else {
+            (insts, consts)
+        }
     };
 
     // Scan for printable ASCII strings in bytecode body
@@ -640,6 +612,7 @@ struct PyInstScratch {
 }
 
 fn parse_pyinstaller_archive(data: &[u8]) -> Option<PyInstScratch> {
+
     // Walk the archive's "struct" entries. Each entry begins with a
     // null-terminated name. We only need first-pass metadata.
     let mut out = PyInstScratch::default();
@@ -712,6 +685,41 @@ fn disassemble(body: &[u8], version: Option<PythonVersion>) -> Vec<Instruction> 
     }
 
     insts
+}
+
+/// Parse a Python code object from marshalled bytecode to extract constants.
+/// Returns (instructions, constants) where constants are marshal-parsed string values.
+pub fn parse_code_object(body: &[u8]) -> (Vec<Instruction>, Vec<String>) {
+    let mut constants = Vec::new();
+
+    // Scan for marshal string constants: 'c' (STRING type) + 4-byte len + data
+    for i in 0..body.len().saturating_sub(5) {
+        if body[i] == b'c' {
+            let len = u32::from_le_bytes([
+                body[i + 1],
+                body[i + 2],
+                body[i + 3],
+                body[i + 4],
+            ]) as usize;
+            if i + 5 + len <= body.len() && len >= 3 && len < 4096 {
+                if let Ok(s) = std::str::from_utf8(&body[i + 5..i + 5 + len]) {
+                    if !s.is_empty()
+                        && s.chars().all(|c| c.is_ascii_alphanumeric() || c.is_ascii_punctuation() || c.is_ascii_whitespace())
+                        && !s.contains("Py")
+                        && !s.contains("Python")
+                        && !s.contains("<")
+                        && !s.contains(")")
+                    {
+                        constants.push(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let instructions = disassemble(body, None);
+
+    (instructions, constants)
 }
 
 fn build_report(
@@ -987,3 +995,4 @@ mod tests {
         assert!(r.findings.iter().any(|f| f.rule_id == "PY_PYINSTALLER"));
     }
 }
+
