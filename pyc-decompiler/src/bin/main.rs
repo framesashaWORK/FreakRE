@@ -34,12 +34,12 @@ fn main() {
     }
 
     println!("\n=== Strings Found ===");
-    for s in report.suspicious_strings.iter().take(15) {
+    for s in report.suspicious_strings.iter().take(20) {
         println!("  \"{}\"", s);
     }
 
     println!("\n=== Imports ===");
-    for imp in report.imports.iter().take(15) {
+    for imp in report.imports.iter().take(20) {
         println!("  {}", imp);
     }
 
@@ -63,43 +63,95 @@ fn generate_pseudocode(insts: &[Instruction], consts: &[String]) {
         let inst = &insts[i];
         let indent_str = "  ".repeat(indent);
 
-        // Skip common stack manipulation ops
         match inst.opcode {
-            Opcode::RotTwo | Opcode::RotThree | Opcode::PopTop | Opcode::DupTop | Opcode::DupTopTwo => {
+            // === STACK OPERATIONS ===
+            Opcode::PopTop => {
                 i += 1;
                 continue;
             }
+            Opcode::RotTwo => {
+                i += 1;
+                continue;
+            }
+            Opcode::RotThree => {
+                i += 1;
+                continue;
+            }
+            Opcode::DupTop => {
+                i += 1;
+                continue;
+            }
+            Opcode::DupTopTwo => {
+                i += 1;
+                continue;
+            }
+
+            // === LOOP/ITERATION ===
             Opcode::ForIter => {
                 println!("{}for _ in iterable:", indent_str);
                 indent += 1;
                 i += 1;
                 continue;
             }
+            Opcode::IterNext => {
+                i += 1;
+                continue;
+            }
+
+            // === CONTROL FLOW ===
+            Opcode::JumpForward => {
+                println!("{}# jump_forward: {}", indent_str, inst.arg.unwrap_or(0));
+                i += 1;
+                continue;
+            }
+            Opcode::JumpIfTrueOrPop => {
+                println!("{}if ...:", indent_str);
+                indent += 1;
+                i += 1;
+                continue;
+            }
+            Opcode::JumpIfFalseOrPop => {
+                println!("{}if ...:", indent_str);
+                indent += 1;
+                i += 1;
+                continue;
+            }
+            Opcode::StopCode | Opcode::PopExcept | Opcode::PopBlock => {
+                if indent > 0 { indent -= 1; }
+                i += 1;
+                continue;
+            }
+
+            // === IMPORTS ===
             Opcode::ImportName => {
                 let idx = inst.arg.map(|a| a as usize).unwrap_or(0);
-                let module = consts.get(idx).cloned().unwrap_or("?".to_string());
-                println!("{}import {}", indent_str, module);
+                println!("{}import {}", indent_str, consts.get(idx).unwrap_or(&"?".to_string()));
                 i += 1;
                 continue;
             }
             Opcode::ImportFrom => {
                 let idx = inst.arg.map(|a| a as usize).unwrap_or(0);
-                let module = consts.get(idx).cloned().unwrap_or("?".to_string());
-                println!("{}from {} import *", indent_str, module);
+                println!("{}from {} import *", indent_str, consts.get(idx).unwrap_or(&"?".to_string()));
                 i += 1;
                 continue;
             }
+            Opcode::ImportAll => {
+                let idx = inst.arg.map(|a| a as usize).unwrap_or(0);
+                println!("{}from {} import *", indent_str, consts.get(idx).unwrap_or(&"?".to_string()));
+                i += 1;
+                continue;
+            }
+
+            // === NAME OPERATIONS ===
             Opcode::LoadName => {
                 let idx = inst.arg.map(|a| a as usize).unwrap_or(0);
-                let name = consts.get(idx).cloned().unwrap_or(format!("v{}", idx));
-                println!("{}# load: {}", indent_str, name);
+                println!("{}# load: {}", indent_str, consts.get(idx).unwrap_or(&"?".to_string()));
                 i += 1;
                 continue;
             }
             Opcode::StoreName => {
                 let idx = inst.arg.map(|a| a as usize).unwrap_or(0);
-                let name = consts.get(idx).cloned().unwrap_or(format!("v{}", idx));
-                println!("{}{} = ...", indent_str, name);
+                println!("{}{} = ...", indent_str, consts.get(idx).unwrap_or(&"?".to_string()));
                 i += 1;
                 continue;
             }
@@ -109,17 +161,17 @@ fn generate_pseudocode(insts: &[Instruction], consts: &[String]) {
                 i += 1;
                 continue;
             }
+
+            // === ATTRIBUTE OPERATIONS ===
             Opcode::LoadAttr => {
                 let idx = inst.arg.map(|a| a as usize).unwrap_or(0);
-                let name = consts.get(idx).cloned().unwrap_or("?".to_string());
-                println!("{}# obj.{}", indent_str, name);
+                println!("{}# obj.{}", indent_str, consts.get(idx).unwrap_or(&"?".to_string()));
                 i += 1;
                 continue;
             }
             Opcode::StoreAttr => {
                 let idx = inst.arg.map(|a| a as usize).unwrap_or(0);
-                let name = consts.get(idx).cloned().unwrap_or("?".to_string());
-                println!("{}# obj.{} = ...", indent_str, name);
+                println!("{}# obj.{} = ...", indent_str, consts.get(idx).unwrap_or(&"?".to_string()));
                 i += 1;
                 continue;
             }
@@ -129,12 +181,43 @@ fn generate_pseudocode(insts: &[Instruction], consts: &[String]) {
                 i += 1;
                 continue;
             }
+
+            // === CONSTANT OPERATIONS ===
+            Opcode::LoadConst => {
+                let idx = inst.arg.map(|a| a as usize).unwrap_or(0);
+                println!("{}# const: {}", indent_str, consts.get(idx).unwrap_or(&"?".to_string()));
+                i += 1;
+                continue;
+            }
+            Opcode::LoadMap => {
+                println!("{}# load_map", indent_str);
+                i += 1;
+                continue;
+            }
+
+            // === CALL OPERATIONS ===
             Opcode::CallFunction => {
                 let nargs = inst.arg.map(|a| a as usize).unwrap_or(0);
                 println!("{}# call({})", indent_str, nargs);
                 i += 1;
                 continue;
             }
+            Opcode::CallFunctionEx => {
+                let nargs = inst.arg.map(|a| a as usize).unwrap_or(0);
+                println!("{}# call_ex({})", indent_str, nargs);
+                i += 1;
+                continue;
+            }
+
+            // === FUNCTION OPERATIONS ===
+            Opcode::MakeFunction => {
+                let nargs = inst.arg.map(|a| a as usize).unwrap_or(0);
+                println!("{}# make_function({})", indent_str, nargs);
+                i += 1;
+                continue;
+            }
+
+            // === COMPARISON OPERATIONS ===
             Opcode::CompareOp => {
                 let cmp = match inst.arg.unwrap_or(0) {
                     0 => "==", 1 => "!=", 2 => "<", 3 => "<=", 4 => ">", 5 => ">=",
@@ -145,34 +228,8 @@ fn generate_pseudocode(insts: &[Instruction], consts: &[String]) {
                 i += 1;
                 continue;
             }
-            Opcode::JumpForward => {
-                println!("{}# jump_forward: {}", indent_str, inst.arg.unwrap_or(0));
-                i += 1;
-                continue;
-            }
-            Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop => {
-                println!("{}if ...:", indent_str);
-                indent += 1;
-                i += 1;
-                continue;
-            }
-            Opcode::IterNext => {
-                println!("{}# next", indent_str);
-                i += 1;
-                continue;
-            }
-            Opcode::LoadConst => {
-                let idx = inst.arg.map(|a| a as usize).unwrap_or(0);
-                if idx < consts.len() {
-                    let val = &consts[idx];
-                    println!("{}# const: {}", indent_str, val);
-                } else {
-                    println!("{}# const: ?", indent_str);
-                }
-                i += 1;
-                continue;
-            }
-            // Binary operations
+
+            // === BINARY OPERATIONS ===
             Opcode::BinaryAdd => {
                 println!("{}# +", indent_str);
                 i += 1;
@@ -213,36 +270,55 @@ fn generate_pseudocode(insts: &[Instruction], consts: &[String]) {
                 i += 1;
                 continue;
             }
-            // In-place operations
-            Opcode::InplaceAdd | Opcode::InplaceSubtract | Opcode::InplaceMultiply |
-            Opcode::InplaceModulo | Opcode::InplacePower | Opcode::InplaceAnd |
-            Opcode::InplaceOr | Opcode::InplaceXor | Opcode::InplaceFloorDivide => {
-                println!("{}# op=", indent_str);
+
+            // === INPLACE OPERATIONS ===
+            Opcode::InplaceAdd => {
+                println!("{}# +=", indent_str);
                 i += 1;
                 continue;
             }
-            Opcode::MakeFunction => {
-                let nargs = inst.arg.map(|a| a as usize).unwrap_or(0);
-                println!("{}# make_function({})", indent_str, nargs);
+            Opcode::InplaceSubtract => {
+                println!("{}# -=", indent_str);
                 i += 1;
                 continue;
             }
-            Opcode::CallFunctionEx => {
-                let nargs = inst.arg.map(|a| a as usize).unwrap_or(0);
-                println!("{}# call_ex({})", indent_str, nargs);
+            Opcode::InplaceMultiply => {
+                println!("{}# *=", indent_str);
                 i += 1;
                 continue;
             }
-            Opcode::LoadMap => {
-                println!("{}# load_map", indent_str);
+            Opcode::InplaceModulo => {
+                println!("{}# %=", indent_str);
                 i += 1;
                 continue;
             }
-            Opcode::StoreSubst => {
-                println!("{}# store_subst", indent_str);
+            Opcode::InplacePower => {
+                println!("{}# **=", indent_str);
                 i += 1;
                 continue;
             }
+            Opcode::InplaceAnd => {
+                println!("{}# &=", indent_str);
+                i += 1;
+                continue;
+            }
+            Opcode::InplaceOr => {
+                println!("{}# |=", indent_str);
+                i += 1;
+                continue;
+            }
+            Opcode::InplaceXor => {
+                println!("{}# ^=", indent_str);
+                i += 1;
+                continue;
+            }
+            Opcode::InplaceFloorDivide => {
+                println!("{}# //=", indent_str);
+                i += 1;
+                continue;
+            }
+
+            // === STRUCTURE OPERATIONS ===
             Opcode::UnpackSequence => {
                 let count = inst.arg.map(|a| a as usize).unwrap_or(0);
                 println!("{}# unpack {} items", indent_str, count);
@@ -255,10 +331,13 @@ fn generate_pseudocode(insts: &[Instruction], consts: &[String]) {
                 i += 1;
                 continue;
             }
-            Opcode::StopCode | Opcode::ImportAll | Opcode::PopExcept | Opcode::PopBlock => {
+            Opcode::StoreSubst => {
+                println!("{}# store_subst", indent_str);
                 i += 1;
                 continue;
             }
+
+            // === FALLBACK ===
             _ => {
                 let opcode = format!("{:?}", inst.opcode);
                 let arg = inst.arg.map(|a| a.to_string()).unwrap_or("?".to_string());
