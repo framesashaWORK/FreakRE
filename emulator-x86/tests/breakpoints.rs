@@ -32,20 +32,21 @@ fn breakpoint_at_entry_stops_before_first_block() {
 
 #[test]
 fn run_to_mid_function_stops_there() {
-    // jmp +2 (over two NOPs); ret. Target block starts at base+4.
+    // jmp +2 (over two NOPs); ret. The forward-jump target (base+4) lies in
+    // the middle of the fall-through block; repair links it to the
+    // containing block, so the plain run executes the ret (previously the
+    // target dangled and the body was pruned as unreachable → FellOffEnd).
     let code = [0xEB, 0x02, 0x90, 0x90, 0xC3];
     let func = lift(&code, 0x2000);
     let mut emu = Emulator::new(DefaultEnv::new());
-    let res = emu.run_to(&func, 0x2000, 0, 0x2004, 1_000);
-    assert_eq!(res.exit_reason, ExitReason::Breakpoint { addr: 0x2004 });
+    // run_to a block entry still stops with the temp breakpoint removed.
+    let res = emu.run_to(&func, 0x2000, 0, 0x2002, 1_000);
+    assert_eq!(res.exit_reason, ExitReason::Breakpoint { addr: 0x2002 });
     // Temporary breakpoint is always removed, even though the run stopped.
     assert!(emu.breakpoints().is_empty());
-    // NOTE: a plain run ends in FellOffEnd here because the lifter leaves
-    // the forward-jump target block empty (the bytes live in bb_2) — a known
-    // lifter-fidelity limit, orthogonal to breakpoints, which fire at block
-    // entry regardless of block contents.
+    // A plain run now reaches and executes the ret.
     let res = emu.run(&func, 0x2000, 0, 1_000);
-    assert_eq!(res.exit_reason, ExitReason::FellOffEnd);
+    assert_eq!(res.exit_reason, ExitReason::Return);
 }
 
 #[test]

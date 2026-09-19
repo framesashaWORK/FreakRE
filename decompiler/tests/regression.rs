@@ -230,8 +230,7 @@ fn dead_assignment_with_call_keeps_the_call() {
 }
 
 #[test]
-fn copy_prop_does_not_use_value_redefined_later_in_same_list() {
-    // v1 = rax; rax = rcx; return v1;
+fn copy_prop_does_not_use_value_redefined_later_in_same_list() {    // v1 = rax; rax = rcx; return v1;
     // v1 captures rax *before* the redefinition, so the result must read the
     // entry value of rax — never rcx. Since SSA register spellings are
     // preserved on lowering, GVN/DCE prove both copies dead (`v1` aliases
@@ -271,4 +270,76 @@ fn copy_prop_does_not_use_value_redefined_later_in_same_list() {
         "result must read pre-redefinition rax (as `rax` or a temp), got:\n{}",
         c
     );
+}
+
+#[test]
+fn copy_prop_keeps_loop_carried_increment() {
+    // while (i < n) { i = i + 1; } modeled with the increment routed
+    // through a temp copy at the loop tail (`t = i + 1; i = t`): the copy
+    // feeds the next iteration through the back edge, so dropping it as
+    // "unread later in the list" hangs the loop (real bubble_sort hang).
+    use freakre_ir::{BlockId, IrBlock};
+    let mut func = IrFunction::new("loopinc", 0x7000);
+    let i = func.alloc_var(Ty::i64());
+    let n = func.alloc_var(Ty::i64());
+    let t = func.alloc_var(Ty::i64());
+    // init i = 0 in entry, then jump to the condition header.
+    func.push_inst(
+        func.entry_block,
+        IrInst::Unary {
+            dst: i.clone(),
+            op: OpCode::Copy,
+            src: Value::int(0),
+        },
+    );
+    let header = func.add_block("header");
+    let body = func.add_block("body");
+    let exit = func.add_block("exit");
+    func.push_inst(func.entry_block, IrInst::Branch { target: header });
+    // header: c = (i < n); if (!c) exit else body.
+    let c = func.alloc_var(Ty::Bool);
+    func.push_inst(
+        header,
+        IrInst::Binary {
+            dst: c.clone(),
+            op: OpCode::LtU,
+            lhs: i.clone(),
+            rhs: n.clone(),
+        },
+    );
+    func.push_inst(
+        header,
+        IrInst::CBranch {
+            cond: c,
+            target_true: body,
+            target_false: exit,
+        },
+    );
+    // body: t = i + 1; i = t; goto header.
+    func.push_inst(
+        body,
+        IrInst::Binary {
+            dst: t.clone(),
+            op: OpCode::Add,
+            lhs: i.clone(),
+            rhs: Value::int(1),
+        },
+    );
+    func.push_inst(
+        body,
+        IrInst::Unary {
+            dst: i.clone(),
+            op: OpCode::Copy,
+            src: t,
+        },
+    );
+    func.push_inst(body, IrInst::Branch { target: header });
+    func.push_inst(exit, IrInst::Return { value: Some(i) });
+    func.build_cfg();
+    let c = decompile_function(&func).unwrap();
+    // The increment store must survive: without it the loop never advances.
+    // The counter prints as v1 (params are only recovered for registers).
+    let has_inc =
+        c.contains("v1 + 1") || c.contains("v1+=1") || c.contains("v1 += 1") || c.contains("v1++");
+    assert!(has_inc, "loop-carried increment was dropped, loop hangs:\n{}", c);
 }

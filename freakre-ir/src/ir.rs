@@ -914,8 +914,34 @@ pub(crate) fn repair_block_graph(func: &mut IrFunction, parse_label: fn(&str, u6
     }
     code_starts.sort_unstable();
 
+    // Decoded address ranges (start, end, block) for blocks that carry a
+    // source range. The linear decoder walks straight through jump targets,
+    // so a forward `jmp` usually lands in the MIDDLE of a block, not on a
+    // block start (e.g. `EB 0A` into the middle of the fall-through chunk).
+    // Such targets must resolve to the CONTAINING block (greatest start ≤
+    // addr); the forward scan below only finds starts ≥ addr and left them
+    // dangling — `prune_unreachable` then deleted the entire body as
+    // unreachable (empty `bubble_sort`).
+    let mut ranges: Vec<(u64, u64, BlockId)> = Vec::new();
+    for b in &func.blocks {
+        if let Some((s, e)) = b.source_range {
+            if !b.insts.is_empty() {
+                ranges.push((s, e, b.id));
+            }
+        }
+    }
+
     let resolve = |id: BlockId| -> Option<BlockId> {
         let &(_, addr) = label_addrs.iter().find(|(bid, _)| *bid == id)?;
+        // Primary: the block whose decoded range contains the target.
+        if let Some(&(_, _, b)) = ranges
+            .iter()
+            .find(|&&(s, e, _)| s <= addr && addr < e)
+        {
+            return Some(b);
+        }
+        // Fallback (legacy): a block starting at-or-just-after the target
+        // (covers range-less blocks such as freshly re-lifted case bodies).
         let idx = code_starts.partition_point(|&(a, _, _)| a < addr);
         code_starts
             .get(idx)

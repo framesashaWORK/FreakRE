@@ -1117,7 +1117,13 @@ fn propagate_copies(stmts: &mut Vec<Stmt>) {
     let mut use_counts: HashMap<String, usize> = HashMap::new();
     count_var_uses_stmts(stmts, &mut use_counts);
 
-    substitute_within_list(stmts, &def_counts, &use_counts, &HashMap::new());
+    substitute_within_list(
+        stmts,
+        &def_counts,
+        &use_counts,
+        &HashMap::new(),
+        &mut HashMap::new(),
+    );
 
     // Remove now-unused definitions
     let mut used_after = HashSet::new();
@@ -1125,20 +1131,126 @@ fn propagate_copies(stmts: &mut Vec<Stmt>) {
     remove_dead_stmts(stmts, &used_after);
 }
 
+/// Pending entries safe to carry into a nested statement's child lists.
+///
+/// Entry code dominates the whole nested region, so a copy observes the
+/// same value at every nested use as long as (a) its target is never
+/// (re)defined inside, (b) no variable of its value is (re)defined inside,
+/// and (c) no call in scope can clobber a caller-saved register value.
+/// Literals pass through the same gate (a redefined literal target must
+/// not leak the stale constant in either).
+fn carried_pending(
+    pending: &HashMap<String, Expr>,
+    stmt: &Stmt,
+) -> HashMap<String, Expr> {
+    let mut defs: HashMap<String, usize> = HashMap::new();
+    let mut has_call = false;
+    match stmt {
+        Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            count_var_defs_stmts(then_body, &mut defs);
+            has_call |= then_body.iter().any(stmt_may_call);
+            if let Some(eb) = else_body {
+                count_var_defs_stmts(eb, &mut defs);
+                has_call |= eb.iter().any(stmt_may_call);
+            }
+        }
+        Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+            count_var_defs_stmts(body, &mut defs);
+            has_call |= body.iter().any(stmt_may_call);
+        }
+        Stmt::For {
+            init, update, body, ..
+        } => {
+            if let Some(i) = init {
+                count_var_defs_stmt(i, &mut defs);
+                has_call |= stmt_may_call(i);
+            }
+            if let Some(u) = update {
+                count_var_defs_stmt(u, &mut defs);
+                has_call |= stmt_may_call(u);
+            }
+            count_var_defs_stmts(body, &mut defs);
+            has_call |= body.iter().any(stmt_may_call);
+        }
+        Stmt::Block(inner) => {
+            count_var_defs_stmts(inner, &mut defs);
+            has_call |= inner.iter().any(stmt_may_call);
+        }
+        Stmt::Switch { cases, default, .. } => {
+            for c in cases.iter() {
+                count_var_defs_stmts(&c.body, &mut defs);
+                has_call |= c.body.iter().any(stmt_may_call);
+            }
+            if let Some(d) = default {
+                count_var_defs_stmts(d, &mut defs);
+                has_call |= d.iter().any(stmt_may_call);
+            }
+        }
+        Stmt::TryCatch {
+            try_body,
+            catch_body,
+            ..
+        } => {
+            count_var_defs_stmts(try_body, &mut defs);
+            has_call |= try_body.iter().any(stmt_may_call);
+            count_var_defs_stmts(catch_body, &mut defs);
+            has_call |= catch_body.iter().any(stmt_may_call);
+        }
+        _ => {}
+    }
+    pending
+        .iter()
+        .filter(|(k, v)| {
+            if defs.contains_key(*k) {
+                return false;
+            }
+            let mut ok = true;
+            collect_expr_var_names(v, &mut |n| {
+                if defs.contains_key(n) {
+                    ok = false;
+                }
+            });
+            if !ok {
+                return false;
+            }
+            if matches!(v, Expr::Var(r) if x86_caller_saved(r)) && has_call {
+                return false;
+            }
+            true
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// Every variable name read by `e` (the node itself plus subexpressions).
+fn collect_expr_var_names(e: &Expr, out: &mut impl FnMut(&str)) {
+    if let Expr::Var(n) = e {
+        out(n);
+    }
+    e.for_each_subexpr(&mut |s| {
+        if let Expr::Var(n) = s {
+            out(n);
+        }
+    });
+}
+
 fn substitute_within_list(
     stmts: &mut [Stmt],
     def_counts: &HashMap<String, usize>,
     use_counts: &HashMap<String, usize>,
     inherited_literals: &HashMap<String, Expr>,
+    // Occurrences already rewritten to a pending value, per variable name.
+    // Compared against the global `use_counts` to decide drops exactly:
+    // a copy is dead iff every read of its target was rewritten.
+    rewritten: &mut HashMap<String, usize>,
 ) {
     // `pending` holds candidates visible to *direct* sub-expressions of
     // following statements at this nesting level.
     let mut pending: HashMap<String, Expr> = inherited_literals.clone();
-    // Indices of Var→Var copy statements whose target was fully propagated;
-    // dropped in a second sweep. A copy is only droppable when its target is
-    // never referenced again after the copy (in the remainder of this list,
-    // including nested bodies and control headers).
-    let mut drop_idx: Vec<usize> = Vec::new();
     // Whether this list (including nested bodies) ever writes `rax`.
     // Decides subregister-copy protection below: in 64-bit output every
     // `eax` write carries a `write_reg` parent merge into `rax`, so an
@@ -1147,18 +1259,17 @@ fn substitute_within_list(
     // never touches `rax` is 32-bit-style, where `eax` IS the return
     // register and its copies must be kept like `rax` ones.
     let list_defines_rax = stmt_list_defines_var(stmts, "rax");
-    let n = stmts.len();
-    let mut suffix_names: Vec<HashSet<String>> = vec![HashSet::new(); n + 1];
-    for si in (0..n).rev() {
-        let mut s = suffix_names[si + 1].clone();
-        collect_used_vars_stmt(&stmts[si], &mut s);
-        suffix_names[si] = s;
-    }
+    // 1b candidates (statement index, target name, ABI protection) seen
+    // during the walk. The drop decision needs FINAL rewrite counts (uses
+    // in nested lists processed later, back-edge and header reads), so it
+    // runs after the whole subtree is processed: a copy dies iff every
+    // global read of its target was rewritten.
+    let mut copies: Vec<(usize, String, bool)> = Vec::new();
 
     for (si, stmt) in stmts.iter_mut().enumerate() {
         // 1. Apply all pending replacements to this statement's own
-        //    sub-expressions (not to its child lists).
-        apply_pending_to_own_exprs(stmt, &pending);
+        //    sub-expressions (not to its child lists), counting rewrites.
+        apply_pending_to_own_exprs(stmt, &pending, rewritten);
 
         // 2. A statement that (re)defines a variable kills its previous
         //    pending entry: later reads must observe the NEW value, not the
@@ -1211,17 +1322,10 @@ fn substitute_within_list(
                 let reg_base = x86_register_base(&name);
                 let protect = name == "rax"
                     || (reg_base.is_some() && !list_defines_rax);
-                // Droppable only if nothing after this statement still reads
-                // the target (later pending values referencing it count too).
-                let used_later = suffix_names[si + 1].contains(&name)
-                    || pending
-                        .values()
-                        .any(|e| expr_references_var(e, &name));
-                if used_later || protect {
-                    pending.insert(name, Expr::Var(src));
-                } else {
-                    drop_idx.push(si);
-                }
+                // Always register (later reads observe the copy); the drop
+                // decision is deferred until rewrite counts are final.
+                pending.insert(name.clone(), Expr::Var(src));
+                copies.push((si, name, protect));
             }
         }
 
@@ -1250,23 +1354,8 @@ fn substitute_within_list(
         }
     }
 
-    // 1c. Neutralize the fully-propagated Var→Var copies by rewriting them as
-    // self-assignments (`x = x`); Pass 5d (`remove_self_assigns`) drops those
-    // later in the pipeline. Slices have no retain, and inventing a `Nop`
-    // variant would touch every AST consumer for zero benefit.
-    for si in drop_idx {
-        if let Stmt::Assign {
-            target: Expr::Var(name),
-            ..
-        } = &stmts[si]
-        {
-            let name = name.clone();
-            stmts[si] = Stmt::Assign {
-                target: Expr::Var(name.clone()),
-                value: Expr::Var(name),
-            };
-        }
-    }
+    // 1c. (Drop decisions + neutralization run after the recursion below:
+    // nested lists contribute rewrite counts first.)
 
     // 3. Recurse into nested lists, carrying only literal constants down.
     let literals: HashMap<String, Expr> = pending
@@ -1286,13 +1375,19 @@ fn substitute_within_list(
                 else_body,
                 ..
             } => {
-                substitute_within_list(then_body, def_counts, use_counts, &literals);
+                substitute_within_list(
+                    then_body,
+                    def_counts,
+                    use_counts,
+                    &literals,
+                    rewritten,
+                );
                 if let Some(eb) = else_body {
-                    substitute_within_list(eb, def_counts, use_counts, &literals);
+                    substitute_within_list(eb, def_counts, use_counts, &literals, rewritten);
                 }
             }
             Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
-                substitute_within_list(body, def_counts, use_counts, &literals);
+                substitute_within_list(body, def_counts, use_counts, &literals, rewritten);
             }
             Stmt::For {
                 init, update, body, ..
@@ -1303,6 +1398,7 @@ fn substitute_within_list(
                         def_counts,
                         use_counts,
                         &literals,
+                        rewritten,
                     );
                 }
                 if let Some(u) = update {
@@ -1311,17 +1407,20 @@ fn substitute_within_list(
                         def_counts,
                         use_counts,
                         &literals,
+                        rewritten,
                     );
                 }
-                substitute_within_list(body, def_counts, use_counts, &literals);
+                substitute_within_list(body, def_counts, use_counts, &literals, rewritten);
             }
-            Stmt::Block(inner) => substitute_within_list(inner, def_counts, use_counts, &literals),
+            Stmt::Block(inner) => {
+                substitute_within_list(inner, def_counts, use_counts, &literals, rewritten)
+            }
             Stmt::Switch { cases, default, .. } => {
                 for c in cases.iter_mut() {
-                    substitute_within_list(&mut c.body, def_counts, use_counts, &literals);
+                    substitute_within_list(&mut c.body, def_counts, use_counts, &literals, rewritten);
                 }
                 if let Some(d) = default {
-                    substitute_within_list(d, def_counts, use_counts, &literals);
+                    substitute_within_list(d, def_counts, use_counts, &literals, rewritten);
                 }
             }
             Stmt::TryCatch {
@@ -1329,17 +1428,57 @@ fn substitute_within_list(
                 catch_body,
                 ..
             } => {
-                substitute_within_list(try_body, def_counts, use_counts, &literals);
-                substitute_within_list(catch_body, def_counts, use_counts, &literals);
+                substitute_within_list(try_body, def_counts, use_counts, &literals, rewritten);
+                substitute_within_list(catch_body, def_counts, use_counts, &literals, rewritten);
             }
             _ => {}
+        }
+    }
+
+    // 1c. Decide drops with FINAL rewrite counts (nested lists above already
+    // contributed theirs). Drop rule (exact): every global read of the
+    // target was rewritten to the copy's value, so the copy statement is
+    // dead. Back-edge, header, exit, and nested-list reads can never be
+    // rewritten (pending never crosses list levels except for literals),
+    // hence they keep the copy alive automatically. `rax` copies are
+    // additionally protected: the fall-through return reads rax without
+    // any statement use.
+    let mut drop_idx: Vec<usize> = Vec::new();
+    for (si, name, protect) in &copies {
+        if *protect {
+            continue;
+        }
+        let total = use_counts.get(name).copied().unwrap_or(0);
+        let done = rewritten.get(name).copied().unwrap_or(0);
+        if done >= total {
+            drop_idx.push(*si);
+        }
+    }
+    // Neutralize the dropped copies as self-assignments (`x = x`); Pass 5d
+    // (`remove_self_assigns`) drops those later. Slices have no retain.
+    for si in drop_idx {
+        if let Stmt::Assign {
+            target: Expr::Var(name),
+            ..
+        } = &stmts[si]
+        {
+            let name = name.clone();
+            stmts[si] = Stmt::Assign {
+                target: Expr::Var(name.clone()),
+                value: Expr::Var(name),
+            };
         }
     }
 }
 
 /// Substitute pending variables into the statement's own expressions,
-/// without descending into nested statement lists.
-fn apply_pending_to_own_exprs(stmt: &mut Stmt, pending: &HashMap<String, Expr>) {
+/// without descending into nested statement lists. Counts every replaced
+/// occurrence per variable name (drives the exact drop rule).
+fn apply_pending_to_own_exprs(
+    stmt: &mut Stmt,
+    pending: &HashMap<String, Expr>,
+    rewritten: &mut HashMap<String, usize>,
+) {
     match stmt {
         Stmt::Assign { target, value } => {
             // A bare-Var target is a *write*, not a read: substituting
@@ -1347,31 +1486,84 @@ fn apply_pending_to_own_exprs(stmt: &mut Stmt, pending: &HashMap<String, Expr>) 
             // variable. Only compound targets (Deref addresses, Field bases)
             // contain address reads that legitimately propagate.
             if !matches!(target, Expr::Var(_)) {
-                substitute_vars_expr(target, pending);
+                substitute_vars_expr_counted(target, pending, rewritten);
             }
-            substitute_vars_expr(value, pending);
+            substitute_vars_expr_counted(value, pending, rewritten);
         }
-        Stmt::Return { value: Some(v) } => substitute_vars_expr(v, pending),
+        Stmt::Return { value: Some(v) } => substitute_vars_expr_counted(v, pending, rewritten),
         Stmt::Call { args, .. } => {
             for a in args.iter_mut() {
-                substitute_vars_expr(a, pending);
+                substitute_vars_expr_counted(a, pending, rewritten);
             }
         }
-        Stmt::Expr(e) => substitute_vars_expr(e, pending),
-        Stmt::Decl { init: Some(e), .. } => substitute_vars_expr(e, pending),
-        Stmt::If { cond, .. } => substitute_vars_expr(cond, pending),
+        Stmt::Expr(e) => substitute_vars_expr_counted(e, pending, rewritten),
+        Stmt::Decl { init: Some(e), .. } => substitute_vars_expr_counted(e, pending, rewritten),
+        Stmt::If { cond, .. } => substitute_vars_expr_counted(cond, pending, rewritten),
         Stmt::While { cond, .. } | Stmt::DoWhile { cond, .. } => {
-            substitute_vars_expr(cond, pending)
+            substitute_vars_expr_counted(cond, pending, rewritten)
         }
         Stmt::For { cond: Some(c), .. } => {
-            substitute_vars_expr(c, pending);
+            substitute_vars_expr_counted(c, pending, rewritten);
         }
         Stmt::For { cond: None, .. } => {}
         Stmt::Switch { expr, cases, .. } => {
-            substitute_vars_expr(expr, pending);
+            substitute_vars_expr_counted(expr, pending, rewritten);
             for c in cases.iter_mut() {
-                substitute_vars_expr(&mut c.value, pending);
+                substitute_vars_expr_counted(&mut c.value, pending, rewritten);
             }
+        }
+        _ => {}
+    }
+}
+
+/// Counting twin of [`substitute_vars_expr`]: every replaced occurrence of
+/// `name` bumps `rewritten[name]`, so the drop rule can prove that all
+/// global reads of a copy target were rewritten.
+fn substitute_vars_expr_counted(
+    expr: &mut Expr,
+    defs: &HashMap<String, Expr>,
+    rewritten: &mut HashMap<String, usize>,
+) {
+    match expr {
+        Expr::Var(name) => {
+            if let Some(replacement) = defs.get(name) {
+                *rewritten.entry(name.clone()).or_insert(0) += 1;
+                *expr = replacement.clone();
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            substitute_vars_expr_counted(lhs, defs, rewritten);
+            substitute_vars_expr_counted(rhs, defs, rewritten);
+        }
+        Expr::Unary { operand, .. } => {
+            substitute_vars_expr_counted(operand, defs, rewritten);
+        }
+        Expr::Call { args, .. } => {
+            for a in args.iter_mut() {
+                substitute_vars_expr_counted(a, defs, rewritten);
+            }
+        }
+        Expr::Index { base, index } => {
+            substitute_vars_expr_counted(base, defs, rewritten);
+            substitute_vars_expr_counted(index, defs, rewritten);
+        }
+        Expr::Member { base, .. } | Expr::Field { base, .. } => {
+            substitute_vars_expr_counted(base, defs, rewritten);
+        }
+        Expr::Deref(e) | Expr::AddrOf(e) | Expr::Sizeof(e) => {
+            substitute_vars_expr_counted(e, defs, rewritten);
+        }
+        Expr::Cast { expr: e, .. } => {
+            substitute_vars_expr_counted(e, defs, rewritten);
+        }
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            substitute_vars_expr_counted(cond, defs, rewritten);
+            substitute_vars_expr_counted(then_expr, defs, rewritten);
+            substitute_vars_expr_counted(else_expr, defs, rewritten);
         }
         _ => {}
     }

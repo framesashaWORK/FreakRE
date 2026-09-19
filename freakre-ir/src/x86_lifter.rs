@@ -456,6 +456,117 @@ fn push_un(func: &mut IrFunction, block: BlockId, dst: Value, op: OpCode, src: V
     func.push_inst(block, IrInst::Unary { dst, op, src });
 }
 
+/// Pre-scan a code window for direct-jump targets (absolute VAs).
+///
+/// The linear walk decodes straight through jump targets, so a forward
+/// `jmp` into the middle of the fall-through chunk used to dangle (and get
+/// pruned with the whole body) or — after the containing-range repair —
+/// link mid-block, executing the skipped prefix on entry (off-by-one
+/// miscompile in `bubble_sort`). Collecting targets up front lets the walk
+/// split blocks exactly at jump destinations, so every branch enters its
+/// block at instruction zero. Only in-window targets are returned;
+/// out-of-window (tail-call) targets stay dangling by design.
+fn collect_jump_targets(code: &[u8], base: u64, is_64bit: bool) -> std::collections::HashSet<u64> {
+    use std::collections::HashSet;
+    let mut targets = HashSet::new();
+    let end = base.saturating_add(code.len() as u64);
+    let mode = if is_64bit {
+        freakre_x86::Mode::X64
+    } else {
+        freakre_x86::Mode::X86
+    };
+    let mut off = 0usize;
+    while off < code.len() {
+        let addr = base.saturating_add(off as u64);
+        // Skip legacy + REX prefixes to find the opcode byte.
+        let mut op = off;
+        let mut o16 = false;
+        loop {
+            let b = match code.get(op) {
+                Some(&b) => b,
+                None => break,
+            };
+            match b {
+                0xF0 | 0xF2 | 0xF3 | 0x2E | 0x3E | 0x26 | 0x64 | 0x65 | 0x36 | 0x67 => {
+                    op += 1;
+                }
+                0x66 => {
+                    o16 = true;
+                    op += 1;
+                }
+                0x40..=0x4F if is_64bit => {
+                    op += 1;
+                }
+                _ => break,
+            }
+        }
+        let first = match code.get(op) {
+            Some(&b) => b,
+            None => break,
+        };
+        // Direct-jump target computation (relative to the instruction end).
+        let target: Option<u64> = match first {
+            0xEB => code.get(op + 1).map(|&r| {
+                (addr as i64 + (op - off) as i64 + 2 + r as i8 as i64) as u64
+            }),
+            0xE9 => {
+                let (rb, rel) = if o16 {
+                    (
+                        2usize,
+                        code.get(op + 1)
+                            .zip(code.get(op + 2))
+                            .map(|(&a, &b)| i16::from_le_bytes([a, b]) as i64),
+                    )
+                } else {
+                    (
+                        4usize,
+                        code.get(op + 1)
+                            .zip(code.get(op + 2))
+                            .zip(code.get(op + 3))
+                            .zip(code.get(op + 4))
+                            .map(|(((&a, &b), &c), &d)| {
+                                i32::from_le_bytes([a, b, c, d]) as i64
+                            }),
+                    )
+                };
+                rel.map(|r| (addr as i64 + (op - off) as i64 + rb as i64 + 1 + r) as u64)
+            }
+            0x70..=0x7F => code.get(op + 1).map(|&r| {
+                (addr as i64 + (op - off) as i64 + 2 + r as i8 as i64) as u64
+            }),
+            0x0F => match code.get(op + 1) {
+                Some(0x80..=0x8F) => code
+                    .get(op + 2)
+                    .zip(code.get(op + 3))
+                    .zip(code.get(op + 4))
+                    .zip(code.get(op + 5))
+                    .map(|(((&a, &b), &c), &d)| {
+                        let r = i32::from_le_bytes([a, b, c, d]) as i64;
+                        (addr as i64 + (op - off) as i64 + 6 + r) as u64
+                    }),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(t) = target {
+            if t >= base && t < end {
+                targets.insert(t);
+            }
+        }
+        // Step with the real decoder; bail on undecodable tails.
+        match freakre_x86::decode_len(&code[off..], mode) {
+            Ok(0) | Err(_) => break,
+            Ok(len) => {
+                if len > code.len() - off {
+                    break;
+                }
+                off += len;
+            }
+        }
+    }
+    targets
+}
+
 /// After a full-width (64-bit) write to a parent register, mirror the fresh
 /// value into the overlapping subregister views with And-mask extracts.
 ///
@@ -2267,7 +2378,17 @@ impl X86Lifter {
                 )?;
                 let rmv = loc.load(func, block, bits);
                 let regv = reg_value(rf + ext(rex_r), bits, has_rex);
-                let result = self.emit_alu(func, block, kind, rmv, regv.clone(), bits);
+                // Operand order follows the encoding direction: `OP rm, reg`
+                // computes rm OP reg, but `OP reg, rm` computes reg OP rm.
+                // Passing (rm, reg) unconditionally used to swap every
+                // non-commutative to_reg form (`SUB reg, rm` decompiled as
+                // `rm - reg`; same for SBB and CMP flag order).
+                let (a, b) = if to_reg {
+                    (regv.clone(), rmv)
+                } else {
+                    (rmv, regv.clone())
+                };
+                let result = self.emit_alu(func, block, kind, a, b, bits);
                 if kind != AluKind::Cmp {
                     if to_reg {
                         self.write_reg(func, block, &regv, OpCode::Copy, result, bits);
@@ -3006,6 +3127,11 @@ impl Lifter for X86Lifter {
             offset += self.try_lift_prologue(&mut func, current_block, code);
         }
 
+        // Jump-target pre-scan: split blocks exactly at destinations so no
+        // branch ever enters a block mid-way (executing a skipped prefix is
+        // a miscompile; dangling was a body-deleting prune).
+        let jump_targets = collect_jump_targets(code, base_address, self.is_64bit);
+
         while offset < code.len() && instruction_count < self.max_instructions {
             let remaining = &code[offset..];
             let address = base_address + offset as u64;
@@ -3067,6 +3193,24 @@ impl Lifter for X86Lifter {
                         current_block = func.add_block(&format!("bb_{}", offset));
                         block_start = end;
                     }
+                }
+            }
+            // Mid-block jump target: close the block with an explicit
+            // fall-through so the destination starts at instruction zero.
+            // (Skipped when the terminator above already split here.)
+            if jump_targets.contains(&(base_address + offset as u64)) {
+                let needs_split = func
+                    .block(current_block)
+                    .is_some_and(|b| !b.insts.is_empty() && b.terminator().is_none());
+                if needs_split {
+                    let end = base_address + offset as u64;
+                    let next = func.add_block(&format!("bb_{}", offset));
+                    if let Some(prev) = func.block_mut(current_block) {
+                        prev.source_range = Some((block_start, end));
+                        prev.insts.push(IrInst::Branch { target: next });
+                    }
+                    current_block = next;
+                    block_start = end;
                 }
             }
         }
@@ -4059,11 +4203,74 @@ mod tests {
     }
 
     #[test]
+    fn test_alu_to_reg_operand_order() {
+        // `2B 44 24 04` = sub eax, [rsp+4]: the Sub must be (reg - mem),
+        // not (mem - reg). The caller used to pass (rm, reg) unconditionally.
+        let lifter = X86Lifter::new(true);
+        let code = [0x2Bu8, 0x44, 0x24, 0x04, 0xC3];
+        let func = lifter.lift_function(&code, 0x1000, "t").unwrap();
+        let mut found_sub = false;
+        for b in &func.blocks {
+            for inst in &b.insts {
+                if let IrInst::Binary {
+                    op: OpCode::Sub,
+                    lhs,
+                    rhs,
+                    ..
+                } = inst
+                {
+                    // Skip the flag-writing Subs (rsp bookkeeping has none
+                    // here); the value Sub has a register lhs.
+                    if matches!(lhs, Value::Register { name, .. } if name == "eax") {
+                        found_sub = true;
+                        assert!(
+                            !matches!(rhs, Value::Register { name, .. } if name == "eax"),
+                            "Sub rhs must be the loaded mem operand, got {:?}",
+                            rhs
+                        );
+                    }
+                }
+            }
+        }
+        assert!(found_sub, "expected a Sub with register lhs");
+    }
+
+    #[test]
     fn test_lift_ret() {
         let lifter = X86Lifter::new(true);
         let code = [0xC3];
         let func = lifter.lift_function(&code, 0x1000, "test").unwrap();
         assert!(func.total_instructions() > 0);
+    }
+
+    #[test]
+    fn test_forward_jump_splits_block_at_target() {
+        // jmp +2 over two NOPs, then ret — the bubble_sort shape: the target
+        // (0x1004) lies mid-way through the fall-through chunk. The walk
+        // must split there so the branch enters its block at instruction
+        // zero; entering mid-block would execute the skipped NOPs' block
+        // prefix (miscompile), and a dangling link would prune the body.
+        let lifter = X86Lifter::new(true);
+        let code = [0xEB, 0x02, 0x90, 0x90, 0xC3];
+        let func = lifter.lift_function(&code, 0x1000, "t").unwrap();
+        // Find the block containing the jump target address 0x1004: it must
+        // start exactly there (split), not earlier.
+        let target_block = func
+            .blocks
+            .iter()
+            .find(|b| b.source_range == Some((0x1004, 0x1005)))
+            .expect("a block must start exactly at the jump target 0x1004");
+        // The entry block's branch must land on it (not dangle, not mid-way).
+        let entry = func.block(func.entry_block).unwrap();
+        match entry.terminator() {
+            Some(IrInst::Branch { target }) => assert_eq!(*target, target_block.id),
+            other => panic!("entry must end with Branch, got {:?}", other),
+        }
+        // The target block holds the ret sequence (reachable, not pruned).
+        assert!(target_block
+            .insts
+            .iter()
+            .any(|i| matches!(i, IrInst::Return { .. })));
     }
 
     #[test]
