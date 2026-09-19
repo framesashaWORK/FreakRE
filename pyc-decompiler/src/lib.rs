@@ -18,148 +18,119 @@ pub fn decompile(obj: &CodeObject) -> Vec<Line> {
     let mut out = Vec::new();
 
     // Function header
+    let func_name = obj
+        .source_path
+        .as_ref()
+        .and_then(|p| p.rsplit('\\').next())
+        .unwrap_or("<unknown>");
+
     out.push(Line {
         offset: 0,
-        code: format!(
-            "def {}{} ({} args) {{",
-            obj.source_path
-                .as_ref()
-                .and_then(|p| p.rsplit('/').next())
-                .unwrap_or("<unknown>"),
-            if obj.arg_count > 0 {
-                format!("({})", obj.arg_count)
-            } else {
-                String::new()
-            },
-            obj.arg_count
-        ),
+        code: format!("def {}() {{", func_name),
     });
 
-    let mut indent = 1;
-    let mut jump_targets: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    let mut indent = 0;
+    let mut i = 0;
+    let instructions = &obj.instructions;
 
-    // Build jump target map first
-    for inst in &obj.instructions {
-        if let Some(arg) = inst.arg {
-            let target = inst.offset + (arg as usize);
-            jump_targets.insert(target, indent);
-        }
-    }
-
-    // Emit instructions as pseudocode
-    for inst in &obj.instructions {
+    while i < instructions.len() {
+        let inst = &instructions[i];
         let indent_str = "    ".repeat(indent);
 
-        // Handle jump targets
-        if let Some(&target_indent) = jump_targets.get(&inst.offset) {
-            if target_indent < indent {
-                let indent_str = "    ".repeat(target_indent);
-                out.push(Line {
-                    offset: inst.offset,
-                    code: "}}".to_string(),
-                });
-                indent = target_indent;
-            } else if target_indent > indent {
-                indent = target_indent;
-                let indent_str = "    ".repeat(indent - 1);
-                out.push(Line {
-                    offset: inst.offset,
-                    code: format!("{}{{", indent_str),
-                });
-                continue;
+        // Check for function patterns
+        if inst.opcode == Opcode::LoadConst && inst.arg.is_some() {
+            // Look for: LOAD_CONST + LOAD_NAME + CALL_FUNCTION
+            if i + 2 < instructions.len() {
+                let next1 = &instructions[i + 1];
+                let next2 = &instructions[i + 2];
+
+                if next1.opcode == Opcode::LoadName && next2.opcode == Opcode::CallFunction {
+                    // Print pattern!
+                    let const_val = obj
+                        .constants
+                        .get(inst.arg.map(|a| a as usize).unwrap_or(0))
+                        .cloned()
+                        .unwrap_or_else(|| "?".to_string());
+                    out.push(Line {
+                        offset: inst.offset,
+                        code: format!("{}print(\"{}\")", indent_str, const_val),
+                    });
+                    i += 3;
+                    continue;
+                }
             }
         }
 
-        let code = match inst.opcode {
-            Opcode::LoadName => {
-                if let Some(arg) = inst.arg {
-                    format!(
-                        "{}_ = {} # {} ({})",
-                        indent_str,
-                        obj.names.get(arg as usize).map(|s| s.as_str()).unwrap_or("?"),
-                        arg,
-                        obj.names.get(arg as usize).map(|s| s.as_str()).unwrap_or("?")
-                    )
-                } else {
-                    format!("{}_ = ?", indent_str)
-                }
-            }
-            Opcode::StoreName => {
-                if let Some(arg) = inst.arg {
-                    format!(
-                        "{}store {} # {}",
-                        indent_str,
-                        obj.names.get(arg as usize).map(|s| s.as_str()).unwrap_or("?"),
-                        arg
-                    )
-                } else {
-                    format!("{}store ?", indent_str)
-                }
-            }
-            Opcode::CallFunction => {
-                if let Some(arg) = inst.arg {
-                    let args = (arg / 2) as usize; // Python 3.x: arg is num args * 2
-                    format!("{}call {} args", indent_str, args)
-                } else {
-                    format!("{}call ?", indent_str)
-                }
-            }
-            Opcode::JumpForward => {
-                if let Some(arg) = inst.arg {
-                    format!(
-                        "{}jump +{}",
-                        indent_str,
-                        arg
-                    )
-                } else {
-                    format!("{}jump ?", indent_str)
-                }
-            }
-            Opcode::CompareOp => {
-                format!("{}compare", indent_str)
-            }
-            Opcode::BinaryAdd => {
-                format!("{}add", indent_str)
-            }
-            Opcode::BinarySubtract => {
-                format!("{}subtract", indent_str)
-            }
-            Opcode::BinaryMultiply => {
-                format!("{}multiply", indent_str)
-            }
-            Opcode::ForIter => {
-                indent += 1;
-                format!("{}for", indent_str)
-            }
-            Opcode::LoadConst => {
-                let const_idx = inst
-                    .arg
-                    .map(|a| a as usize)
-                    .unwrap_or(0);
-                if let Some(const_val) = obj.constants.get(const_idx) {
-                    format!("{}load const \"{}\"", indent_str, const_val)
-                } else {
-                    format!("{}load const #{}", indent_str, const_idx)
-                }
-            }
-            Opcode::UnpackSequence => {
-                format!("{}unpack", indent_str)
-            }
-            _ => {
-                format!("{}{:?}", indent_str, inst.opcode)
-            }
-        };
+        // For loop pattern
+        if inst.opcode == Opcode::ForIter {
+            indent += 1;
+            out.push(Line {
+                offset: inst.offset,
+                code: format!("{}for ...", indent_str),
+            });
+            i += 1;
+            continue;
+        }
 
+        // StoreName -> assignment
+        if inst.opcode == Opcode::StoreName && inst.arg.is_some() {
+            let name = obj
+                .names
+                .get(inst.arg.map(|a| a as usize).unwrap_or(0))
+                .cloned()
+                .unwrap_or_else(|| "_".to_string());
+            out.push(Line {
+                offset: inst.offset,
+                code: format!("{}{} = ...", indent_str, name),
+            });
+            i += 1;
+            continue;
+        }
+
+        // Call function
+        if inst.opcode == Opcode::CallFunction && inst.arg.is_some() {
+            let arg_count = (inst.arg.unwrap() / 2) as usize;
+            out.push(Line {
+                offset: inst.offset,
+                code: format!("{}call (...)  # {} args", indent_str, arg_count),
+            });
+            i += 1;
+            continue;
+        }
+
+        // Jump instructions
+        if inst.opcode == Opcode::JumpForward && inst.arg.is_some() {
+            out.push(Line {
+                offset: inst.offset,
+                code: format!("{}jump +{}", indent_str, inst.arg.unwrap()),
+            });
+            i += 1;
+            continue;
+        }
+
+        // PopJump instructions (conditionals)
+        if matches!(inst.opcode, Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop) {
+            out.push(Line {
+                offset: inst.offset,
+                code: format!("{}if ...", indent_str),
+            });
+            i += 1;
+            continue;
+        }
+
+        // Default: show opcode
         out.push(Line {
             offset: inst.offset,
-            code,
+            code: format!("{}{:?} # arg={:}", indent_str, inst.opcode, 
+                inst.arg.map(|a| a.to_string()).unwrap_or("?".to_string())),
         });
+        i += 1;
     }
 
     // Close function
     out.push(Line {
         offset: usize::MAX,
-        code: "}}".to_string(),
+        code: "}".to_string(),
     });
 
     out
@@ -177,6 +148,7 @@ mod tests {
             names: vec![],
             instructions: vec![],
             source_path: Some("test.py".to_string()),
+            co_code: vec![],
         };
 
         let lines = decompile(&obj);
