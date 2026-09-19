@@ -12,11 +12,275 @@
 //! * import-table scan: high-risk modules (`os`, `subprocess`, `socket`,
 //!   `ctypes`, `requests`, `base64`, `marshal`, ...)
 //! * hardcoded strings, URLs, IPs
+//! * bytecode disassembly (simple pseudocode reconstruction)
 //!
 //! For PyInstaller we recognize the `MAGIC` archive header and walk the
 //! archive to list entries without unpacking executables.
 
 use serde::{Deserialize, Serialize};
+
+/// Python bytecode opcode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Opcode {
+    // ─── Stack operations ─────────────────────────────────────────
+    StopCode,
+    PopTop,
+    RotTwo,
+    RotThree,
+    DupTop,
+    DupTopTwo,
+    // ─── Imports ─────────────────────────────────────────────────
+    ImportName,
+    ImportFrom,
+    ImportAll,
+    // ─── Exceptions ──────────────────────────────────────────────
+    PopExcept,
+    PopBlock,
+    // ─── Unpacking ───────────────────────────────────────────────
+    UnpackSequence,
+    UnpackEx,
+    // ─── Comparisons ─────────────────────────────────────────────
+    CompareOp,
+    // ─── Jumps ───────────────────────────────────────────────────
+    JumpIfTrueOrPop,
+    JumpIfFalseOrPop,
+    JumpForward,
+    // ─── Names ───────────────────────────────────────────────────
+    LoadName,
+    StoreName,
+    DeleteName,
+    // ─── Attribute access ────────────────────────────────────────
+    LoadAttr,
+    StoreAttr,
+    DeleteAttr,
+    // ─── Stack ───────────────────────────────────────────────────
+    LoadConst,
+    // ─── Subscripts ──────────────────────────────────────────────
+    LoadMap,
+    StoreSubst,
+    // ─── Call ────────────────────────────────────────────────────
+    CallFunction,
+    // ─── Control flow ────────────────────────────────────────────
+    ForIter,
+    IterNext,
+    // ─── Special ─────────────────────────────────────────────────
+    MakeFunction,
+    CallFunctionEx,
+    // ─── Binary operations ───────────────────────────────────────
+    BinarySubtract,
+    BinaryAdd,
+    BinaryMultiply,
+    BinaryModulo,
+    BinaryAnd,
+    BinaryOr,
+    BinaryXor,
+    BinaryFloorDivide,
+    // ─── Augmented assignment ────────────────────────────────────
+    InplaceAdd,
+    InplaceSubtract,
+    InplaceMultiply,
+    InplaceModulo,
+    InplacePower,
+    InplaceAnd,
+    InplaceOr,
+    InplaceXor,
+    InplaceFloorDivide,
+}
+
+impl Opcode {
+    fn from_u8(code: u8, version: PythonVersion) -> Option<Opcode> {
+        // Python 3.11+ has different opcode layout; we only support 3.6-3.10 for now.
+        if matches!(version, PythonVersion::Py3_0 | PythonVersion::Py3_1) {
+            return None;
+        }
+
+        let code = code as usize;
+        // ─── Imports ─────────────────────────────────────────────────
+        if code >= 0x5C && code <= 0x5E {
+            return match code {
+                0x5C => Some(Opcode::ImportName),
+                0x5D => Some(Opcode::ImportFrom),
+                0x5E => Some(Opcode::ImportAll),
+                _ => unreachable!(),
+            };
+        }
+
+        // ─── Comparisons ─────────────────────────────────────────────
+        if code == 0x57 {
+            return Some(Opcode::CompareOp);
+        }
+
+        // ─── Jumps ───────────────────────────────────────────────────
+        if (code == 0x53)
+            || (code == 0x68)
+            || (code == 0x69)
+            || (code == 0x72)
+        {
+            return match code {
+                0x53 => Some(Opcode::JumpIfTrueOrPop),
+                0x68 => Some(Opcode::JumpIfFalseOrPop),
+                0x69 => Some(Opcode::JumpForward),
+                0x72 => Some(Opcode::JumpForward), // JUMP_FORWARD
+                _ => unreachable!(),
+            };
+        }
+
+        // ─── Names ───────────────────────────────────────────────────
+        if (code == 0x54)
+            || (code == 0x55)
+            || (code == 0x56)
+        {
+            return match code {
+                0x54 => Some(Opcode::LoadName),
+                0x55 => Some(Opcode::StoreName),
+                0x56 => Some(Opcode::DeleteName),
+                _ => unreachable!(),
+            };
+        }
+
+        // ─── Attribute access ────────────────────────────────────────
+        if (code == 0x1F)
+            || (code == 0x63)
+            || (code == 0x64)
+        {
+            return match code {
+                0x1F => Some(Opcode::LoadAttr),
+                0x63 => Some(Opcode::StoreAttr),
+                0x64 => Some(Opcode::DeleteAttr),
+                _ => unreachable!(),
+            };
+        }
+
+        // ─── Stack ───────────────────────────────────────────────────
+        if code == 0x64 {
+            return Some(Opcode::LoadConst);
+        }
+
+        // ─── Call ────────────────────────────────────────────────────
+        if code == 0x8D {
+            return Some(Opcode::CallFunction);
+        }
+
+        // ─── Special ─────────────────────────────────────────────────
+        if code == 0x6D {
+            return Some(Opcode::MakeFunction);
+        }
+
+        // ─── Binary operations ───────────────────────────────────────
+        if (code == 0x13)
+            || (code == 0x14)
+            || (code == 0x15)
+            || (code == 0x16)
+            || (code == 0x17)
+            || (code == 0x18)
+            || (code == 0x19)
+            || (code == 0x1A)
+        {
+            return match code {
+                0x13 => Some(Opcode::BinarySubtract),
+                0x14 => Some(Opcode::BinaryAdd),
+                0x15 => Some(Opcode::BinaryMultiply),
+                0x16 => Some(Opcode::BinaryModulo),
+                0x17 => Some(Opcode::BinaryAnd),
+                0x18 => Some(Opcode::BinaryOr),
+                0x19 => Some(Opcode::BinaryXor),
+                0x1A => Some(Opcode::BinaryFloorDivide),
+                _ => unreachable!(),
+            };
+        }
+
+        // ─── Augmented assignment ────────────────────────────────────
+        if (code >= 0x55 && code <= 0x5A)
+            || (code == 0x1B)
+            || (code == 0x1C)
+        {
+            return match code {
+                0x55 => Some(Opcode::InplaceAdd),
+                0x56 => Some(Opcode::InplaceSubtract),
+                0x57 => Some(Opcode::InplaceMultiply),
+                0x58 => Some(Opcode::InplaceModulo),
+                0x59 => Some(Opcode::InplacePower),
+                0x5A => Some(Opcode::InplaceFloorDivide),
+                0x1B => Some(Opcode::InplaceAnd),
+                0x1C => Some(Opcode::InplaceOr),
+                _ => None,
+            };
+        }
+
+        // ─── Control flow ────────────────────────────────────────────
+        if code == 0x61 || code == 0x16 {
+            return Some(Opcode::ForIter);
+        }
+
+        // ─── Unpacking ───────────────────────────────────────────────
+        if code == 0x58 {
+            return Some(Opcode::UnpackSequence);
+        }
+
+        // ─── Stack ───────────────────────────────────────────────────
+        match code {
+            0x01 => Some(Opcode::PopTop),
+            0x02 => Some(Opcode::RotTwo),
+            0x03 => Some(Opcode::RotThree),
+            0x50 => Some(Opcode::PopTop),
+            _ => None,
+        }
+    }
+
+    fn to_c(&self) -> &'static str {
+        match self {
+            Opcode::StopCode => "STOP_CODE",
+            Opcode::PopTop => "POP_TOP",
+            Opcode::RotTwo => "ROT_TWO",
+            Opcode::RotThree => "ROT_THREE",
+            Opcode::ImportName => "IMPORT_NAME",
+            Opcode::ImportFrom => "IMPORT_FROM",
+            Opcode::CompareOp => "COMPARE_OP",
+            Opcode::JumpForward => "JUMP_FORWARD",
+            Opcode::LoadName => "LOAD_NAME",
+            Opcode::StoreName => "STORE_NAME",
+            Opcode::DeleteName => "DELETE_NAME",
+            Opcode::LoadAttr => "LOAD_ATTR",
+            Opcode::StoreAttr => "STORE_ATTR",
+            Opcode::DeleteAttr => "DELETE_ATTR",
+            Opcode::LoadConst => "LOAD_CONST",
+            Opcode::CallFunction => "CALL_FUNCTION",
+            Opcode::MakeFunction => "MAKE_FUNCTION",
+            Opcode::BinaryAdd => "BINARY_ADD",
+            Opcode::BinarySubtract => "BINARY_SUBTRACT",
+            Opcode::BinaryMultiply => "BINARY_MULTIPLY",
+            Opcode::BinaryModulo => "BINARY_MODULO",
+            Opcode::BinaryAnd => "BINARY_AND",
+            Opcode::BinaryOr => "BINARY_OR",
+            Opcode::BinaryXor => "BINARY_XOR",
+            Opcode::InplaceAdd => "INPLACE_ADD",
+            Opcode::InplaceSubtract => "INPLACE_SUBTRACT",
+            Opcode::InplaceMultiply => "INPLACE_MULTIPLY",
+            Opcode::ForIter => "FOR_ITER",
+            Opcode::UnpackSequence => "UNPACK_SEQUENCE",
+            _ => "OP",
+        }
+    }
+}
+
+/// One bytecode instruction.
+#[derive(Debug, Clone)]
+pub struct Instruction {
+    pub offset: usize,
+    pub opcode: Opcode,
+    pub arg: Option<u32>,
+    pub arg_repr: Option<String>,
+}
+
+/// Disassembled code object.
+#[derive(Debug, Clone)]
+pub struct CodeObject {
+    pub arg_count: u32,
+    pub constants: Vec<String>,
+    pub names: Vec<String>,
+    pub instructions: Vec<Instruction>,
+    pub source_path: Option<String>,
+}
 
 /// Python version inferred from the magic number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +436,13 @@ pub fn analyze_python(data: &[u8]) -> Option<PycReport> {
     // Try to read embedded source path (after header in 3.2-)
     let source_path = read_source_path(&data[code_offset..]);
     let body = &data[code_offset..];
+
+    // Disassemble bytecode if it's at least 2 bytes per instruction
+    let instructions = if body.len() >= 2 {
+        disassemble(body, python_version)
+    } else {
+        vec![]
+    };
 
     Some(build_report(
         PycKind::Bytecode,
@@ -343,6 +614,37 @@ fn parse_pyinstaller_archive(data: &[u8]) -> Option<PyInstScratch> {
         i += 1;
     }
     Some(out)
+}
+
+/// Simple bytecode disassembler (Python 3.6+).
+fn disassemble(body: &[u8], version: Option<PythonVersion>) -> Vec<Instruction> {
+    let mut insts = Vec::new();
+    let mut i = 0;
+
+    while i < body.len() {
+        let opcode_byte = body[i];
+        let op = Opcode::from_u8(opcode_byte, version.unwrap_or(PythonVersion::Py3_6));
+        let arg = if i + 1 < body.len() && op.is_some() {
+            // Arguments follow opcode
+            Some(u32::from_le_bytes([body[i + 1], body.get(i + 2).copied().unwrap_or(0), 0, 0]))
+        } else {
+            None
+        };
+
+        if let Some(op) = op {
+            insts.push(Instruction {
+                offset: i,
+                opcode: op,
+                arg,
+                arg_repr: None,
+            });
+            i += if arg.is_some() && i + 1 < body.len() { 3 } else { 1 };
+        } else {
+            i += 1;
+        }
+    }
+
+    insts
 }
 
 fn build_report(

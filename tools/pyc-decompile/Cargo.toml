@@ -1,0 +1,12 @@
+[package]
+name = "pyc-decompile"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "pyc-decompile"
+path = "src/main.rs"
+
+[dependencies]
+pyc-parser = { path = "../../pyc-parser" }
+pyc-decompiler = { path = "../../pyc-decompiler" }

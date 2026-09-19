@@ -43,10 +43,12 @@ members = [
     "pdf-analyzer",
     "dotnet-analyzer",
     "pyc-parser",
+    "pyc-decompiler",
     "firmware-analyzer",
     "memdump-analyzer",
     "freakre-server", "dll-analyzer",
     "tools/fsig-gen",
+    "tools/pyc-decompile",
 ]
 exclude = ["fuzz"]
 resolver = "2"
