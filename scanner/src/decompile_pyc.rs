@@ -1,7 +1,6 @@
 //! Python bytecode decompilation API.
 
 use pyc_parser::{PycReport, analyze_python};
-use pyc_decompiler;
 
 /// Result type for Python bytecode decompilation.
 pub struct DecompiledPyC {

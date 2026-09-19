@@ -416,3 +416,11 @@ pub fn decompile_pe_function_findings(
         }],
     }
 }
+
+// Python bytecode decompilation
+use crate::decompile_pyc::{decompile_pyc, DecompiledPyC}
+
+/// Decompile a Python bytecode file.
+pub fn decompile_pyc(data: &[u8]) -> Result<DecompiledPyC, String> {
+    crate::decompile_pyc::decompile_pyc(data)
+}
