@@ -47,7 +47,20 @@ fn main() {
 
     println!("\n=== High-Risk Imports ===");
     for imp in report.high_risk_imports.iter() {
-        println!("  [!] {}", imp);
+        eprintln!("  [!] {}", imp);
+    }
+
+    // Try to extract and decompile code objects
+    eprintln!("\n=== Decompilation ===");
+    eprintln!("REACHING CODE OBJECTS PRINT");
+    eprintln!("Code objects count: {}", report.code_objects.len());
+    for (i, (insts, _consts)) in report.code_objects.iter().enumerate() {
+        println!("\nFunction {}:", i + 1);
+        for inst in insts {
+            let opcode = format!("{:?}", inst.opcode);
+            let arg = inst.arg.map(|a| a.to_string()).unwrap_or("?".to_string());
+            println!("  {:4} {:20} # arg={}", inst.offset, opcode, arg);
+        }
     }
 }
 

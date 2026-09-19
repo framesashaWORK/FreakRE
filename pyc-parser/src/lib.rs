@@ -335,7 +335,7 @@ pub struct ArchiveEntry {
 }
 
 /// Outcome of analyzing a Python file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct PycReport {
     pub kind: PycKind,
     pub python_version: Option<PythonVersion>,
@@ -353,6 +353,8 @@ pub struct PycReport {
     pub urls: Vec<String>,
     /// Sample of suspicious strings.
     pub suspicious_strings: Vec<String>,
+    /// Extracted code objects (instructions + constants) for decompilation.
+    pub code_objects: Vec<(Vec<Instruction>, Vec<String>)>,
     /// Number of archive entries (PyInstaller).
     pub archive_entry_count: usize,
     /// First 32 archive entries.
@@ -483,6 +485,9 @@ pub fn analyze_python(data: &[u8]) -> Option<PycReport> {
         }
     }
 
+    // Package code object
+    let code_objects = vec![(instructions, constants)];
+
     Some(build_report(
         PycKind::Bytecode,
         Some(python_version.unwrap_or(PythonVersion::Unknown(magic))),
@@ -491,6 +496,7 @@ pub fn analyze_python(data: &[u8]) -> Option<PycReport> {
         Some(body.len()),
         body,
         &suspicious_strings,
+        &code_objects,
     ))
 }
 
@@ -529,6 +535,7 @@ fn analyze_script(data: &[u8]) -> PycReport {
         high_risk_imports: high_risk,
         urls,
         suspicious_strings: Vec::new(),
+        code_objects: vec![],
         archive_entry_count: 0,
         archive_entries: Vec::new(),
         findings,
@@ -597,6 +604,7 @@ fn analyze_pyinstaller(data: &[u8]) -> PycReport {
         high_risk_imports: high_risk,
         urls,
         suspicious_strings,
+        code_objects: vec![],
         archive_entry_count: entries.len(),
         archive_entries: entries.into_iter().take(32).collect(),
         findings,
@@ -730,6 +738,7 @@ fn build_report(
     code_size: Option<usize>,
     body: &[u8],
     extra_strings: &[String],
+    code_objects: &[(Vec<Instruction>, Vec<String>)],
 ) -> PycReport {
     let text = String::from_utf8_lossy(body);
     let imports = collect_imports(&text);
@@ -774,6 +783,7 @@ fn build_report(
         high_risk_imports: high_risk,
         urls,
         suspicious_strings: extra_strings.to_vec(),
+        code_objects: code_objects.to_vec(),
         archive_entry_count: 0,
         archive_entries: Vec::new(),
         findings,
