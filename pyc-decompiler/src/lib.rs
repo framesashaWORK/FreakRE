@@ -74,13 +74,14 @@ pub fn decompile(obj: &CodeObject) -> Vec<Line> {
             Opcode::LoadName => {
                 if let Some(arg) = inst.arg {
                     format!(
-                        "{}load {} # {}",
+                        "{}_ = {} # {} ({})",
                         indent_str,
                         obj.names.get(arg as usize).map(|s| s.as_str()).unwrap_or("?"),
-                        arg
+                        arg,
+                        obj.names.get(arg as usize).map(|s| s.as_str()).unwrap_or("?")
                     )
                 } else {
-                    format!("{}load ?", indent_str)
+                    format!("{}_ = ?", indent_str)
                 }
             }
             Opcode::StoreName => {
@@ -131,14 +132,14 @@ pub fn decompile(obj: &CodeObject) -> Vec<Line> {
                 format!("{}for", indent_str)
             }
             Opcode::LoadConst => {
-                if let Some(const_val) = obj.constants.get(
-                    inst.arg
-                        .map(|a| a as usize)
-                        .unwrap_or(0),
-                ) {
-                    format!("{}load const {}", indent_str, const_val)
+                let const_idx = inst
+                    .arg
+                    .map(|a| a as usize)
+                    .unwrap_or(0);
+                if let Some(const_val) = obj.constants.get(const_idx) {
+                    format!("{}load const \"{}\"", indent_str, const_val)
                 } else {
-                    format!("{}load const ?", indent_str)
+                    format!("{}load const #{}", indent_str, const_idx)
                 }
             }
             Opcode::UnpackSequence => {

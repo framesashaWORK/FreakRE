@@ -35,9 +35,18 @@ fn main() {
         println!("Source path: {}", path);
     }
 
-    println!("\n=== Decompilation ===");
-    // Note: Full bytecode disassembly requires code object extraction
-    // which is complex due to Python version differences.
-    println!("Full decompilation requires extracting code objects from bytecode.");
-    println!("Use a dedicated bytecode disassembler for detailed output.");
+    println!("\n=== Strings Found ===");
+    for s in report.suspicious_strings.iter().take(10) {
+        println!("  \"{}\"", s);
+    }
+
+    println!("\n=== Imports ===");
+    for imp in report.imports.iter().take(15) {
+        println!("  {}", imp);
+    }
+
+    println!("\n=== High-Risk Imports ===");
+    for imp in report.high_risk_imports.iter() {
+        println!("  [!] {}", imp);
+    }
 }

@@ -280,6 +280,46 @@ pub struct CodeObject {
     pub names: Vec<String>,
     pub instructions: Vec<Instruction>,
     pub source_path: Option<String>,
+    pub co_code: Vec<u8>,
+}
+
+/// Parse a Python bytecode code object from marshalled data.
+pub fn parse_code_object(data: &[u8], version: Option<PythonVersion>) -> Option<CodeObject> {
+    // Skip to the code object (starts with 'c' opcode or similar)
+    // This is simplified - full parsing requires understanding marshal format
+    
+    // For now, extract what we can from the raw bytecode
+    if data.len() < 8 {
+        return None;
+    }
+
+    // Simplified extraction - real implementation would parse the marshal format
+    let mut constants = Vec::new();
+    let mut names = Vec::new();
+
+    // Scan for string-like constants (ASCII printable runs)
+    for i in 0..data.len() {
+        if data[i] >= 0x20 && data[i] <= 0x7E {
+            let start = i;
+            while i < data.len() && data[i] >= 0x20 && data[i] <= 0x7E {
+                // continue
+            }
+            if i - start >= 3 {
+                if let Ok(s) = std::str::from_utf8(&data[start..i]) {
+                    constants.push(s.to_string());
+                }
+            }
+        }
+    }
+
+    Some(CodeObject {
+        arg_count: 0,
+        constants,
+        names,
+        instructions: vec![],
+        source_path: None,
+        co_code: data.to_vec(),
+    })
 }
 
 /// Python version inferred from the magic number.
@@ -444,6 +484,33 @@ pub fn analyze_python(data: &[u8]) -> Option<PycReport> {
         vec![]
     };
 
+    // Scan for printable ASCII strings in bytecode body
+    let mut suspicious_strings = Vec::new();
+    let mut i = 0;
+    while i < body.len() {
+        if body[i].is_ascii_graphic() {
+            let start = i;
+            while i < body.len() && (body[i].is_ascii_graphic() || body[i] == b' ') {
+                i += 1;
+            }
+            let len = i - start;
+            if len >= 4 {
+                if let Ok(s) = std::str::from_utf8(&body[start..i]) {
+                    // Filter out PyInstaller/cPython internal strings
+                    if !s.starts_with("<")
+                        && !s.contains("Py")
+                        && !s.contains("Python")
+                        && !s.contains("import")
+                    {
+                        suspicious_strings.push(s.to_string());
+                    }
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+
     Some(build_report(
         PycKind::Bytecode,
         Some(python_version.unwrap_or(PythonVersion::Unknown(magic))),
@@ -451,7 +518,7 @@ pub fn analyze_python(data: &[u8]) -> Option<PycReport> {
         false,
         Some(body.len()),
         body,
-        &[],
+        &suspicious_strings,
     ))
 }
 
@@ -654,7 +721,7 @@ fn build_report(
     pyinstaller: bool,
     code_size: Option<usize>,
     body: &[u8],
-    _extra: &[u8],
+    extra_strings: &[String],
 ) -> PycReport {
     let text = String::from_utf8_lossy(body);
     let imports = collect_imports(&text);
@@ -698,7 +765,7 @@ fn build_report(
         imports,
         high_risk_imports: high_risk,
         urls,
-        suspicious_strings: Vec::new(),
+        suspicious_strings: extra_strings.to_vec(),
         archive_entry_count: 0,
         archive_entries: Vec::new(),
         findings,
