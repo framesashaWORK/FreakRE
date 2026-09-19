@@ -48,6 +48,7 @@ script-analyzer = { path = "../script-analyzer" }
 pdf-analyzer = { path = "../pdf-analyzer" }
 dotnet-analyzer = { path = "../dotnet-analyzer" }
 pyc-parser = { path = "../pyc-parser" }
+pyc-decompiler = { path = "../pyc-decompiler" }
 firmware-analyzer = { path = "../firmware-analyzer" }
 memdump-analyzer = { path = "../memdump-analyzer" }
 dll-analyzer = { path = "../dll-analyzer" }

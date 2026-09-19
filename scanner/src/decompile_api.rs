@@ -1,6 +1,7 @@
 //! Public decompilation API for the server (`/api/decompile`).
 //!
 //! Lifts and decompiles a real function from a PE image in memory. This is
+//! Python bytecode decompilation: see decompile_pyc module.
 //! the same pipeline the scanner's experimental decompiler finding uses
 //! (func-finder boundaries → x86 lifter → decompiler), exposed as a
 //! standalone entry point so the HTTP server does not need to re-implement

@@ -35,7 +35,7 @@ pub mod scoring;
 
 #[cfg(feature = "decompiler")]
 pub mod decompile_api;
-
+pub mod decompile_pyc;
 pub use filetype::{detect_file_type, hex_md5, hex_sha256};
 pub use packers::{detect_packers, match_packer};
 pub use report::*;

@@ -1800,6 +1800,7 @@ dependencies = [
  "ml-detection",
  "pdf-analyzer",
  "pe-parser",
+ "pyc-decompiler",
  "pyc-parser",
  "rayon",
  "script-analyzer",
