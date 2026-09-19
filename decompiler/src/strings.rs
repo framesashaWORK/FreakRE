@@ -34,7 +34,10 @@ impl StringTable {
         }
         let printable = s
             .chars()
-            .filter(|c| c.is_ascii_graphic() || matches!(c, '\t' | '\n' | '\r'))
+            .filter(|c| {
+                c.is_ascii_graphic()
+                    || matches!(c, '\t' | '\n' | '\r' | '\u{00A0}'..='\u{FFFF}')
+            })
             .count();
         if printable * 10 < s.chars().count() * 9 {
             return; // < 90% printable

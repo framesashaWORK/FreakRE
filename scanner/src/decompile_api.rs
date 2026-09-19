@@ -366,11 +366,10 @@ fn pe_image_ctx(pe: &pe_parser::PeFile, data: &[u8]) -> Option<freakre_ir::x86_l
 /// Strings are extracted from every section's raw data and mapped to their
 /// virtual addresses (`image_base + section VA + file offset`), so
 /// decompiled references like `f(0x14001000)` render as `f("...")`.
-/// ASCII only, minimum 5 characters — UTF-16 API strings on Windows are
-/// passed via explicit pointer math and rarely appear as bare constants.
+/// ASCII + UTF-16LE (Windows API strings); min 5 chars to reduce noise.
 fn build_string_table(pe: &pe_parser::PeFile, data: &[u8]) -> decompiler::StringTable {
     let mut table = decompiler::StringTable::new();
-    let config = str_extract::ExtractConfig::ascii_only(5);
+    let config = str_extract::ExtractConfig::windows_pe(5);
     for s in str_extract::extract_strings(data, &config) {
         let file_off = s.offset;
         // Find the section whose raw data range contains this offset.
