@@ -1,14 +1,14 @@
 //! Public decompilation API for the server (`/api/decompile`).
 //!
 //! Lifts and decompiles a real function from a PE image in memory. This is
-//! Python bytecode decompilation: see decompile_pyc module.
 //! the same pipeline the scanner's experimental decompiler finding uses
-//! (func-finder boundaries → x86 lifter → decompiler), exposed as a
+//! (func-finder boundaries ��' x86 lifter ��' decompiler), exposed as a
 //! standalone entry point so the HTTP server does not need to re-implement
 //! or dump findings.
 
 use crate::report::Finding;
 use crate::Severity;
+use crate::filetype::detect_file_type;
 
 /// One decompiled function, ready for JSON serialization.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -420,7 +420,28 @@ pub fn decompile_pe_function_findings(
 // Python bytecode decompilation
 use crate::decompile_pyc::{decompile, DecompiledPyC};
 
-/// Decompile a Python bytecode file.
-pub fn decompile_pyc(data: &[u8]) -> Result<DecompiledPyC, String> {
-    crate::decompile_pyc::decompile(data)
+/// Unified auto-detect decompiler.
+/// Returns appropriate decompilation based on file type.
+pub fn decompile_auto(data: &[u8]) -> Result<AutoDecompiled, String> {
+    let file_type = detect_file_type(data);
+    
+    if file_type == "Python/Compiled" || file_type.contains("pyc") {
+        match decompile(data) {
+            Ok(pyc) => Ok(AutoDecompiled::Python(pyc)),
+            Err(e) => Err(format!("Python decompilation failed: {e}")),
+        }
+    } else if file_type.starts_with("PE") {
+        match decompile_pe_function(data, None) {
+            Ok(func) => Ok(AutoDecompiled::Native(func)),
+            Err(e) => Err(format!("Native decompilation failed: {e}")),
+        }
+    } else {
+        Err(format!("Unsupported format: {file_type}"))
+    }
+}
+
+/// Auto-detected decompilation result.
+pub enum AutoDecompiled {
+    Native(DecompiledFunction),
+    Python(DecompiledPyC),
 }
